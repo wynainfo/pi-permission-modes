@@ -7,6 +7,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **Privilege escalation is now detected through wrappers and shell `-c`
+  scripts in the tree-sitter path.** `env PATH=/x sudo …`, `nice -n 10 sudo …`,
+  `timeout 5 doas …`, `xargs sudo …` unwrap to their effective command head,
+  and `sh|bash|… -c '<script>'` scripts are re-parsed recursively
+  (depth-limited) so their inner commands are visible to privilege/escape
+  detection *and* policy/path matching — closing the `bash -c 'sudo …'` gap the
+  AST path had while the regex fallback (whole-string scan) caught it. As a
+  bonus, the AST path no longer false-positives on mere mentions
+  (`grep sudo README.md` is not "privilege escalation").
 - **Bash session approvals now cover the whole chain, not just its first
   command.** A grant is keyed on every command name tree-sitter extracts, and a
   chain passes silently only when ALL of its names are already granted —

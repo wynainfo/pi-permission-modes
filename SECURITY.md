@@ -9,11 +9,15 @@ you can rely on it appropriately.
 1. **Policy engine** (`allow` / `ask` / `deny`) — per-mode, per-surface decisions
    that drive the prompt/block UX. For bash, commands are parsed with
    **tree-sitter** (a real AST), so privilege escalation and out-of-project paths
-   are detected even nested in `$(...)`, backticks, and subshells. If the
-   tree-sitter grammar can't load, it falls back to the original token-scan
-   heuristic (`bashConfirmReason`) — **not** a shell parser, foolable by
-   `bash -c '...'`, variable-built paths, etc. Either way this is the *prompting*
-   layer, **not** the containment boundary.
+   are detected even nested in `$(...)`, backticks, and subshells; `sh|bash|… -c
+   '…'` scripts are re-parsed recursively (depth-limited), and privilege
+   escalation is detected through known wrapper commands (`env`, `nice`,
+   `nohup`, `timeout`, `xargs`, …). Still foolable by variable-built commands
+   (`$CMD rm …`) and scripts read from files. If the tree-sitter grammar can't
+   load, it falls back to the original token-scan heuristic
+   (`bashConfirmReason`) — **not** a shell parser, foolable by variable-built
+   paths etc. Either way this is the *prompting* layer, **not** the containment
+   boundary.
 2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`) — the real enforcement for
    in-project `bash` in the sandboxed modes: `bubblewrap` (Linux) / `sandbox-exec`
    (macOS) confine **writes** to the profile's `allowWrite` (project + `/tmp` by

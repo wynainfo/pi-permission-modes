@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   analyzeBash,
+  type BashCommand,
+  expandShellCommands,
   extractCommands,
+  isPrivilegeEscalation,
   outsideReasonFromCommands,
   type SyntaxNodeLike,
 } from "./bash-parse.ts";
@@ -72,9 +75,95 @@ test("outsideReasonFromCommands: /dev/null is allowed", () => {
   );
 });
 
+const bc = (name: string, ...args: string[]): BashCommand => ({ name, args, isNested: false });
+
+test("isPrivilegeEscalation: direct and through wrapper commands", () => {
+  assert.ok(isPrivilegeEscalation(bc("sudo", "apt", "install")));
+  assert.ok(isPrivilegeEscalation(bc("/usr/bin/sudo", "x")));
+  assert.ok(isPrivilegeEscalation(bc("env", "sudo", "rm")));
+  assert.ok(isPrivilegeEscalation(bc("env", "PATH=/x", "sudo", "rm"))); // skips assignments
+  assert.ok(isPrivilegeEscalation(bc("nice", "-n", "10", "sudo", "x"))); // skips flags + numbers
+  assert.ok(isPrivilegeEscalation(bc("timeout", "5", "doas", "x")));
+  assert.ok(isPrivilegeEscalation(bc("xargs", "-0", "sudo", "rm")));
+  assert.ok(isPrivilegeEscalation(bc("nohup", "env", "sudo", "x"))); // wrappers chain
+});
+
+test("isPrivilegeEscalation: no false positives on mere mentions", () => {
+  assert.ok(!isPrivilegeEscalation(bc("grep", "sudo", "file.txt"))); // grep is not a wrapper
+  assert.ok(!isPrivilegeEscalation(bc("man", "sudo")));
+  assert.ok(!isPrivilegeEscalation(bc("echo", "use sudo for that")));
+  assert.ok(!isPrivilegeEscalation(bc("env", "ls", "-la"))); // wrapped command is benign
+  assert.ok(!isPrivilegeEscalation(bc("env"))); // wrapper with nothing wrapped
+});
+
+test("expandShellCommands: bash -c scripts are re-parsed, recursively and depth-limited", () => {
+  const parses: string[] = [];
+  const parse = (s: string): BashCommand[] => {
+    parses.push(s);
+    if (s === "sudo rm -rf /") return [bc("sudo", "rm", "-rf", "/")];
+    if (s === "bash -c 'sudo x'") return [bc("bash", "-c", "sudo x")];
+    if (s === "sudo x") return [bc("sudo", "x")];
+    return [];
+  };
+
+  // Simple: the inner command joins the list, marked nested.
+  const simple = expandShellCommands(parse, [bc("bash", "-c", "sudo rm -rf /")]);
+  assert.deepEqual(
+    simple.map((c) => [c.name, c.isNested]),
+    [
+      ["bash", false],
+      ["sudo", true],
+    ],
+  );
+
+  // Combined flags (`sh -lc`) and absolute shell paths count too.
+  assert.equal(expandShellCommands(parse, [bc("sh", "-lc", "sudo rm -rf /")]).length, 2);
+  assert.equal(expandShellCommands(parse, [bc("/bin/bash", "-c", "sudo rm -rf /")]).length, 2);
+
+  // No -c → a script file we can't inspect; nothing is expanded.
+  assert.equal(expandShellCommands(parse, [bc("bash", "script.sh")]).length, 1);
+  // Non-shell commands are never expanded.
+  assert.equal(expandShellCommands(parse, [bc("git", "-c", "user.name=x", "log")]).length, 1);
+
+  // Nested shells expand recursively: bash -c "bash -c 'sudo x'".
+  const nested = expandShellCommands(parse, [bc("bash", "-c", "bash -c 'sudo x'")]);
+  assert.deepEqual(
+    nested.map((c) => c.name),
+    ["bash", "bash", "sudo"],
+  );
+
+  // Depth limit: self-referential scripts stop expanding instead of looping.
+  const loop = (s: string): BashCommand[] => (s === "loop" ? [bc("bash", "-c", "loop")] : []);
+  const bounded = expandShellCommands(loop, [bc("bash", "-c", "loop")]);
+  assert.ok(bounded.length <= 4);
+});
+
+test("outsideReasonFromCommands: wrapped privilege escalation is reported", () => {
+  assert.equal(outsideReasonFromCommands([bc("env", "sudo", "rm")], "/p"), "privilege escalation");
+  assert.equal(outsideReasonFromCommands([bc("grep", "sudo", "x.txt")], "/p"), undefined);
+});
+
 test("analyzeBash: real grammar detects nested privilege + escape (skips if WASM absent)", async () => {
   const a = await analyzeBash("echo $(sudo rm -rf /etc) && cat ../x", "/home/u/projX");
   if (a.usedFallback) return; // tree-sitter WASM unavailable in this env — heuristic path
   assert.ok(a.commands.some((c) => c.name === "sudo" && c.isNested), "nested sudo extracted");
   assert.ok(a.outsideReason, "an escape/privilege reason is reported");
+});
+
+test("analyzeBash: real grammar sees through wrappers and shell -c (skips if WASM absent)", async () => {
+  const wrapped = await analyzeBash("env PATH=/x sudo rm -rf /", "/home/u/projX");
+  if (wrapped.usedFallback) return; // tree-sitter WASM unavailable in this env
+  assert.equal(wrapped.outsideReason, "privilege escalation");
+
+  const shellC = await analyzeBash("bash -c 'sudo rm -rf /etc'", "/home/u/projX");
+  assert.equal(shellC.outsideReason, "privilege escalation");
+  assert.ok(shellC.commands.some((c) => c.name === "sudo" && c.isNested), "inner sudo extracted from -c script");
+
+  // The inner script's path args are policy-visible too.
+  const shellPath = await analyzeBash("sh -c 'cat /etc/passwd'", "/home/u/projX");
+  assert.match(shellPath.outsideReason ?? "", /path outside project/);
+
+  // A benign mention is not privilege escalation in the AST path.
+  const benign = await analyzeBash("grep sudo README.md", "/home/u/projX");
+  assert.equal(benign.outsideReason, undefined);
 });

@@ -5,9 +5,12 @@
  * the tree-sitter-bash CST into the list of commands in a line — including those
  * nested in `$(...)`, backticks, and subshells — so privilege escalation and
  * out-of-project path arguments are detected even when hidden inside
- * substitutions. When the WASM grammar can't be loaded, `analyzeBash` degrades to
- * the original `bashConfirmReason` heuristic (heuristics.ts), so behavior is
- * never worse than before.
+ * substitutions. Shell `-c` scripts (`bash -c '…'`) are re-parsed recursively so
+ * their inner commands are seen too, and privilege escalation is detected
+ * through wrapper commands (`env sudo …`, `nice -n 10 sudo …`). When the WASM
+ * grammar can't be loaded, `analyzeBash` degrades to the original
+ * `bashConfirmReason` heuristic (heuristics.ts), so behavior is never worse
+ * than before.
  *
  * `extractCommands` is pure and works over a minimal node shape, so it's
  * unit-tested with hand-built trees (no WASM); only the lazy parser init touches
@@ -79,13 +82,110 @@ export function extractCommands(root: SyntaxNodeLike): BashCommand[] {
 }
 
 /**
+ * Command heads that run their argument list as another command, so privilege
+ * escalation can hide one level down (`env sudo …`, `nice -n 10 sudo …`,
+ * `xargs sudo …`). Shells with `-c` are handled separately (the script is a
+ * string needing a re-parse — see `expandShellCommands`).
+ */
+const WRAPPER_COMMANDS = new Set([
+  "env",
+  "command",
+  "nice",
+  "ionice",
+  "nohup",
+  "setsid",
+  "stdbuf",
+  "timeout",
+  "time",
+  "xargs",
+  "exec",
+  "builtin",
+]);
+
+/** Wrapper arguments to skip when looking for the wrapped command: flags
+ * (`-n`, `--`), VAR=value assignments (env), and bare numbers (timeout 5,
+ * nice -n 10). */
+const SKIPPABLE_WRAPPER_ARG = /^(-|\w+=|\d+$)/;
+
+/**
+ * True when the command escalates privileges — directly (`sudo …`) or through
+ * known wrapper commands (`env PATH=/x sudo …`, `nice -n 10 doas …`): each
+ * wrapper is unwrapped (skipping its flags/assignments/numeric args) and every
+ * effective command head is tested. Bounded, so a pathological chain of
+ * wrappers can't loop.
+ */
+export function isPrivilegeEscalation(c: BashCommand): boolean {
+  let head = c.name;
+  let rest = c.args;
+  for (let hops = 0; hops < 8; hops++) {
+    if (PRIVILEGE_RE.test(path.basename(head))) return true;
+    if (!WRAPPER_COMMANDS.has(path.basename(head))) return false;
+    const idx = rest.findIndex((a) => !SKIPPABLE_WRAPPER_ARG.test(a));
+    if (idx === -1) return false;
+    head = rest[idx];
+    rest = rest.slice(idx + 1);
+  }
+  return false;
+}
+
+/** Shells whose `-c <script>` argument is itself a bash program. */
+const SHELL_COMMANDS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+/** The `-c` script of a shell command (`bash -c '…'`, `sh -lc '…'`), or
+ * undefined when the command isn't a shell or has no `-c` script. */
+function shellCScript(c: BashCommand): string | undefined {
+  if (!SHELL_COMMANDS.has(path.basename(c.name))) return undefined;
+  let sawC = false;
+  for (const a of c.args) {
+    if (a.startsWith("-")) {
+      if (a.includes("c")) sawC = true;
+      continue;
+    }
+    // First non-flag arg: the script when -c was given, else a script file
+    // path (which we can't inspect — the path itself is still policy-matched).
+    return sawC ? a : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Expand `sh|bash|… -c '<script>'` commands by re-parsing the script and
+ * appending its commands (marked nested), recursively and depth-limited — so
+ * privilege, path-escape, and policy matching all see what the inner shell
+ * would run. `parse` is injected (the tree-sitter parser in production, a fake
+ * in tests); a script that fails to parse expands to nothing.
+ */
+export function expandShellCommands(
+  parse: (script: string) => BashCommand[],
+  commands: BashCommand[],
+  depth = 0,
+): BashCommand[] {
+  if (depth >= 3) return commands;
+  const out: BashCommand[] = [];
+  for (const c of commands) {
+    out.push(c);
+    const script = shellCScript(c);
+    if (!script) continue;
+    let inner: BashCommand[] = [];
+    try {
+      inner = parse(script).map((i) => ({ ...i, isNested: true }));
+    } catch {
+      // unparsable inner script → nothing to expand; the shell command itself
+      // was already emitted and stays subject to policy
+    }
+    out.push(...expandShellCommands(parse, inner, depth + 1));
+  }
+  return out;
+}
+
+/**
  * Reason to prompt (escape / privilege) derived from extracted commands — the
  * AST-based equivalent of `bashConfirmReason`, but it also sees commands and
  * paths nested inside substitutions/subshells.
  */
 export function outsideReasonFromCommands(commands: BashCommand[], root: string): string | undefined {
   for (const c of commands) {
-    if (PRIVILEGE_RE.test(c.name)) return "privilege escalation";
+    if (isPrivilegeEscalation(c)) return "privilege escalation";
     for (const tok of [c.name, ...c.args]) {
       let target: string | undefined;
       if (tok.startsWith("/")) target = tok;
@@ -147,7 +247,9 @@ export async function analyzeBash(command: string, root: string): Promise<BashAn
   const parser = await getTreeSitterParser();
   if (parser) {
     try {
-      const commands = parser.parse(command);
+      // Expand shell -c scripts so `bash -c 'sudo …'` exposes its inner
+      // commands to privilege/escape detection and policy matching alike.
+      const commands = expandShellCommands((s) => parser.parse(s), parser.parse(command));
       return { commands, outsideReason: outsideReasonFromCommands(commands, root), usedFallback: false };
     } catch {
       // parse failure → fall through to the heuristic

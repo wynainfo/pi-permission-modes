@@ -131,11 +131,13 @@ Two independent layers compose:
    cross-cutting `path` gate, `external_directory`, `web_search`, `tool`,
    `skill`). `deny` blocks, `ask` prompts, `allow` passes. For **bash**, the
    command is parsed with **tree-sitter** (real AST) so each command — including
-   those nested in `$(...)`, backticks, and subshells — is matched against the
-   `bash` patterns **and** the cross-cutting `path` gate (against the joined
-   command and each individual token, so `"path": { "*.env": "deny" }` blocks
-   `cat .env` wherever the target appears), and out-of-project paths / privilege
-   escalation are detected structurally. If the tree-sitter grammar can't load, it falls back to the
+   those nested in `$(...)`, backticks, subshells, and `sh|bash|… -c '…'`
+   scripts (re-parsed recursively) — is matched against the `bash` patterns
+   **and** the cross-cutting `path` gate (against the joined command and each
+   individual token, so `"path": { "*.env": "deny" }` blocks `cat .env` wherever
+   the target appears), and out-of-project paths / privilege escalation are
+   detected structurally — including through wrapper commands (`env sudo …`,
+   `nice -n 10 sudo …`, `xargs sudo …`). If the tree-sitter grammar can't load, it falls back to the
    original regex heuristic (`bashConfirmReason`) — never worse than before.
 2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`): the real enforcement for
    bash. When a mode's `sandbox.enabled` is true, in-project bash runs wrapped by
