@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The cross-cutting `path` gate now binds bash in the tree-sitter path.** Each
+  extracted command is judged against the `path` patterns — the joined
+  `name args…` string *and* every individual token — via `decideBashCommand`, so
+  a rule like `"path": { "*.env": "deny" }` blocks `cat .env extra-arg` no matter
+  where the target sits in the command. Previously the AST path only consulted
+  the `bash` surface (the `path` gate applied to bash only in the regex
+  fallback, and only against the whole command line), contradicting the
+  documented "gate over ALL file access (incl. bash args)" semantics. Project
+  tighten-only overlays fold in the same way.
+
 ## [2.0.0]
 
 Declarative mode engine. Modes are now **data** — each a JSON bundle of a sandbox

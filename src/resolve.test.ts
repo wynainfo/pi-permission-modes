@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import test from "node:test";
-import { decide, expandHome, matchPattern, mostRestrictive, resolveSurface } from "./resolve.ts";
+import { decide, decideBashCommand, expandHome, matchPattern, mostRestrictive, resolveSurface } from "./resolve.ts";
 import type { ModeDef } from "./schema.ts";
 
 test("matchPattern: * spans path separators, ? is one char", () => {
@@ -76,4 +76,33 @@ test("decide: fallback applies when nothing matches", () => {
   const m = mode({ read: "allow" });
   assert.equal(decide(m, "write", "x.ts"), "ask"); // default least-privilege fallback
   assert.equal(decide(m, "write", "x.ts", { fallback: "allow" }), "allow");
+});
+
+test("decideBashCommand: path gate binds bash args, not just the joined string", () => {
+  const m = mode({ path: { "*": "allow", "*.env": "deny" }, bash: { "*": "allow" } });
+  assert.equal(decideBashCommand(m, "cat", [".env"]), "deny");
+  // The heuristic fallback only matched the whole command line, so a trailing
+  // arg used to hide the target; per-token matching closes that.
+  assert.equal(decideBashCommand(m, "cat", [".env", "other.txt"]), "deny");
+  assert.equal(decideBashCommand(m, "cat", ["config/prod.env"]), "deny");
+  assert.equal(decideBashCommand(m, "ls", ["src"]), "allow");
+});
+
+test("decideBashCommand: bash surface matches the joined name+args string", () => {
+  const m = mode({ bash: { "*": "allow", "git push*": "ask", "sudo*": "deny" } });
+  assert.equal(decideBashCommand(m, "git", ["push", "origin", "main"]), "ask");
+  assert.equal(decideBashCommand(m, "git", ["status"]), "allow");
+  assert.equal(decideBashCommand(m, "sudo", ["rm", "-rf", "/"]), "deny");
+});
+
+test("decideBashCommand: project overlay path rules tighten bash (most-restrictive)", () => {
+  const m = mode({ path: { "*": "allow" }, bash: { "*": "allow" } });
+  m.projectOverlay = { path: { "*secrets*": "deny" } };
+  assert.equal(decideBashCommand(m, "cat", ["config/secrets/key.pem"]), "deny");
+  assert.equal(decideBashCommand(m, "cat", ["README.md"]), "allow");
+});
+
+test("decideBashCommand: undefined when no layer matches (caller picks default)", () => {
+  const m = mode({});
+  assert.equal(decideBashCommand(m, "ls", []), undefined);
 });

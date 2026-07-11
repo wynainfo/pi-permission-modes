@@ -50,7 +50,7 @@ import { analyzeBash } from "./bash-parse.ts";
 import { loadModeConfig, loadStockDefaults, persistModeRule, profileToConfig, stockDefaultsFile } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
 import { isOutside, isProtectedPath } from "./paths.ts";
-import { decide, mostRestrictive, resolveSurface } from "./resolve.ts";
+import { decide, decideBashCommand, mostRestrictive } from "./resolve.ts";
 import { SandboxController } from "./sandbox.ts";
 import {
   type Action,
@@ -88,15 +88,6 @@ export default async function (pi: ExtensionAPI) {
   const root = process.cwd();
 
   const currentMode = (): ModeDef => config.modes[modeName] ?? config.modes[config.defaultMode];
-
-  // Match a single command string against the `bash` surface (base + project
-  // overlay), most-restrictive. Path-arg escapes are handled separately via the
-  // analysis's outsideReason, so the path gate isn't folded here.
-  const bashSurfaceAction = (m: ModeDef, cmdStr: string): Action | undefined => {
-    const base = resolveSurface(m.permission.bash, cmdStr);
-    const over = m.projectOverlay ? resolveSurface(m.projectOverlay.bash, cmdStr) : undefined;
-    return mostRestrictive(base, over);
-  };
 
   const sandbox = new SandboxController();
   // toolCallIds the user explicitly approved to run OUTSIDE the sandbox.
@@ -370,13 +361,15 @@ export default async function (pi: ExtensionAPI) {
         if (gate.kind === "block") return { block: true, reason: gate.reason };
         return undefined;
       }
-      // Real AST when available: match each (possibly nested) command against the
-      // bash surface, most-restrictive across the chain; detect escapes/privilege.
+      // Real AST when available: judge each (possibly nested) command against the
+      // bash surface AND the cross-cutting path gate (joined string + each token,
+      // see decideBashCommand), most-restrictive across the chain; detect
+      // escapes/privilege.
       const analysis = await analyzeBash(command, root);
       let action: Action;
       if (analysis.commands.length > 0) {
         action = analysis.commands
-          .map((c) => bashSurfaceAction(m, [c.name, ...c.args].join(" ").trim()) ?? "allow")
+          .map((c) => decideBashCommand(m, c.name, c.args) ?? "allow")
           .reduce<Action>((a, b) => mostRestrictive(a, b) ?? "allow", "allow");
       } else {
         action = decide(m, "bash", command);

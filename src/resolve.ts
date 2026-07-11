@@ -106,3 +106,32 @@ export function decide(
 
   return mostRestrictive(...layers) ?? opts.fallback ?? "ask";
 }
+
+/**
+ * Decide the action for ONE extracted bash command (the tree-sitter path, where
+ * each command in a chain is judged separately). Per source (base policy +
+ * project tighten-only overlay), most-restrictive of:
+ *   - the `bash` surface matched against the joined "name args…" string;
+ *   - the cross-cutting `path` gate matched against that same joined string
+ *     (parity with the heuristic fallback, where `decide` folds `path` over the
+ *     whole command line);
+ *   - the `path` gate matched against each individual token (name and each
+ *     arg), so path globs like `*.env` bind bash arguments regardless of where
+ *     they sit in the command.
+ *
+ * Returns undefined when no layer matches at all; the caller picks the default
+ * (the dispatcher treats a fully-unmatched command as "allow" within a chain,
+ * matching resolveSurface semantics for absent surfaces).
+ */
+export function decideBashCommand(mode: ModeDef, name: string, args: string[]): Action | undefined {
+  const tokens = [name, ...args];
+  const joined = tokens.join(" ").trim();
+  const layers: (Action | undefined)[] = [];
+  const sources = mode.projectOverlay ? [mode.permission, mode.projectOverlay] : [mode.permission];
+  for (const perm of sources) {
+    layers.push(resolveSurface(perm.bash, joined));
+    layers.push(resolveSurface(perm.path, joined));
+    for (const tok of tokens) layers.push(resolveSurface(perm.path, tok));
+  }
+  return mostRestrictive(...layers);
+}
