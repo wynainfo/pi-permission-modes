@@ -7,6 +7,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **The protected-path backstop now resolves symlinks.** `edit`/`write` targets
+  are matched lexically AND on their canonical (symlink-resolved) path, so an
+  in-project link pointing at `.git/`, `.env`, a shell rc file, etc. no longer
+  smuggles a write past the backstop — this matters most in Build, where file
+  tools don't prompt and aren't OS-sandboxed. In-project targets are judged
+  root-relative, so a project that itself lives under a directory named
+  `node_modules` (debugging a dependency in place) isn't spuriously
+  write-blocked.
 - **Privilege escalation is now detected through wrappers and shell `-c`
   scripts in the tree-sitter path.** `env PATH=/x sudo …`, `nice -n 10 sudo …`,
   `timeout 5 doas …`, `xargs sudo …` unwrap to their effective command head,

@@ -9,6 +9,7 @@ import {
   isOutside,
   isPlanFile,
   isProtectedPath,
+  isProtectedWrite,
   removeSandboxPlaceholders,
   resolvePlanPath,
   SAFE_OUTSIDE_RE,
@@ -169,6 +170,57 @@ test("isMarkdown matches .md / .markdown case-insensitively", () => {
 test("SAFE_OUTSIDE_RE matches device pseudo-files only", () => {
   assert.ok(SAFE_OUTSIDE_RE.test("/dev/null"));
   assert.ok(!SAFE_OUTSIDE_RE.test("/dev/sda"));
+});
+
+test("isProtectedWrite: symlinks cannot smuggle a write past the backstop", () => {
+  const t = tmpdir();
+  if (!existsSync(t)) mkdirSync(t, { recursive: true });
+  const base = mkdtempSync(path.join(t, "perm-prot-"));
+  try {
+    const root = path.join(base, "proj");
+    mkdirSync(path.join(root, ".git"), { recursive: true });
+    mkdirSync(path.join(root, "src"), { recursive: true });
+
+    // Lexical matches still hold, incl. not-yet-existing protected paths.
+    assert.equal(isProtectedWrite(root, ".git/config"), true);
+    assert.equal(isProtectedWrite(root, ".env.production"), true);
+    assert.equal(isProtectedWrite(root, "src/app.ts"), false);
+
+    // In-project symlink → .git: the canonical target is protected.
+    symlinkSync(path.join(root, ".git"), path.join(root, "innocent"));
+    assert.equal(isProtectedWrite(root, "innocent/config"), true);
+
+    // Symlink → an outside dotfile: caught by basename after resolution.
+    const outside = path.join(base, "outside");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(path.join(outside, ".bashrc"), "x");
+    symlinkSync(path.join(outside, ".bashrc"), path.join(root, "notes.txt"));
+    assert.equal(isProtectedWrite(root, "notes.txt"), true);
+
+    // A benign in-project symlink stays writable.
+    writeFileSync(path.join(root, "real.md"), "");
+    symlinkSync(path.join(root, "real.md"), path.join(root, "alias.md"));
+    assert.equal(isProtectedWrite(root, "alias.md"), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("isProtectedWrite: a project under a protected-named dir isn't blanket-blocked", () => {
+  const t = tmpdir();
+  if (!existsSync(t)) mkdirSync(t, { recursive: true });
+  const base = mkdtempSync(path.join(t, "perm-nm-"));
+  try {
+    // Debugging a dependency in place: the project root's own absolute path
+    // contains node_modules, but in-project writes are judged root-relative.
+    const root = path.join(base, "node_modules", "some-dep");
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    assert.equal(isProtectedWrite(root, "src/index.js"), false);
+    // The project's OWN node_modules (a segment below root) stays protected.
+    assert.equal(isProtectedWrite(root, "node_modules/x/y.js"), true);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("isOutside: follows symlinks that escape the project", () => {

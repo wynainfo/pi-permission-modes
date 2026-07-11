@@ -175,7 +175,9 @@ first-use prompt, or to `"deny"` to block.)
 
 **Protected paths.** Unless a mode sets `bypassProtectedPaths` (only YOLO does),
 `edit`/`write` to protected paths are hard-blocked — matched by path segment, not
-loose substring. The set mirrors the sandbox-runtime mandatory-deny list: `.git/`,
+loose substring, on both the literal target **and** its symlink-resolved
+canonical path (so a link pointing at `.git/` or a dotfile can't smuggle a write
+past the backstop). The set mirrors the sandbox-runtime mandatory-deny list: `.git/`,
 `node_modules/`, `.vscode/`, `.idea/`, `.env`/`.env.*`, `.claude/{commands,agents}/`,
 and common dotfiles (`.bashrc`, `.zshrc`, `.profile`, `.gitconfig`, `.npmrc`, …).
 This matters most in Build, where file tools aren't OS-sandboxed.

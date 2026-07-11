@@ -49,7 +49,7 @@ import { bashExecPlan, bashGate } from "./bash-enforce.ts";
 import { analyzeBash } from "./bash-parse.ts";
 import { loadModeConfig, loadStockDefaults, persistModeRule, profileToConfig, stockDefaultsFile } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
-import { isOutside, isProtectedPath } from "./paths.ts";
+import { isOutside, isProtectedWrite } from "./paths.ts";
 import { decide, decideBashCommand, mostRestrictive } from "./resolve.ts";
 import { SandboxController } from "./sandbox.ts";
 import {
@@ -345,9 +345,10 @@ export default async function (pi: ExtensionAPI) {
     const inPath = typeof input.path === "string" ? input.path : undefined;
 
     // Hard backstop: never write to protected paths (file tools aren't sandboxed),
-    // unless the mode explicitly trusts everything (YOLO).
+    // unless the mode explicitly trusts everything (YOLO). Matched lexically AND
+    // on the symlink-resolved canonical path, so a link can't smuggle the write.
     if (!m.bypassProtectedPaths && (toolName === "edit" || toolName === "write") && inPath !== undefined) {
-      if (isProtectedPath(inPath)) {
+      if (isProtectedWrite(root, inPath)) {
         if (ctx.hasUI) ctx.ui.notify(`Blocked write to protected path: ${inPath}`, "warning");
         return { block: true, reason: `Path "${inPath}" is protected` };
       }

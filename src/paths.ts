@@ -162,6 +162,7 @@ export function isPlanFile(root: string, p?: string): boolean {
  * True when a write target is a protected path. Segment-aware (not a loose
  * substring): matches protected directory names anywhere in the path, `.env`
  * and `.env.*` files, known dotfiles, and `.claude/{commands,agents}`.
+ * Purely lexical — see `isProtectedWrite` for the symlink-resolving backstop.
  */
 export function isProtectedPath(p: string): boolean {
   const segments = p.split(/[/\\]+/).filter(Boolean);
@@ -175,4 +176,28 @@ export function isProtectedPath(p: string): boolean {
     if (segments[i] === ".claude" && (segments[i + 1] === "commands" || segments[i + 1] === "agents")) return true;
   }
   return false;
+}
+
+/**
+ * The protected-path backstop for `edit`/`write` targets: the raw path is
+ * matched lexically (so a textual `.git/…` is blocked even before it exists),
+ * AND its canonical form — resolved against `root` with symlinks followed — is
+ * matched too, so an in-project symlink pointing at `.git`/a dotfile can't
+ * smuggle a write past the backstop (file tools aren't OS-sandboxed; this
+ * check is their only guard).
+ *
+ * The canonical form is judged *project-relative* when it lands inside the
+ * project: a project that itself lives under a directory named e.g.
+ * `node_modules` (debugging a dependency in place) must not have every write
+ * blocked just because the project's own absolute path contains a protected
+ * segment. Targets resolving outside the project are judged by their full
+ * canonical path.
+ */
+export function isProtectedWrite(root: string, p: string): boolean {
+  if (isProtectedPath(p)) return true;
+  const target = canonicalize(path.resolve(root, p));
+  const realRoot = canonicalize(root);
+  const rel = path.relative(realRoot, target);
+  const inProject = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return isProtectedPath(inProject ? rel : target);
 }
