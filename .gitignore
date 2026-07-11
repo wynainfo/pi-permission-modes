@@ -1,0 +1,11 @@
+node_modules/
+
+# Local permission-mode config (user/project overrides, never committed)
+permission-mode.json
+sandbox.json
+.pi/
+
+# Misc
+*.local.json
+*.log
+.DS_Store

@@ -1,0 +1,68 @@
+{
+  "name": "pi-permission-modes",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Declarative, user-definable permission modes for the pi coding agent: OS-level sandboxing (bubblewrap / sandbox-exec), an allow/ask/deny policy engine, real bash AST gating (tree-sitter), tool hiding, and skill/custom-tool gating.",
+  "license": "MIT",
+  "author": "Nico Merz <nico.merz@wyna-informatik.ch>",
+  "homepage": "https://github.com/wynainfo/pi-permission-modes#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wynainfo/pi-permission-modes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wynainfo/pi-permission-modes/issues"
+  },
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "pi-package",
+    "permission",
+    "permissions",
+    "sandbox",
+    "bubblewrap",
+    "security",
+    "plan-mode",
+    "tree-sitter",
+    "policy",
+    "opencode"
+  ],
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "files": [
+    "src/",
+    "schemas/",
+    "permission-mode.defaults.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "postinstall": "echo 'permission-mode: dependencies installed.'",
+    "test": "node --test ./src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.26",
+    "tree-sitter-bash": "^0.25.1",
+    "web-tree-sitter": "^0.25.10"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

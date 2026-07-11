@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
+  "title": "permission-mode configuration",
+  "description": "Declarative permission modes for the pi coding agent. Global config has full authority; project config (.pi/permission-mode.json) is tighten-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "defaultMode": {
+      "type": "string",
+      "description": "Name of the mode a new session starts in."
+    },
+    "cycleOrder": {
+      "type": "array",
+      "description": "Order modes are cycled with alt+m; also the display order.",
+      "items": { "type": "string" }
+    },
+    "modes": {
+      "type": "object",
+      "description": "Map of mode name → mode definition.",
+      "additionalProperties": { "$ref": "#/$defs/mode" }
+    }
+  },
+  "$defs": {
+    "action": {
+      "enum": ["allow", "ask", "deny"],
+      "description": "allow = pass through; ask = prompt; deny = block."
+    },
+    "surfaceValue": {
+      "description": "An action, or a glob pattern→action map (last match wins; '*' is the catch-all).",
+      "oneOf": [
+        { "$ref": "#/$defs/action" },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/action" }
+        }
+      ]
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "OS sandbox profile for the mode.",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "false = run bash unsandboxed (YOLO-style)." },
+        "writable": { "type": "boolean", "description": "false = bash runs read-only (Plan-style)." },
+        "allowWrite": { "type": "array", "items": { "type": "string" } },
+        "denyWrite": { "type": "array", "items": { "type": "string" } },
+        "denyRead": { "type": "array", "items": { "type": "string" } },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowedDomains": { "type": "array", "items": { "type": "string" } },
+            "deniedDomains": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      },
+      "required": ["enabled", "writable"]
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-surface allow/ask/deny policy.",
+      "properties": {
+        "path": { "$ref": "#/$defs/surfaceValue", "description": "Cross-cutting gate over ALL file access; a deny here overrides per-tool allows." },
+        "external_directory": { "$ref": "#/$defs/surfaceValue", "description": "Access to paths outside the project." },
+        "read": { "$ref": "#/$defs/surfaceValue" },
+        "write": { "$ref": "#/$defs/surfaceValue" },
+        "edit": { "$ref": "#/$defs/surfaceValue" },
+        "grep": { "$ref": "#/$defs/surfaceValue" },
+        "find": { "$ref": "#/$defs/surfaceValue" },
+        "ls": { "$ref": "#/$defs/surfaceValue" },
+        "bash": { "$ref": "#/$defs/surfaceValue", "description": "Matched per extracted command (name + args)." },
+        "web_search": { "$ref": "#/$defs/surfaceValue" },
+        "tool": { "$ref": "#/$defs/surfaceValue", "description": "Any non-builtin (extension) tool, by name." },
+        "skill": { "$ref": "#/$defs/surfaceValue", "description": "Skills, by name (gated at /skill:<name>)." }
+      }
+    },
+    "mode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "description": "Footer label." },
+        "color": { "enum": ["muted", "mdLink", "accent", "error"], "description": "Footer label color." },
+        "systemPrompt": { "type": "string", "description": "System prompt to inject; '@plan' resolves to the dated Plan-mode prompt." },
+        "sandbox": { "$ref": "#/$defs/sandbox" },
+        "permission": { "$ref": "#/$defs/permission" },
+        "hideTools": { "type": "array", "items": { "type": "string" }, "description": "Tools hidden from the model in this mode." },
+        "bypassProtectedPaths": { "type": "boolean", "description": "Skip the .git/.env/dotfile write backstop (only trusted modes)." }
+      }
+    }
+  }
+}
