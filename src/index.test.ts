@@ -151,7 +151,15 @@ let callId = 0;
  * session_start so the config/lifecycle path runs exactly as in production
  * (minus the OS sandbox, which --no-sandbox keeps off).
  */
-async function setup(opts: { hasUI?: boolean; permFlag?: string; entries?: Array<{ type: string; customType?: string; data?: unknown }> } = {}): Promise<Harness> {
+async function setup(
+  opts: {
+    hasUI?: boolean;
+    permFlag?: string;
+    /** Simulate a parent-forwarded PI_PERMISSION_MODE. */
+    envMode?: string;
+    entries?: Array<{ type: string; customType?: string; data?: unknown }>;
+  } = {},
+): Promise<Harness> {
   const base = mkdtempSync(path.join(tmpdir(), "perm-idx-"));
   const root = path.join(base, "proj");
   const agentDir = path.join(base, "agent");
@@ -162,6 +170,7 @@ async function setup(opts: { hasUI?: boolean; permFlag?: string; entries?: Array
   const prevCwd = process.cwd();
   process.env.PI_CODING_AGENT_DIR = agentDir;
   delete process.env.PI_PERMISSION_MODE;
+  if (opts.envMode !== undefined) process.env.PI_PERMISSION_MODE = opts.envMode;
 
   const pi = new FakePi();
   pi.flags.set("no-sandbox", true);
@@ -367,6 +376,35 @@ test("no UI: asks deny instead of hanging", { skip }, async () => {
     const write = await h.call("write", { path: "x.txt" });
     assert.equal(write?.block, true);
     assert.equal(h.ctx.prompts.length, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("headless fallback: restrictive policy WITHOUT the plan prompt, not exported to children", { skip }, async () => {
+  const h = await setup({ hasUI: false });
+  try {
+    // The safety fallback is the read-only sandboxed mode (Plan) …
+    assert.equal(h.ctx.status, "Plan Mode");
+    const denied = await h.call("write", { path: "src/app.ts" });
+    assert.equal(denied?.block, true); // … and its policy fully applies
+    // … but the planning system prompt is NOT injected into the headless worker.
+    assert.equal(await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx), undefined);
+    // The implicit fallback is not forwarded as if it were an explicit choice:
+    // a grandchild derives its own fallback (and skips the prompt too).
+    assert.equal(process.env.PI_PERMISSION_MODE, undefined);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("headless child with an explicitly forwarded mode keeps its system prompt", { skip }, async () => {
+  const h = await setup({ hasUI: false, envMode: "plan" });
+  try {
+    assert.equal(h.ctx.status, "Plan Mode");
+    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(res.systemPrompt, /Plan Mode is active/); // explicit → injected
+    assert.equal(process.env.PI_PERMISSION_MODE, "plan"); // and re-exported onward
   } finally {
     h.cleanup();
   }

@@ -18,6 +18,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CI now runs `npm install` (tolerantly) so the harness executes there.
 
 ### Fixed
+- **The headless-child safety fallback no longer injects the fallback mode's
+  system prompt.** A headless child with no forwarded mode still starts in the
+  most restrictive mode (Plan, with its full policy), but Plan's planning
+  prompt — "write a plan file, ask the user to press alt+m" — is not injected
+  into a headless worker it would misdirect. The implicit fallback is also not
+  re-exported via `PI_PERMISSION_MODE` as if it were an explicit choice;
+  grandchildren derive the same safe fallback themselves. An explicitly
+  forwarded or flagged mode behaves as before, prompt included.
 - **The protected-path backstop now resolves symlinks.** `edit`/`write` targets
   are matched lexically AND on their canonical (symlink-resolved) path, so an
   in-project link pointing at `.git/`, `.env`, a shell rc file, etc. no longer

@@ -55,8 +55,11 @@ you can rely on it appropriately.
   `PI_PERMISSION_MODE` and inherited by child `pi` processes (e.g. subagents),
   which adopt it on start. A spawner that overrides the child's environment breaks
   this; as a backstop, a **headless child with no forwarded mode starts in the
-  most restrictive mode, never YOLO**. Don't rely on forwarding as a security
-  boundary — the child enforces its own modes regardless.
+  most restrictive mode, never YOLO** — with that mode's full policy but
+  *without* its system-prompt injection (a planning prompt would misdirect a
+  headless worker), and without re-exporting the fallback to its own children
+  (they derive the same fallback themselves). Don't rely on forwarding as a
+  security boundary — the child enforces its own modes regardless.
 - **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`) and macOS only.
   Windows is unsupported; the sandboxed modes degrade to prompting there.
 - **Git worktrees/submodules** can't be OS-sandboxed (bubblewrap can't bind

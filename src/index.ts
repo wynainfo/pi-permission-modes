@@ -85,6 +85,13 @@ export default async function (pi: ExtensionAPI) {
   // project tighten-only) from permission-mode.json.
   let config: PermissionModeConfig = loadStockDefaults();
   let modeName = config.defaultMode;
+  // True when the current mode was auto-picked as the headless-child safety
+  // fallback (no --perm flag, session entry, or forwarded env). The mode's
+  // POLICY fully applies, but its systemPrompt is not injected — a planning
+  // prompt steering a headless worker to write plan files and ask about alt+m
+  // would misdirect it — and the fallback isn't exported to child processes
+  // as if it were an explicit choice (children re-derive their own fallback).
+  let fallbackMode = false;
   const root = process.cwd();
 
   const currentMode = (): ModeDef => config.modes[modeName] ?? config.modes[config.defaultMode];
@@ -147,12 +154,15 @@ export default async function (pi: ExtensionAPI) {
     pi.setActiveTools(hide.size ? all.filter((n) => !hide.has(n)) : all);
   };
 
-  const setMode = async (name: string, ctx: ExtensionContext, persist = true) => {
+  const setMode = async (name: string, ctx: ExtensionContext, persist = true, viaFallback = false) => {
     if (!config.modes[name]) return;
     modeName = name;
+    fallbackMode = viaFallback;
     // Forward to child pi processes (e.g. subagents) via inherited env. The child
-    // adopts it on session_start unless an explicit --perm flag overrides.
-    process.env.PI_PERMISSION_MODE = modeName;
+    // adopts it on session_start unless an explicit --perm flag overrides. The
+    // implicit headless fallback is NOT forwarded: a child with no explicit mode
+    // derives the same safe fallback itself (and skips the systemPrompt too).
+    if (!viaFallback) process.env.PI_PERMISSION_MODE = modeName;
     const m = currentMode();
     await sandbox.applyProfile(m.sandbox); // re-init runtime if the profile changed
     applyToolVisibility();
@@ -180,9 +190,10 @@ export default async function (pi: ExtensionAPI) {
    *   1. explicit --perm flag, then 2. persisted session entry (resume),
    *   3. PI_PERMISSION_MODE env (forwarded from a parent / user-set),
    *   4. headless child with none of the above → most restrictive (never YOLO),
+   *      flagged as `fallback` (policy applies, systemPrompt is not injected),
    *   5. the current/default mode.
    */
-  const pickMode = (ctx: ExtensionContext, useFlag: boolean): string => {
+  const pickMode = (ctx: ExtensionContext, useFlag: boolean): { name: string; fallback: boolean } => {
     let resolved: string | undefined;
     if (useFlag) {
       const flag = String(pi.getFlag("perm") ?? "").toLowerCase();
@@ -198,8 +209,8 @@ export default async function (pi: ExtensionAPI) {
       const env = process.env.PI_PERMISSION_MODE;
       if (env && config.modes[env]) resolved = env;
     }
-    if (!resolved && !ctx.hasUI) resolved = safeChildMode(); // headless child, no forwarded mode
-    return resolved ?? modeName;
+    if (!resolved && !ctx.hasUI) return { name: safeChildMode(), fallback: true }; // headless child, no forwarded mode
+    return { name: resolved ?? modeName, fallback: false };
   };
 
   pi.registerShortcut("alt+m", {
@@ -282,7 +293,8 @@ export default async function (pi: ExtensionAPI) {
     if (!config.modes[modeName]) modeName = config.defaultMode;
     // Resolve the start mode BEFORE init so the sandbox initializes with the
     // right profile, then setMode reconciles status (applyProfile is a no-op).
-    modeName = pickMode(ctx, true);
+    const picked = pickMode(ctx, true);
+    modeName = picked.name;
     await sandbox.init({
       cwd: ctx.cwd,
       noSandbox: pi.getFlag("no-sandbox") === true,
@@ -290,10 +302,11 @@ export default async function (pi: ExtensionAPI) {
       notify: (m) => ctx.ui.notify(m, "warning"),
       profile: currentMode().sandbox,
     });
-    await setMode(modeName, ctx, false);
+    await setMode(picked.name, ctx, false, picked.fallback);
   });
   pi.on("session_tree", async (_event, ctx) => {
-    await setMode(pickMode(ctx, false), ctx, false);
+    const picked = pickMode(ctx, false);
+    await setMode(picked.name, ctx, false, picked.fallback);
   });
   pi.on("session_shutdown", async () => {
     approvals.clearAll(); // session-scoped grants don't outlive the session
@@ -307,11 +320,12 @@ export default async function (pi: ExtensionAPI) {
 
   // Inject the active mode's system prompt (if any). The handler runs each turn
   // and reads the live mode, so it auto-clears when the mode changes. The "@plan"
-  // sentinel resolves to the date-stamped Plan-mode prompt.
+  // sentinel resolves to the date-stamped Plan-mode prompt. A mode picked as the
+  // implicit headless fallback keeps its policy but skips the prompt injection.
   pi.on("before_agent_start", async (event) => {
     applyToolVisibility(); // keep hidden tools hidden as the tool set evolves
     const sp = currentMode().systemPrompt;
-    if (!sp) return undefined;
+    if (!sp || fallbackMode) return undefined;
     const resolved = sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp;
     return { systemPrompt: `${event.systemPrompt}\n\n${resolved}` };
   });
