@@ -120,8 +120,17 @@ const intersect = (a: string[] = [], b: string[] = []): string[] => a.filter((x)
 const isAction = (v: unknown): v is Action => v === "allow" || v === "ask" || v === "deny";
 
 /**
+ * JS objects iterate array-index-like keys ("0", "42", …) FIRST, regardless of
+ * definition order — which silently breaks the last-match-wins semantics of a
+ * pattern-map. Such keys are worth a warning (the pattern still works; only its
+ * position in the map is not what the file suggests).
+ */
+const isIndexLikeKey = (k: string): boolean => /^(0|[1-9]\d*)$/.test(k);
+
+/**
  * Clean a raw permission object: drop unknown surfaces and coerce invalid action
- * values to "deny" (fail-safe), reporting each via onError.
+ * values to "deny" (fail-safe), reporting each via onError. Warns on
+ * array-index-like pattern keys, whose iteration order JS silently front-loads.
  */
 function cleanPermission(raw: unknown, where: string, onError: OnError): Partial<Record<Surface, unknown>> {
   const out: Partial<Record<Surface, unknown>> = {};
@@ -133,10 +142,20 @@ function cleanPermission(raw: unknown, where: string, onError: OnError): Partial
     }
     const surface = key as Surface;
     if (typeof value === "string") {
-      out[surface] = isAction(value) ? value : ((onError(`permission-mode: invalid action "${value}" for ${key} in ${where}; treating as deny`), "deny") as Action);
+      if (isAction(value)) {
+        out[surface] = value;
+      } else {
+        onError(`permission-mode: invalid action "${value}" for ${key} in ${where}; treating as deny`);
+        out[surface] = "deny";
+      }
     } else if (value && typeof value === "object") {
       const map: Record<string, Action> = {};
       for (const [pat, act] of Object.entries(value as Record<string, unknown>)) {
+        if (isIndexLikeKey(pat)) {
+          onError(
+            `permission-mode: pattern "${pat}" for ${key} in ${where} is a bare number — JS reorders such keys to the FRONT of the map, so last-match-wins may not follow file order; prefix or quote it differently (e.g. "./${pat}")`,
+          );
+        }
         if (isAction(act)) map[pat] = act;
         else onError(`permission-mode: invalid action "${act}" for ${key}.${pat} in ${where}; dropping`);
       }

@@ -102,6 +102,29 @@ test("global: full authority — add a mode, redefine a built-in, change default
   s.cleanup();
 });
 
+test("warns on array-index-like pattern keys (JS front-loads their order)", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        // "777" would iterate FIRST regardless of file order, silently breaking
+        // last-match-wins; the pattern still loads, but the user is told.
+        default: { permission: { bash: { "*": "ask", "777": "deny" } } },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.ok(s.errors.some((e) => /bare number/.test(e) && /777/.test(e)));
+  assert.equal(decide(c.modes.default, "bash", "777"), "ask"); // "777" reordered before "*" — exactly the trap being warned about
+  // Non-index-like numeric-ish keys don't warn.
+  const s2 = sandbox({
+    global: { modes: { default: { permission: { bash: { "7z*": "allow", "0x*": "allow" } } } } },
+  });
+  loadModeConfig(s2.cwd, s2.agentDir, (m) => s2.errors.push(m));
+  assert.ok(!s2.errors.some((e) => /bare number/.test(e)));
+  s.cleanup();
+  s2.cleanup();
+});
+
 test("project: tighten-only — can tighten, never loosen", () => {
   const s = sandbox({
     project: {

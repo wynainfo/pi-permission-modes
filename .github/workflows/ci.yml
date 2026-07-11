@@ -25,9 +25,9 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
-    # Best-effort: the pi SDK packages are host-bundled (peerDependencies), so a
-    # bare `npm install` may not resolve their types in CI. Don't fail the build.
-    continue-on-error: true
+    # Blocking: the pi SDK peer deps resolve from the public npm registry (see
+    # package-lock.json), so type errors here are real regressions, not
+    # missing-types noise.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

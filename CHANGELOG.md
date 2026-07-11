@@ -17,6 +17,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--no-sandbox`); self-skips when the host-bundled pi SDK isn't installed.
   CI now runs `npm install` (tolerantly) so the harness executes there.
 
+### Changed
+- **CI typecheck is now blocking.** The pi SDK peer deps resolve from the
+  public npm registry, so `tsc --noEmit` failures are real regressions, not
+  missing-types noise; `continue-on-error` is gone.
+- **The config loader warns on array-index-like pattern keys** (e.g.
+  `"777": "deny"`): JS iterates such keys first regardless of file order,
+  silently breaking a pattern-map's last-match-wins semantics. The pattern
+  still loads; the warning tells the user their ordering may not be honored.
+
 ### Fixed
 - **The headless-child safety fallback no longer injects the fallback mode's
   system prompt.** A headless child with no forwarded mode still starts in the
