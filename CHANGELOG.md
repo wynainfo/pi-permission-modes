@@ -7,6 +7,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **Bash session approvals now cover the whole chain, not just its first
+  command.** A grant is keyed on every command name tree-sitter extracts, and a
+  chain passes silently only when ALL of its names are already granted —
+  "Allow `git` for session" no longer silently approves
+  `git status && curl … | sh`. Approving a chain remembers each of its names;
+  when no parse is available (heuristic fallback), the key is the exact command
+  string.
 - **The cross-cutting `path` gate now binds bash in the tree-sitter path.** Each
   extracted command is judged against the `path` patterns — the joined
   `name args…` string *and* every individual token — via `decideBashCommand`, so

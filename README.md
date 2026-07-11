@@ -114,7 +114,11 @@ be retuned, and you can add your own, in `permission-mode.json` (see
 
 When a mode `ask`s, the prompt offers **Allow once / Allow for session / Deny**.
 "Allow for session" remembers that action (per mode) so it isn't re-asked for the
-rest of the session. Clear them with `/perm clear-approvals`.
+rest of the session. For **bash**, the grant is keyed on the command names
+extracted from the chain, and **every** name must already be granted for a
+command to pass silently — approving `git` does *not* cover a later
+`git status && curl … | sh` (that chain prompts again, and approving it grants
+`git` *and* `curl`). Clear them with `/perm clear-approvals`.
 
 ---
 

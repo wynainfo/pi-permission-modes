@@ -62,6 +62,31 @@ test("askWithSession: 'Deny' (or dismiss) denies", async () => {
   assert.equal(await askWithSession(ui(true, undefined), new SessionApprovals(), "d", "bash", "x", "?"), false);
 });
 
+test("askWithSession: a target list requires EVERY entry to be granted", async () => {
+  const u = ui(true, "Allow for session");
+  const a = new SessionApprovals();
+  // Granting a chain remembers each of its command names.
+  assert.equal(await askWithSession(u, a, "default", "bash", ["git", "curl"], "?"), true);
+  assert.equal(u.calls, 1);
+  assert.equal(a.has("default", "bash", "git"), true);
+  assert.equal(a.has("default", "bash", "curl"), true);
+  // The same chain (and any subset) now passes silently.
+  assert.equal(await askWithSession(u, a, "default", "bash", ["git", "curl"], "?"), true);
+  assert.equal(await askWithSession(u, a, "default", "bash", ["git"], "?"), true);
+  assert.equal(u.calls, 1);
+  // A chain with ONE ungranted name prompts again — "allow git" must not
+  // cover `git status && rm ...`.
+  assert.equal(await askWithSession(u, a, "default", "bash", ["git", "rm"], "?"), true);
+  assert.equal(u.calls, 2);
+});
+
+test("askWithSession: an empty target list never auto-allows", async () => {
+  const u = ui(true, "Deny");
+  const a = new SessionApprovals();
+  assert.equal(await askWithSession(u, a, "default", "bash", [], "?"), false);
+  assert.equal(u.calls, 1); // prompted (and denied), not silently allowed
+});
+
 test("askWithSession: 'Allow forever' option only appears with onForever, and persists", async () => {
   // Without onForever: only three options offered.
   const u3 = ui(true, "Allow once");

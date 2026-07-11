@@ -95,12 +95,13 @@ export default async function (pi: ExtensionAPI) {
   // "Allow for session" memory, keyed per-mode.
   const approvals = new SessionApprovals();
 
-  /** Prompt to allow an `ask`, honoring session grants. Returns true to allow.
+  /** Prompt to allow an `ask`, honoring session grants (a target list requires
+   * every entry to be granted; granting remembers all). Returns true to allow.
    * When `onForever` is given, a fourth "Allow forever" option persists the rule. */
   const promptAllow = (
     ctx: ExtensionContext,
     surface: Surface,
-    target: string,
+    target: string | string[],
     title: string,
     onForever?: () => void | Promise<void>,
   ): Promise<boolean> =>
@@ -377,9 +378,14 @@ export default async function (pi: ExtensionAPI) {
       const gate = bashGate(action, analysis.outsideReason, m.sandbox.enabled, sandbox.ready);
       if (gate.kind === "block") return { block: true, reason: gate.reason };
       if (gate.kind === "prompt") {
-        // Key session approval on the first command name ("allow git this session").
-        const key = analysis.commands[0]?.name || command;
-        if (!(await promptAllow(ctx, "bash", key, gate.title))) return { block: true, reason: gate.reason };
+        // Session approvals are keyed on the extracted command names, and ALL
+        // names in a chain must be granted for it to pass silently — "allow git
+        // this session" must not cover `git status && curl ... | sh`. Granting
+        // remembers every name in the chain. Without a parse (heuristic
+        // fallback), the key is the exact command string.
+        const names = [...new Set(analysis.commands.map((c) => c.name).filter(Boolean))];
+        const keys = names.length > 0 ? names : [command];
+        if (!(await promptAllow(ctx, "bash", keys, gate.title))) return { block: true, reason: gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }
       return undefined;
