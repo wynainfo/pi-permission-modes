@@ -36,7 +36,7 @@
  *   show-plan.ts    show_plan tool   plan-render.ts  its renderer
  *
  * Install (see README.md):
- *   pi install github.com/wynainfo/pi-permission-modes
+ *   pi install git:github.com/wynainfo/pi-permission-modes
  *   Linux also needs: bubblewrap, socat, ripgrep
  */
 

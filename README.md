@@ -18,7 +18,7 @@ to hack on it.
 ## Install
 
 ```bash
-pi install github.com/wynainfo/pi-permission-modes
+pi install git:github.com/wynainfo/pi-permission-modes
 ```
 
 `pi install` clones the package and runs `npm install` for you, so
@@ -271,7 +271,7 @@ Add a mode under `modes` in the global config and (optionally) list it in
 
 - Temporarily: launch pi with `--no-extensions` (disables all), or `--no-sandbox`
   to keep the modes but drop OS sandboxing.
-- Permanently: `pi remove github.com/wynainfo/pi-permission-modes` (or
+- Permanently: `pi remove git:github.com/wynainfo/pi-permission-modes` (or
   remove the entry from your pi settings).
 
 ---
