@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **End-to-end dispatcher tests** (`src/index.test.ts`): a fake `pi`/`ctx`
+  harness drives the real registered handlers — prompt flows and blocks per
+  mode, bash session grants across chains, Plan-mode Markdown gating and
+  prompt injection, "Allow forever" persistence + hot-reload, skill/input
+  gating, startup mode resolution (`--perm` flag, session-entry restore),
+  `alt+m` cycling, `/perm init`, and the project tighten-only overlay.
+  Hermetic (temp project root + `PI_CODING_AGENT_DIR` temp agent dir,
+  `--no-sandbox`); self-skips when the host-bundled pi SDK isn't installed.
+  CI now runs `npm install` (tolerantly) so the harness executes there.
+
 ### Fixed
 - **The protected-path backstop now resolves symlinks.** `edit`/`write` targets
   are matched lexically AND on their canonical (symlink-resolved) path, so an

@@ -13,8 +13,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      # The unit suite is SDK-free (pure modules + node:test), so it needs no
-      # install — it runs against Node's built-in TypeScript stripping.
+      # The pure-module tests need no install; the index.test.ts dispatcher
+      # harness needs the pi SDK (a registry-resolvable peer dep) and skips
+      # itself when the SDK is absent. Install so the full suite runs, but a
+      # registry hiccup must not mask the SDK-free tests: on install failure
+      # the suite still runs (the harness skips).
+      - name: Install
+        run: npm install || echo "install failed - SDK-dependent tests will skip"
       - name: Test
         run: node --test ./src/*.test.ts
 
