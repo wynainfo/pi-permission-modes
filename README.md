@@ -1,5 +1,8 @@
 # pi-permission-modes
 
+[![CI](https://github.com/wynainfo/pi-permission-modes/actions/workflows/ci.yml/badge.svg)](https://github.com/wynainfo/pi-permission-modes/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Switchable, **user-definable** permission modes for the [pi](https://pi.dev)
 coding agent. Each mode is a JSON bundle of an **OS-level sandbox profile**
 (bubblewrap / `sandbox-exec`) plus an **allow / ask / deny policy** across every
@@ -9,7 +12,7 @@ skills). Bash gating uses a real **tree-sitter** AST, not a regex.
 Four modes ship by default — **Default → Plan Mode → Build → YOLO** — and you can
 retune them or add your own in `permission-mode.json`.
 
-`License: MIT` · see [SECURITY.md](SECURITY.md) for the threat model,
+See [SECURITY.md](SECURITY.md) for the threat model,
 [CHANGELOG.md](CHANGELOG.md) for releases, and [CONTRIBUTING.md](CONTRIBUTING.md)
 to hack on it.
 
@@ -284,9 +287,3 @@ Add a mode under `modes` in the global config and (optionally) list it in
   to keep the modes but drop OS sandboxing.
 - Permanently: `pi remove git:github.com/wynainfo/pi-permission-modes` (or
   remove the entry from your pi settings).
-
----
-
-## License
-
-[MIT](LICENSE) © Nico Merz
