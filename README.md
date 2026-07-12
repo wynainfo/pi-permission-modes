@@ -40,8 +40,8 @@ sudo apt install -y bubblewrap socat ripgrep
 
 - `bubblewrap` — provides the `bwrap` binary that confines bash (the package is
   `bubblewrap`, the executable is `bwrap`).
-- `socat` — network filtering; without it the sandbox fails to init and Build
-  falls back to prompting.
+- `socat` — network filtering; without it the sandbox fails to init and the
+  sandboxed modes fall back to prompting.
 - `ripgrep` — provides `rg`.
 
 On **macOS** the sandbox uses the built-in `sandbox-exec` — no extra packages.
@@ -73,10 +73,18 @@ be retuned, and you can add your own, in `permission-mode.json` (see
 
 | Mode | Behavior |
 |------|----------|
-| **Default** | Confirm every `bash`/`edit`/`write`. Approved **in-project** `bash` runs **sandboxed** (writes confined to the project); approved **out-of-project** access runs **unsandboxed**. Writes to protected paths are hard-blocked. |
-| **Plan Mode** | Planning mode. Reads are free; in-project `bash` runs **sandboxed read-only** (writes/deletes fail), so only read commands effectively work. The one mutation allowed without confirmation is **creating/editing Markdown** (`*.md`/`*.markdown`) inside the project — other `edit`/`write` are blocked. Any out-of-project access prompts. A system-prompt addition steers the model: for a planning task, write the plan to `plan/<YYYY-MM-DD>_<description>.md`, render it for review with the **`show_plan`** tool, then ask you to switch to Build to apply it. |
-| **Build** | All reads/writes/`bash` **inside the project** run with no confirmation; in-project `bash` runs **sandboxed**. Prompts only when a tool touches a path **outside** the project, or `bash` escalates privileges (`su`/`sudo`/`doas`/`pkexec`/`runuser`/`setpriv`/`chroot`). Approved out-of-project commands run **unsandboxed**. Writes to protected paths are hard-blocked. |
-| **YOLO** | Never prompts, never sandboxes. Can do anything the current user can. |
+| **Default** | Confirm every `bash`/`edit`/`write`; reads are free. Approved **in-project** `bash` runs **sandboxed** (writes confined to the project). |
+| **Plan Mode** | Planning mode. Reads are free; in-project `bash` runs **sandboxed read-only** (writes/deletes fail), so only read commands effectively work. The one mutation allowed without confirmation is **creating/editing Markdown** (`*.md`/`*.markdown`) inside the project — other `edit`/`write` are blocked. A system-prompt addition steers the model: for a planning task, write the plan to `plan/<YYYY-MM-DD>_<description>.md`, render it for review with the **`show_plan`** tool, then ask you to switch to Build to apply it. |
+| **Build** | Reads, writes, and `bash` **inside the project** run with no confirmation; in-project `bash` runs **sandboxed**. |
+| **YOLO** | Never prompts, never sandboxes, no protected-path backstop. Can do anything the current user can. |
+
+In every mode except YOLO: **out-of-project** access prompts; `bash` that
+reaches outside the project or **escalates privileges**
+(`su`/`sudo`/`doas`/`pkexec`/`runuser`/`setpriv`/`chroot` — detected even
+through wrappers like `env`/`nice`/`xargs` and `bash -c '…'` scripts) prompts,
+and runs **unsandboxed** once you approve it; and `edit`/`write` to
+**protected paths** (`.git/`, `.env`, dotfiles, … — see
+[below](#how-protection-works)) are hard-blocked.
 
 > **When the sandbox is unavailable** (missing dependency, init failure,
 > `--no-sandbox`, or the project is a **git worktree/submodule** — see below):
@@ -129,16 +137,17 @@ Two independent layers compose:
 1. **Policy engine** (`allow` / `ask` / `deny`): every tool call resolves against
    the active mode's policy for its surface (`bash`, `read`/`write`/`edit`/…, the
    cross-cutting `path` gate, `external_directory`, `web_search`, `tool`,
-   `skill`). `deny` blocks, `ask` prompts, `allow` passes. For **bash**, the
-   command is parsed with **tree-sitter** (real AST) so each command — including
-   those nested in `$(...)`, backticks, subshells, and `sh|bash|… -c '…'`
-   scripts (re-parsed recursively) — is matched against the `bash` patterns
-   **and** the cross-cutting `path` gate (against the joined command and each
-   individual token, so `"path": { "*.env": "deny" }` blocks `cat .env` wherever
-   the target appears), and out-of-project paths / privilege escalation are
-   detected structurally — including through wrapper commands (`env sudo …`,
-   `nice -n 10 sudo …`, `xargs sudo …`). If the tree-sitter grammar can't load, it falls back to the
-   original regex heuristic (`bashConfirmReason`) — never worse than before.
+   `skill`). `deny` blocks, `ask` prompts, `allow` passes.
+   For **bash**, the command line is parsed with **tree-sitter** (a real AST)
+   and every command it contains — including ones nested in `$(...)`, backticks,
+   subshells, and `sh|bash|… -c '…'` scripts (re-parsed recursively) — is judged
+   separately: matched against the `bash` patterns **and** the `path` gate
+   (against the joined command and each individual token, so
+   `"path": { "*.env": "deny" }` blocks `cat .env` wherever the target appears),
+   with out-of-project paths and privilege escalation (even through wrappers
+   like `env`/`nice`/`xargs`) detected structurally. If the tree-sitter grammar
+   can't load, a whole-string token-scan heuristic stands in (see
+   [SECURITY.md](SECURITY.md) for its limits).
 2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`): the real enforcement for
    bash. When a mode's `sandbox.enabled` is true, in-project bash runs wrapped by
    `sandbox-exec` (macOS) / `bubblewrap` (Linux), confining **writes** to the
@@ -148,16 +157,15 @@ Two independent layers compose:
    (YOLO) runs it unsandboxed.
 
 So a `bash` command that policy says `allow` still runs **sandboxed**; `ask`
-prompts then runs sandboxed (or unsandboxed for an out-of-project escape you
-approve); `deny` never runs. If the sandbox is unavailable, the sandboxed modes
-fall back to **prompting** for in-project bash and the footer shows a warning, so
-you're never silently under-protected.
+prompts, then runs sandboxed — or **unsandboxed** for an out-of-project escape
+or privilege escalation you approve, since you authorized it; `deny` never runs.
 
 > Note: only the model's `bash` tool is OS-sandboxed. File tools (`read`/`edit`/
 > `write`/…) are governed by the policy engine and the path checks, not bubblewrap
 > — which is why the Plan-mode Markdown-only rule and the protected-path backstop
-> are enforced at the tool layer. Commands you explicitly approve, and everything
-> in a non-sandboxing mode (YOLO), run **unsandboxed** since you authorized them.
+> are enforced at the tool layer. Reads inside the sandbox stay broad (only
+> `denyRead` secrets are blocked at the kernel), and a non-sandboxing mode (YOLO)
+> confines nothing. [SECURITY.md](SECURITY.md) has the full threat model.
 
 **Tool hiding.** A mode's `hideTools` list removes those tools from the model
 *before* it reasons (via the active-tools allowlist), so it never attempts them.
@@ -181,13 +189,6 @@ past the backstop). The set mirrors the sandbox-runtime mandatory-deny list: `.g
 `node_modules/`, `.vscode/`, `.idea/`, `.env`/`.env.*`, `.claude/{commands,agents}/`,
 and common dotfiles (`.bashrc`, `.zshrc`, `.profile`, `.gitconfig`, `.npmrc`, …).
 This matters most in Build, where file tools aren't OS-sandboxed.
-
-**Residual risk you should know about.** Bash gating uses a real AST when
-available, but the OS sandbox remains the hard boundary: an approved
-out-of-project command runs *unsandboxed*, and a non-sandboxing mode (YOLO) never
-confines anything. Reads inside the sandbox stay broad (only `denyRead` secrets
-are blocked at the kernel). Treat YOLO and explicitly-approved out-of-project
-commands as fully trusted. See [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -216,7 +217,7 @@ Modes are data, layered in this order:
   "defaultMode": "default",
   "cycleOrder": ["default", "plan", "build", "yolo"],
   "modes": {
-    "default": {
+    "default": {                        // values here are illustrative — run /perm init for the real defaults
       "label": "Default",
       "color": "muted",                 // muted | mdLink | accent | error
       "systemPrompt": "@plan",          // optional; "@plan" = the dated Plan-mode prompt

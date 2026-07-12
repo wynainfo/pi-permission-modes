@@ -30,9 +30,10 @@ you can rely on it appropriately.
 - **Reads are deny-listed, not allow-listed.** The sandbox blocks out-of-project
   *writes* at the kernel, but reads stay broad (so build tools work) except for
   the configured `denyRead` secrets. An out-of-project **read** in bash is gated
-  only by the heuristic prompt — if the heuristic misses it, the sandbox allows
-  the read. Treat the project-boundary for reads as best-effort, and the
-  `denyRead` list (`~/.ssh`, `~/.aws`, `~/.gnupg` by default) as the hard guard.
+  only by the AST/heuristic prompt layer — if detection misses it (e.g. a
+  variable-built path), the sandbox allows the read. Treat the project boundary
+  for reads as best-effort, and the `denyRead` list (`~/.ssh`, `~/.aws`,
+  `~/.gnupg` by default) as the hard guard.
 - **File tools aren't OS-sandboxed.** `read`/`edit`/`write`/… are governed by the
   policy engine and path checks (out-of-project prompt, protected-path backstop,
   per-surface allow/ask/deny), not bubblewrap.
@@ -67,8 +68,8 @@ you can rely on it appropriately.
 
 ## Reporting a vulnerability
 
-Please report security issues privately via the repository's
-[issue tracker](https://github.com/wynainfo/pi-permission-modes/issues)
-(or, for sensitive reports, by email to the maintainer) rather than opening a
-public issue with exploit details. Include the mode, platform, and a minimal
-reproduction.
+Please report security issues **by email to the maintainer** (address in
+[`package.json`](package.json)) — GitHub issues are public, so don't open one
+with exploit details. Include the mode, platform, and a minimal reproduction.
+Non-sensitive hardening ideas are welcome as regular
+[issues](https://github.com/wynainfo/pi-permission-modes/issues).
