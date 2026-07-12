@@ -9,3 +9,7 @@ sandbox.json
 *.local.json
 *.log
 .DS_Store
+
+# Demo videos: the gallery video is hosted as a GitHub release asset
+# (package.json pi.video), not in the repo
+*.mp4
