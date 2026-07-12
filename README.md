@@ -20,13 +20,27 @@ to hack on it.
 
 ## Install
 
+From npm (recommended):
+
+```bash
+pi install npm:pi-permission-modes
+```
+
+or straight from GitHub:
+
 ```bash
 pi install git:github.com/wynainfo/pi-permission-modes
 ```
 
-`pi install` clones the package and runs `npm install` for you, so
-`@anthropic-ai/sandbox-runtime` is fetched automatically; the pi SDK is provided
-by the host. To try it without adding it to your config, run it directly from a
+`pi install` fetches the package and runs `npm install` for you, so
+`@anthropic-ai/sandbox-runtime` comes along automatically; the pi SDK is
+provided by the host. Useful variants:
+
+- `pi install npm:pi-permission-modes@2.1.1` — pin a version (`pi update` won't advance it)
+- `pi install -l npm:pi-permission-modes` — project-local install (`.pi/npm/`, shareable with your team)
+- `pi update --extensions` — pull the latest release later
+
+To try it without adding it to your config, run it directly from a
 clone:
 
 ```bash
@@ -285,5 +299,6 @@ Add a mode under `modes` in the global config and (optionally) list it in
 
 - Temporarily: launch pi with `--no-extensions` (disables all), or `--no-sandbox`
   to keep the modes but drop OS sandboxing.
-- Permanently: `pi remove git:github.com/wynainfo/pi-permission-modes` (or
-  remove the entry from your pi settings).
+- Permanently: `pi remove npm:pi-permission-modes` (or
+  `git:github.com/wynainfo/pi-permission-modes`, matching how you installed
+  it) — or remove the entry from your pi settings.

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1]
+
+### Added
+- Published to npm: `pi install npm:pi-permission-modes` is now the primary
+  install method (README updated with pinning, project-local install, and
+  update commands).
+- pi.dev gallery demo video (`pi.video` in package.json), hosted as a GitHub
+  release asset.
+
+### Changed
+- README: CI + MIT badges; deduplicated mode table and protection sections;
+  stale claims fixed across README/SECURITY/CONTRIBUTING (see the docs-cleanup
+  commits).
+
 ## [2.1.0]
 
 Hardening release: the six findings from a full code review, each with tests.

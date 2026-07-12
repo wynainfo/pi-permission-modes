@@ -1,6 +1,6 @@
 {
   "name": "pi-permission-modes",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "type": "module",
   "description": "Declarative, user-definable permission modes for the pi coding agent: OS-level sandboxing (bubblewrap / sandbox-exec), an allow/ask/deny policy engine, real bash AST gating (tree-sitter), tool hiding, and skill/custom-tool gating.",
   "license": "MIT",
