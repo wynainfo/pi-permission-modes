@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Project-local tighten-only configuration can no longer change
+  `sandbox.enabled`; in particular, it cannot disable containment inherited
+  from the stock or global policy.
+- Unsandboxed modes now continue to honor explicit `bash:ask` and `bash:deny`
+  policy. YOLO remains non-interactive because its bash policy explicitly
+  resolves to `allow`.
+- Added loader and end-to-end dispatcher regressions for both paths.
+
 ## [2.1.1]
 
 ### Added

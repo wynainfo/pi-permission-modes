@@ -47,9 +47,13 @@ you can rely on it appropriately.
   prompt, not a filesystem escape.
 - **Project configs can only tighten.** A `<project>/.pi/permission-mode.json` is
   applied as a most-restrictive overlay (it can add `ask`/`deny`, never loosen)
-  and its sandbox is intersected/unioned stricter. It cannot add modes, widen the
-  network allowlist, or re-enable secret reads. Opening an untrusted repo can't
-  weaken your protection.
+  and its sandbox is intersected/unioned stricter. It cannot change
+  `sandbox.enabled`, add modes, widen the network allowlist, or re-enable secret
+  reads. Opening an untrusted repo can't weaken your protection.
+- **Sandbox and policy are independent.** A mode with `sandbox.enabled:false`
+  still honors its explicit bash policy. `bash:ask` prompts before an
+  unsandboxed command and `bash:deny` blocks it. YOLO runs silently because its
+  policy explicitly says `bash:allow`, not merely because containment is off.
 - **Network is a domain allowlist**, not traffic inspection — allowing a broad
   domain permits exfiltration to it. Keep the allowlist tight.
 - **Subagent forwarding is best-effort.** The active mode is exported as

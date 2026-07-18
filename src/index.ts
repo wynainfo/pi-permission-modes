@@ -371,10 +371,19 @@ export default async function (pi: ExtensionAPI) {
     // Bash.
     if (toolName === "bash") {
       const command = String(input.command ?? "");
-      // Fast path: non-sandboxing modes (YOLO) never prompt/confine — skip parsing.
+      // Fast path: non-sandboxing modes skip AST escape analysis, but still
+      // honor their explicit bash policy. YOLO remains silent because its
+      // policy is `allow`; an unsandboxed `ask` mode must still prompt.
       if (!m.sandbox.enabled) {
         const gate = bashGate(decide(m, "bash", command), undefined, false, sandbox.ready);
         if (gate.kind === "block") return { block: true, reason: gate.reason };
+        if (gate.kind === "prompt") {
+          // Without an AST parse, scope a session grant to the exact command.
+          if (!(await promptAllow(ctx, "bash", command, gate.title))) {
+            return { block: true, reason: gate.reason };
+          }
+          if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
+        }
         return undefined;
       }
       // Real AST when available: judge each (possibly nested) command against the

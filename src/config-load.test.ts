@@ -129,7 +129,8 @@ test("project: tighten-only — can tighten, never loosen", () => {
   const s = sandbox({
     project: {
       modes: {
-        default: { permission: { bash: "deny", write: "allow" }, sandbox: { writable: false } },
+        default: { permission: { bash: "deny", write: "allow" }, sandbox: { enabled: false, writable: false } },
+        yolo: { sandbox: { enabled: true } },
       },
     },
   });
@@ -138,8 +139,31 @@ test("project: tighten-only — can tighten, never loosen", () => {
   assert.equal(decide(c.modes.default, "bash", "ls"), "deny");
   // write ask + project "allow": most-restrictive overlay can't loosen → stays ask.
   assert.equal(decide(c.modes.default, "write", "x.ts"), "ask");
+  // A project cannot disable globally enabled containment.
+  assert.equal(c.modes.default.sandbox.enabled, true);
+  assert.ok(s.errors.some((e) => /cannot change sandbox\.enabled.*false/.test(e)));
+  // Project config also cannot create a new runtime profile by enabling a
+  // globally unsandboxed mode.
+  assert.equal(c.modes.yolo.sandbox.enabled, false);
+  assert.ok(s.errors.some((e) => /cannot change sandbox\.enabled.*true/.test(e)));
   // sandbox writable forced off.
   assert.equal(c.modes.default.sandbox.writable, false);
+  s.cleanup();
+});
+
+test("project: repeating inherited sandbox.enabled is a silent no-op", () => {
+  const s = sandbox({
+    project: {
+      modes: {
+        default: { sandbox: { enabled: true } },
+        yolo: { sandbox: { enabled: false } },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.modes.default.sandbox.enabled, true);
+  assert.equal(c.modes.yolo.sandbox.enabled, false);
+  assert.ok(!s.errors.some((e) => /sandbox\.enabled/.test(e)));
   s.cleanup();
 });
 

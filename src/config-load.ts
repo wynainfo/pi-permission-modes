@@ -206,7 +206,14 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
 
 function tightenSandbox(base: SandboxProfile, over: Partial<SandboxProfile>, onError: OnError): SandboxProfile {
   const result: SandboxProfile = { ...base, network: { ...base.network } };
-  if (over.enabled === false) result.enabled = false; // can disable, never re-enable
+  // Project overlays cannot change whether a mode is sandboxed. In particular,
+  // they must never disable containment, and allowing them to enable a sparse
+  // globally-unsandboxed profile would create a surprising, potentially
+  // incomplete runtime configuration. Repeating the inherited value is a
+  // harmless no-op; changing it is ignored with a warning.
+  if (over.enabled !== undefined && over.enabled !== base.enabled) {
+    onError(`permission-mode: project config cannot change sandbox.enabled; ignoring sandbox.enabled=${over.enabled}`);
+  }
   if (over.writable === false) result.writable = false; // can force read-only, never re-enable writes
   if (over.allowWrite !== undefined) result.allowWrite = intersect(base.allowWrite, over.allowWrite);
   if (over.denyRead !== undefined) result.denyRead = union(base.denyRead, over.denyRead);

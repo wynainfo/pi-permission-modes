@@ -473,3 +473,54 @@ test("project config tightens a mode through the dispatcher", { skip }, async ()
     h.cleanup();
   }
 });
+
+test("project config cannot disable sandboxing or suppress Default bash prompts", { skip }, async () => {
+  const h = await setup();
+  try {
+    const piDir = path.join(h.root, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    const project = { modes: { default: { sandbox: { enabled: false } } } };
+    writeFileSync(path.join(piDir, "permission-mode.json"), JSON.stringify(project));
+    await h.pi.emit("session_start", {}, h.ctx);
+
+    assert.match(h.ctx.notices.join("\n"), /cannot change sandbox\.enabled/);
+    h.ctx.answers.push("Deny");
+    const denied = await h.call("bash", { command: "touch owned" });
+    assert.equal(denied?.block, true);
+    assert.equal(h.ctx.prompts.length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("custom unsandboxed mode still honors bash ask", { skip }, async () => {
+  const h = await setup();
+  try {
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      JSON.stringify({
+        defaultMode: "confirm-unsandboxed",
+        cycleOrder: ["confirm-unsandboxed"],
+        modes: {
+          "confirm-unsandboxed": {
+            label: "Confirm unsandboxed",
+            color: "error",
+            sandbox: { enabled: false, writable: true },
+            permission: { bash: "ask" },
+          },
+        },
+      }),
+    );
+    await h.pi.emit("session_start", {}, h.ctx);
+    await h.perm("confirm-unsandboxed");
+
+    h.ctx.answers.push("Deny");
+    const denied = await h.call("bash", { command: "touch owned" });
+    assert.equal(denied?.block, true);
+    assert.match(h.ctx.prompts[0]?.title ?? "", /will run unsandboxed/);
+  } finally {
+    h.cleanup();
+  }
+});

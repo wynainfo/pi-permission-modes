@@ -39,7 +39,8 @@ export interface BashGate {
  * @param sandboxReady   whether the OS sandbox is initialized and usable
  *
  * Parity with the old decideBash:
- *   - sandbox disabled (YOLO)            → allow (runs unsandboxed via execPlan)
+ *   - sandbox disabled, action=allow     → allow (runs unsandboxed via execPlan)
+ *   - sandbox disabled, action=ask       → prompt, unsandboxed on approval
  *   - escape / privilege (any other mode)→ prompt, unsandboxed on approval
  *   - in-project but sandbox down        → prompt "sandbox unavailable", unsandboxed
  *   - in-project, ready, action=allow    → allow (runs sandboxed via execPlan)
@@ -62,8 +63,15 @@ export function bashGate(
   // A hard deny blocks regardless of sandbox state.
   if (action === "deny") return gate("block", "", "bash command denied by policy", false);
 
-  // Sandbox disabled (YOLO-class): never prompt, never confine.
-  if (!sandboxEnabled) return gate("allow", "", "", false);
+  // Disabling containment must not silently disable the policy layer. YOLO
+  // still passes here because its explicit bash policy resolves to `allow`;
+  // a custom unsandboxed mode with `ask` continues to require confirmation.
+  if (!sandboxEnabled) {
+    if (action === "ask") {
+      return gate("prompt", "Allow bash? (sandbox disabled; command will run unsandboxed)", "bash blocked", true);
+    }
+    return gate("allow", "", "", false);
+  }
 
   // Out-of-project / privilege escalation: prompt, run unsandboxed once approved
   // (the sandbox would block a genuine escape anyway).

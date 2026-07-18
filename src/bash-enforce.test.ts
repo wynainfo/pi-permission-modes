@@ -4,11 +4,14 @@ import { type BashGate, bashExecPlan, bashGate } from "./bash-enforce.ts";
 
 const OUTSIDE = "path outside project: /etc/passwd";
 
-test("bashGate: sandbox disabled (YOLO) always allows, never prompts", () => {
+test("bashGate: sandbox disabled still honors allow/ask policy", () => {
   for (const ready of [true, false]) {
     assert.equal(bashGate("allow", undefined, false, ready).kind, "allow");
     assert.equal(bashGate("allow", OUTSIDE, false, ready).kind, "allow"); // even an escape
-    assert.equal(bashGate("ask", undefined, false, ready).kind, "allow");
+    const ask = bashGate("ask", undefined, false, ready);
+    assert.equal(ask.kind, "prompt");
+    assert.equal(ask.onApproveUnsandboxed, true);
+    assert.match(ask.title, /sandbox disabled/);
   }
 });
 
