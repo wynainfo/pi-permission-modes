@@ -77,3 +77,8 @@ Please report security issues **by email to the maintainer** (address in
 with exploit details. Include the mode, platform, and a minimal reproduction.
 Non-sensitive hardening ideas are welcome as regular
 [issues](https://github.com/wynainfo/pi-permission-modes/issues).
+
+## Acknowledgements
+
+- **Sandbox/policy downgrade via project config** (fixed in 2.1.2) — reported
+  by Magnus Gille (https://gille.ai/).

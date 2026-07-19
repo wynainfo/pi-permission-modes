@@ -4,16 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.2]
 
 ### Security
-- Project-local tighten-only configuration can no longer change
-  `sandbox.enabled`; in particular, it cannot disable containment inherited
-  from the stock or global policy.
-- Unsandboxed modes now continue to honor explicit `bash:ask` and `bash:deny`
-  policy. YOLO remains non-interactive because its bash policy explicitly
-  resolves to `allow`.
-- Added loader and end-to-end dispatcher regressions for both paths.
+- **Project config could disable the sandbox and suppress bash prompts.** A
+  repository-controlled `.pi/permission-mode.json` could set
+  `sandbox.enabled:false` on an inherited-sandboxed mode (Default/Build);
+  combined with the non-sandbox bash fast path treating a disabled sandbox as
+  YOLO-class, this ran the next bash command unsandboxed with no confirmation —
+  defeating the "opening an untrusted repo can't weaken your protection"
+  guarantee. Affected 2.0.0–2.1.1. Two fixes: project-local tighten-only config
+  can no longer change `sandbox.enabled` (it cannot disable containment
+  inherited from stock/global policy), and unsandboxed modes now honor explicit
+  `bash:ask`/`bash:deny` policy (YOLO stays non-interactive only because its
+  bash policy explicitly resolves to `allow`). Loader and end-to-end dispatcher
+  regressions added for both paths.
+
+  Reported by Magnus Gille (https://gille.ai/).
 
 ## [2.1.1]
 
