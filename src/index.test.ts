@@ -210,7 +210,8 @@ async function setup(
 test("default mode: reads free, writes prompt, protected paths hard-block", { skip }, async () => {
   const h = await setup();
   try {
-    assert.equal(h.ctx.status, "Default");
+    // Footer: mode label + shortcut hints + network state (open here: --no-sandbox).
+    assert.match(h.ctx.status, /^Default \(alt\+m\)  Network: open$/);
 
     // Reads pass silently.
     assert.equal(await h.call("read", { path: "src/app.ts" }), undefined);
@@ -258,7 +259,7 @@ test("plan mode: Markdown-only writes, plan prompt injected, show_plan stays vis
   const h = await setup();
   try {
     await h.perm("plan");
-    assert.equal(h.ctx.status, "Plan Mode");
+    assert.match(h.ctx.status, /^Plan Mode /);
 
     // Markdown in-project: silent allow. Code: deny with the friendly reason.
     assert.equal(await h.call("write", { path: "plan/2026-07-11_x.md" }), undefined);
@@ -287,7 +288,7 @@ test("yolo: never prompts, never blocks, protected paths bypassed", { skip }, as
   const h = await setup();
   try {
     await h.perm("yolo");
-    assert.equal(h.ctx.status, "YOLO");
+    assert.match(h.ctx.status, /^YOLO /);
     assert.equal(await h.call("bash", { command: "sudo rm -rf /" }), undefined);
     assert.equal(await h.call("edit", { path: ".env" }), undefined);
     assert.equal(await h.call("write", { path: ".git/config" }), undefined);
@@ -391,7 +392,7 @@ test("headless fallback: restrictive policy WITHOUT the plan prompt, not exporte
   const h = await setup({ hasUI: false });
   try {
     // The safety fallback is the read-only sandboxed mode (Plan) …
-    assert.equal(h.ctx.status, "Plan Mode");
+    assert.match(h.ctx.status, /^Plan Mode /);
     const denied = await h.call("write", { path: "src/app.ts" });
     assert.equal(denied?.block, true); // … and its policy fully applies
     // … but the planning system prompt is NOT injected into the headless
@@ -411,7 +412,7 @@ test("headless fallback: restrictive policy WITHOUT the plan prompt, not exporte
 test("headless child with an explicitly forwarded mode keeps its system prompt", { skip }, async () => {
   const h = await setup({ hasUI: false, envMode: "plan" });
   try {
-    assert.equal(h.ctx.status, "Plan Mode");
+    assert.match(h.ctx.status, /^Plan Mode /);
     const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
     assert.match(res.systemPrompt, /Plan Mode is active/); // explicit → injected
     assert.equal(process.env.PI_PERMISSION_MODE, "plan"); // and re-exported onward
@@ -423,14 +424,14 @@ test("headless child with an explicitly forwarded mode keeps its system prompt",
 test("startup: --perm flag wins; a persisted session entry restores the mode", { skip }, async () => {
   const flagged = await setup({ permFlag: "yolo" });
   try {
-    assert.equal(flagged.ctx.status, "YOLO");
+    assert.match(flagged.ctx.status, /^YOLO /);
   } finally {
     flagged.cleanup();
   }
 
   const resumed = await setup({ entries: [{ type: "custom", customType: "perm-mode", data: { mode: "build" } }] });
   try {
-    assert.equal(resumed.ctx.status, "Build");
+    assert.match(resumed.ctx.status, /^Build /);
   } finally {
     resumed.cleanup();
   }
@@ -440,10 +441,10 @@ test("alt+m cycles modes and persists the choice as a session entry", { skip }, 
   const h = await setup();
   try {
     await h.pi.shortcuts.get("alt+m")!(h.ctx);
-    assert.equal(h.ctx.status, "Plan Mode"); // default → plan (cycleOrder)
+    assert.match(h.ctx.status, /^Plan Mode /); // default → plan (cycleOrder)
     assert.deepEqual(h.pi.entries.at(-1), { customType: "perm-mode", data: { mode: "plan" } });
     await h.pi.shortcuts.get("alt+m")!(h.ctx);
-    assert.equal(h.ctx.status, "Build");
+    assert.match(h.ctx.status, /^Build /);
   } finally {
     h.cleanup();
   }
@@ -530,6 +531,40 @@ test("custom unsandboxed mode still honors bash ask", { skip }, async () => {
     const denied = await h.call("bash", { command: "touch owned" });
     assert.equal(denied?.block, true);
     assert.match(h.ctx.prompts[0]?.title ?? "", /will run unsandboxed/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("network: /net allow + status, request tool degrades gracefully, alt+n informs", { skip }, async () => {
+  const h = await setup();
+  try {
+    // Degraded (--no-sandbox): nothing filters — the tool says so instead of prompting.
+    const tool = h.pi.tools.get("request_network_access") as unknown as {
+      execute: (id: string, p: unknown, s?: unknown, u?: unknown, ctx?: unknown) => Promise<{ content: Array<{ text: string }> }>;
+    };
+    const res = await tool.execute("t-net", { domains: ["api.example.com"], reason: "testing" }, undefined, undefined, h.ctx);
+    assert.match(res.content[0].text, /not filtered/);
+    assert.equal(h.ctx.prompts.length, 0);
+
+    // /net allow normalizes and records session grants; /net status reports them.
+    await h.pi.commands.get("net")!("allow api.example.com https://svc.io/health", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /allowed for this session: api\.example\.com, svc\.io/);
+    await h.pi.commands.get("net")!("", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /Session grants: api\.example\.com, svc\.io/);
+
+    // Overly-broad patterns are rejected outright.
+    await h.pi.commands.get("net")!("allow *", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /usage: \/net allow/);
+
+    // alt+n with nothing enforcing explains itself instead of silently toggling.
+    await h.pi.shortcuts.get("alt+n")!(h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /not filtered in this mode\/state/);
+
+    // /net reset clears the grants.
+    await h.pi.commands.get("net")!("reset", h.ctx);
+    await h.pi.commands.get("net")!("status", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /Session grants: \(none\)/);
   } finally {
     h.cleanup();
   }

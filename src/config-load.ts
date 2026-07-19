@@ -215,6 +215,7 @@ function tightenSandbox(base: SandboxProfile, over: Partial<SandboxProfile>, onE
     onError(`permission-mode: project config cannot change sandbox.enabled; ignoring sandbox.enabled=${over.enabled}`);
   }
   if (over.writable === false) result.writable = false; // can force read-only, never re-enable writes
+  if (over.askOnBlockedHost === false) result.askOnBlockedHost = false; // silent-deny is stricter than asking
   if (over.allowWrite !== undefined) result.allowWrite = intersect(base.allowWrite, over.allowWrite);
   if (over.denyRead !== undefined) result.denyRead = union(base.denyRead, over.denyRead);
   if (over.denyWrite !== undefined) result.denyWrite = union(base.denyWrite, over.denyWrite);
@@ -310,6 +311,44 @@ export function loadModeConfig(cwd: string, agentDir: string, onError: OnError =
   const project = parseConfigFile(projectPath, onError);
   if (project) applyProject(config, project, onError);
   return config;
+}
+
+/**
+ * Persist "allow forever" network domains for a mode to the global config.
+ *
+ * mergeGlobal replaces a mode's `network` object wholesale, so the WHOLE
+ * effective allowlist must be written, not just the new entries. The base is
+ * stock + global WITHOUT the project layer — a project's tighten-only
+ * intersection must never be baked into the user's global config. Returns the
+ * path written.
+ */
+export function persistModeDomains(agentDir: string, modeName: string, domains: string[]): string {
+  const file = globalConfigFile(agentDir);
+  let base = loadStockDefaults();
+  const global = parseConfigFile(file, noop);
+  if (global) base = mergeGlobal(base, structuredClone(global), noop);
+  const baseNetwork = base.modes[modeName]?.sandbox.network;
+
+  let data: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    try {
+      data = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+    } catch {
+      data = {}; // unreadable/corrupt → start fresh rather than lose the grant
+    }
+  }
+  const modes = (data.modes ??= {}) as Record<string, { sandbox?: { network?: Record<string, unknown> } }>;
+  const mode = (modes[modeName] ??= {});
+  const sandbox = (mode.sandbox ??= {});
+  sandbox.network = {
+    ...baseNetwork,
+    allowedDomains: [...new Set([...(baseNetwork?.allowedDomains ?? []), ...domains])],
+    deniedDomains: baseNetwork?.deniedDomains ?? [],
+  };
+
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
+  return file;
 }
 
 /**

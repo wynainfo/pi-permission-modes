@@ -30,6 +30,7 @@
  *   config-load.ts  layered permission-mode.json loader
  *   approvals.ts    session-scoped "Allow for session" store
  *   awareness.ts    sandbox-boundary system-prompt section (injected each turn)
+ *   network.ts      live network session state (grants, denies, open toggle)
  *   paths.ts        out-of-project / protected-path predicates
  *   heuristics.ts   bash escape/privilege scan (tree-sitter fallback)
  *   sandbox.ts      SandboxController (runtime lifecycle, per-mode profile)
@@ -41,6 +42,7 @@
  *   Linux also needs: bubblewrap, socat, ripgrep
  */
 
+import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -49,8 +51,17 @@ import { askWithSession, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate } from "./bash-enforce.ts";
 import { analyzeBash } from "./bash-parse.ts";
-import { loadModeConfig, loadStockDefaults, persistModeRule, profileToConfig, stockDefaultsFile } from "./config-load.ts";
+import {
+  isUnsafeDomain,
+  loadModeConfig,
+  loadStockDefaults,
+  persistModeDomains,
+  persistModeRule,
+  profileToConfig,
+  stockDefaultsFile,
+} from "./config-load.ts";
 import type { PermState } from "./modes.ts";
+import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
 import { isOutside, isProtectedWrite } from "./paths.ts";
 import { decide, decideBashCommand, mostRestrictive } from "./resolve.ts";
 import { SandboxController } from "./sandbox.ts";
@@ -76,7 +87,18 @@ const FILE_TOOL_SURFACE: Record<string, Surface> = {
 };
 
 /** Tools with a dedicated branch in the dispatcher (not gated via the `tool` surface). */
-const BUILTIN_HANDLED = new Set(["bash", "read", "edit", "write", "ls", "grep", "find", "web_search", "show_plan"]);
+const BUILTIN_HANDLED = new Set([
+  "bash",
+  "read",
+  "edit",
+  "write",
+  "ls",
+  "grep",
+  "find",
+  "web_search",
+  "show_plan",
+  "request_network_access", // prompts on its own — gating it would double-prompt
+]);
 
 /** Our own tools that must never be hidden (show_plan is needed in Plan mode). */
 const NEVER_HIDE = new Set(["show_plan"]);
@@ -103,6 +125,38 @@ export default async function (pi: ExtensionAPI) {
   const approvedUnsandboxed = new Set<string>();
   // "Allow for session" memory, keyed per-mode.
   const approvals = new SessionApprovals();
+  // Live network state: session domain grants/denies and the open toggle. The
+  // sandbox-runtime proxy consults it (via net.decide) for every host outside
+  // the allowlist, so changes apply instantly — no sandbox re-init.
+  const net = new NetworkSession();
+  // Latest UI-capable context, for prompts that fire OUTSIDE an event handler
+  // (the network ask callback runs mid-bash, driven by the proxy).
+  let uiCtx: ExtensionContext | undefined;
+
+  /** Prompt the user about a blocked host (the connection waits meanwhile). */
+  const askNetHost = async (host: string, port: number | undefined): Promise<NetAskResult> => {
+    const ctx = uiCtx;
+    if (!ctx?.hasUI || currentMode().sandbox.askOnBlockedHost === false) return "dismiss";
+    const target = port !== undefined ? `${host}:${port}` : host;
+    const choice = await ctx.ui.select(`Network: bash wants to reach ${target} (not in the allowlist) — allow?`, [
+      "Allow for session",
+      "Allow forever",
+      "Deny",
+    ]);
+    if (choice === "Allow for session") return "allow-session";
+    if (choice === "Allow forever") {
+      try {
+        const file = persistModeDomains(getAgentDir(), modeName, [host]);
+        config = loadModeConfig(ctx.cwd, getAgentDir(), (m) => ctx.ui.notify(m, "warning"));
+        ctx.ui.notify(`permission-mode: always allow ${host} in ${currentMode().label} — saved to ${file}`, "info");
+      } catch (e) {
+        ctx.ui.notify(`permission-mode: could not save domain: ${e}`, "error");
+      }
+      return "allow-forever";
+    }
+    if (choice === "Deny") return "deny";
+    return "dismiss"; // dismissed prompt: deny this request, but don't remember
+  };
 
   /** Prompt to allow an `ask`, honoring session grants (a target list requires
    * every entry to be granted; granting remembers all). Returns true to allow.
@@ -158,6 +212,7 @@ export default async function (pi: ExtensionAPI) {
 
   const setMode = async (name: string, ctx: ExtensionContext, persist = true, viaFallback = false) => {
     if (!config.modes[name]) return;
+    uiCtx = ctx;
     modeName = name;
     fallbackMode = viaFallback;
     // Forward to child pi processes (e.g. subagents) via inherited env. The child
@@ -168,7 +223,7 @@ export default async function (pi: ExtensionAPI) {
     const m = currentMode();
     await sandbox.applyProfile(m.sandbox); // re-init runtime if the profile changed
     applyToolVisibility();
-    updateStatus(ctx, m, sandbox);
+    updateStatus(ctx, m, sandbox, net.open);
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
     if (persist) pi.appendEntry<PermState>("perm-mode", { mode: modeName });
   };
@@ -245,6 +300,79 @@ export default async function (pi: ExtensionAPI) {
       else await cycle(ctx);
     },
   });
+  const networkEnforcing = () => currentMode().sandbox.enabled && sandbox.ready;
+
+  const toggleNetwork = async (ctx: ExtensionContext) => {
+    uiCtx = ctx;
+    if (!networkEnforcing()) {
+      return ctx.ui.notify("permission-mode: network is not filtered in this mode/state — nothing to toggle", "info");
+    }
+    net.open = !net.open;
+    updateStatus(ctx, currentMode(), sandbox, net.open);
+    ctx.ui.notify(
+      net.open
+        ? "Network: OPEN for this session — domain filtering disabled (alt+n or /net restrict to re-enable)"
+        : "Network: filtered — domain allowlist active",
+      net.open ? "warning" : "info",
+    );
+  };
+
+  pi.registerShortcut("alt+n", {
+    description: "Toggle network filtering for this session (filtered <-> open)",
+    handler: toggleNetwork,
+  });
+
+  pi.registerCommand("net", {
+    description: "Network sandbox: /net [status|allow <domain…>|open|restrict|reset]",
+    handler: async (args, ctx) => {
+      uiCtx = ctx;
+      const m = currentMode();
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      const sub = (parts[0] ?? "status").toLowerCase();
+      if (sub === "open") {
+        if (!net.open) return toggleNetwork(ctx);
+        return ctx.ui.notify("permission-mode: network is already open for this session", "info");
+      }
+      if (sub === "restrict") {
+        if (net.open) return toggleNetwork(ctx);
+        return ctx.ui.notify("permission-mode: network filtering is already active", "info");
+      }
+      if (sub === "reset") {
+        net.clear();
+        updateStatus(ctx, m, sandbox, net.open);
+        return ctx.ui.notify("permission-mode: cleared session network grants/denies; filtering restored", "info");
+      }
+      if (sub === "allow") {
+        const domains = [...new Set(parts.slice(1).map(normalizeDomain).filter((d): d is string => d !== undefined))];
+        const safe = domains.filter((d) => !isUnsafeDomain(d));
+        if (safe.length === 0) {
+          return ctx.ui.notify("permission-mode: usage: /net allow <domain> [domain…] — concrete hosts or *.sub wildcards", "warning");
+        }
+        net.grant(safe);
+        const dropped = domains.length - safe.length;
+        return ctx.ui.notify(
+          `permission-mode: allowed for this session: ${safe.join(", ")}${dropped ? ` (${dropped} overly-broad pattern(s) rejected)` : ""}`,
+          "info",
+        );
+      }
+      // status (default)
+      const state = !networkEnforcing()
+        ? "OPEN — nothing filters in this mode/state"
+        : net.open
+          ? "OPEN for this session (/net restrict or alt+n to re-enable filtering)"
+          : "filtered (alt+n or /net open to disable)";
+      return ctx.ui.notify(
+        [
+          `Network (${m.label}): ${state}`,
+          `Mode allowlist: ${m.sandbox.network?.allowedDomains?.join(", ") || "(none)"}`,
+          `Session grants: ${net.grants().join(", ") || "(none)"}`,
+          `Session denies: ${net.denies().join(", ") || "(none)"}`,
+        ].join("\n"),
+        "info",
+      );
+    },
+  });
+
   pi.registerCommand("sandbox", {
     description: "Show the active mode's sandbox status and configuration",
     handler: async (_args, ctx) => {
@@ -259,7 +387,9 @@ export default async function (pi: ExtensionAPI) {
         [
           `Sandbox: ACTIVE for ${m.label} (${m.sandbox.writable ? "project-writable" : "read-only"})`,
           "",
+          `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
+          `Session grants: ${net.grants().join(", ") || "(none)"}`,
           `Deny read:  ${c.filesystem?.denyRead?.join(", ") || "(none)"}`,
           `Allow write: ${c.filesystem?.allowWrite?.join(", ") || "(none)"}`,
           `Deny write:  ${c.filesystem?.denyWrite?.join(", ") || "(none)"}`,
@@ -288,7 +418,75 @@ export default async function (pi: ExtensionAPI) {
   // Plan Mode helper: render a written plan file to the user (display-only).
   pi.registerTool(await createShowPlanTool(root));
 
+  // Model-initiated network grants: ask the user to allow domains outside the
+  // sandbox allowlist (batch-capable, so one prompt covers an install that
+  // needs several hosts). Grants land in the session state the ask callback
+  // reads — no sandbox re-init. Available in every mode; when nothing filters
+  // (YOLO, degraded, /net open) it says so instead of prompting.
+  pi.registerTool({
+    name: "request_network_access",
+    label: "Request network access",
+    description:
+      "Ask the user to allow bash network access to one or more domains outside the sandbox allowlist. " +
+      "Use it when a blocked host stops you (downloads, installs, API troubleshooting), or to get every needed " +
+      "domain approved up front before a command that hits several hosts. Accepts exact hosts (api.example.com) " +
+      "and subdomain wildcards (*.example.com).",
+    parameters: Type.Object({
+      domains: Type.Array(Type.String({ description: "Domain or subdomain wildcard, e.g. api.example.com or *.example.com" }), {
+        description: "The domains to request access to",
+      }),
+      reason: Type.String({ description: "One short line: why access is needed" }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
+      const { domains = [], reason = "" } = params as { domains?: string[]; reason?: string };
+      const m = currentMode();
+      if (!m.sandbox.enabled || !sandbox.ready || net.open) {
+        return text("Network is not filtered right now — no grant needed, just run the command.");
+      }
+      const normalized = [...new Set(domains.map(normalizeDomain).filter((d): d is string => d !== undefined))];
+      const rejected = normalized.filter(isUnsafeDomain);
+      const modeList = m.sandbox.network?.allowedDomains ?? [];
+      const covered = (d: string) =>
+        modeList.includes(d) || net.grants().includes(d) || (!d.startsWith("*.") && (isHostAllowed(d, modeList) || net.isGranted(d)));
+      const need = normalized.filter((d) => !isUnsafeDomain(d) && !covered(d));
+      const rejectedNote = rejected.length ? ` Rejected as overly broad: ${rejected.join(", ")}.` : "";
+      if (need.length === 0) {
+        return text(
+          rejected.length && normalized.length === rejected.length
+            ? `No grantable domains.${rejectedNote} Use a concrete host or a *.sub wildcard.`
+            : `Already allowed — just run the command.${rejectedNote}`,
+        );
+      }
+      const pctx = ctx ?? uiCtx;
+      if (!pctx?.hasUI) return text("Denied: no interactive user available to approve network access.");
+      const choice = await pctx.ui.select(
+        `Model requests network access to ${need.join(", ")} — ${reason.trim() || "no reason given"}. Allow?`,
+        ["Allow for session", "Allow forever", "Deny"],
+      );
+      if (choice !== "Allow for session" && choice !== "Allow forever") {
+        return text(
+          `Denied by the user: ${need.join(", ")}. Don't retry these hosts — work within the allowlist or ask the user how to proceed.${rejectedNote}`,
+        );
+      }
+      net.grant(need);
+      let saved = "";
+      if (choice === "Allow forever") {
+        try {
+          const file = persistModeDomains(getAgentDir(), modeName, need);
+          config = loadModeConfig(pctx.cwd, getAgentDir(), (msg) => pctx.ui.notify(msg, "warning"));
+          saved = ` (saved permanently for ${currentMode().label})`;
+          pctx.ui.notify(`permission-mode: always allow ${need.join(", ")} in ${currentMode().label} — saved to ${file}`, "info");
+        } catch (e) {
+          pctx.ui.notify(`permission-mode: could not save domains: ${e}`, "error");
+        }
+      }
+      return text(`Granted${saved}: ${need.join(", ")}. Retry the blocked command now.${rejectedNote}`);
+    },
+  });
+
   pi.on("session_start", async (_event, ctx) => {
+    uiCtx = ctx;
     config = loadModeConfig(ctx.cwd, getAgentDir(), (m) =>
       ctx.hasUI ? ctx.ui.notify(m, "warning") : console.error(m),
     );
@@ -303,15 +501,21 @@ export default async function (pi: ExtensionAPI) {
       hasUI: ctx.hasUI,
       notify: (m) => ctx.ui.notify(m, "warning"),
       profile: currentMode().sandbox,
+      // Live network gate: the proxy consults session state for every host
+      // outside the allowlist; unknown hosts prompt via askNetHost.
+      askHost: (host, port) => net.decide(host, port, askNetHost),
+      drainBlockedHosts: () => net.drainBlocked(),
     });
     await setMode(picked.name, ctx, false, picked.fallback);
   });
   pi.on("session_tree", async (_event, ctx) => {
+    uiCtx = ctx;
     const picked = pickMode(ctx, false);
     await setMode(picked.name, ctx, false, picked.fallback);
   });
   pi.on("session_shutdown", async () => {
     approvals.clearAll(); // session-scoped grants don't outlive the session
+    net.clear(); // network grants/denies and the open toggle are session-scoped too
     await sandbox.reset();
   });
 
@@ -334,6 +538,8 @@ export default async function (pi: ExtensionAPI) {
     const aware = sandboxAwarenessPrompt(m, {
       active: sandbox.ready && !sandbox.disabled,
       reason: sandbox.disabled ? "disabled via --no-sandbox" : sandbox.warn,
+      networkOpen: net.open,
+      sessionDomains: net.grants(),
     });
     if (aware) parts.push(aware);
     const sp = m.systemPrompt;
@@ -365,6 +571,7 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    uiCtx = ctx;
     const { toolName } = event;
     const m = currentMode();
     // `input` is a discriminated union across tools; view it loosely (custom

@@ -55,7 +55,18 @@ you can rely on it appropriately.
   unsandboxed command and `bash:deny` blocks it. YOLO runs silently because its
   policy explicitly says `bash:allow`, not merely because containment is off.
 - **Network is a domain allowlist**, not traffic inspection — allowing a broad
-  domain permits exfiltration to it. Keep the allowlist tight.
+  domain permits exfiltration to it. Keep the allowlist tight. Hosts outside
+  the allowlist trigger a **live permission prompt** (deny-by-default: headless
+  sessions, dismissed prompts, and `askOnBlockedHost:false` all deny). Session
+  grants, `/net allow`, `/net open`/`alt+n`, and the model's
+  `request_network_access` tool widen the reachable set **only through an
+  explicit user action in the UI** — the model cannot grant itself access, but
+  everything you allow is exfiltration surface, and `/net open` disables the
+  allowlist entirely for the session (shown orange in the footer). Interactive
+  grants are user authority: they can reach past a project config's tightened
+  allowlist, exactly like approving an out-of-project command. "Allow forever"
+  persists to the global config against the stock+global base — a project's
+  tighten-only intersection is never baked in.
 - **Subagent forwarding is best-effort.** The active mode is exported as
   `PI_PERMISSION_MODE` and inherited by child `pi` processes (e.g. subagents),
   which adopt it on start. A spawner that overrides the child's environment breaks

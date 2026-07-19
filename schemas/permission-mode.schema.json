@@ -44,6 +44,7 @@
       "properties": {
         "enabled": { "type": "boolean", "description": "false = run bash unsandboxed (YOLO-style)." },
         "writable": { "type": "boolean", "description": "false = bash runs read-only (Plan-style)." },
+        "askOnBlockedHost": { "type": "boolean", "description": "Ask the user live when bash tries a host outside the allowlist (default true). false = silent deny. Projects may set false, never true." },
         "allowWrite": { "type": "array", "items": { "type": "string" } },
         "denyWrite": { "type": "array", "items": { "type": "string" } },
         "denyRead": { "type": "array", "items": { "type": "string" } },

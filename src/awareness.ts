@@ -28,6 +28,10 @@ export interface AwarenessOptions {
   active: boolean;
   /** Why it isn't, when a sandboxed mode runs degraded (warn text / --no-sandbox). */
   reason?: string;
+  /** `/net open` / alt+n: domain filtering suspended for this session. */
+  networkOpen?: boolean;
+  /** Session-granted domains (via prompts, /net allow, request_network_access). */
+  sessionDomains?: string[];
 }
 
 /** Render an allowWrite entry for the prompt ("." is the project root). */
@@ -74,12 +78,19 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   if (sb.denyRead?.length) {
     lines.push(`- Reads are broadly allowed EXCEPT: ${sb.denyRead.join(", ")}.`);
   }
-  const domains = sb.network?.allowedDomains ?? [];
-  lines.push(
-    domains.length
-      ? `- Network is limited to these domains: ${domains.join(", ")}. Other hosts are unreachable from bash.`
-      : "- No network access from bash (no domains are allowlisted).",
-  );
+  if (opts.networkOpen) {
+    lines.push("- Network filtering is disabled for this session: all hosts are reachable from bash.");
+  } else {
+    const domains = [...new Set([...(sb.network?.allowedDomains ?? []), ...(opts.sessionDomains ?? [])])];
+    const scope = domains.length
+      ? `- Network is limited to these domains: ${domains.join(", ")}.`
+      : "- No domains are allowlisted for bash network access.";
+    lines.push(
+      sb.askOnBlockedHost === false
+        ? `${scope} Other hosts are silently unreachable — request access with the request_network_access tool.`
+        : `${scope} A request to any other host pauses while the user is asked to allow it — if they approve, simply retry the command. To get domains approved up front (e.g. before an install that hits several hosts), call the request_network_access tool.`,
+    );
+  }
   lines.push(
     "- Commands beyond these boundaries (out-of-project paths, sudo/doas) are fine to issue: the user is asked for permission automatically, and approved commands run outside the sandbox.",
     mode.bypassProtectedPaths

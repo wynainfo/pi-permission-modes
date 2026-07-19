@@ -81,10 +81,12 @@ Cycle with **`alt+m`** or set directly with **`/perm <mode>`**. The current mode
 is persisted per session (survives `/reload`, resume, and branch navigation) and
 shown in the footer.
 
-Default, Plan Mode, and Build all run in-project `bash` inside the OS sandbox —
-the footer shows `(sandboxed in project dir)` (muted) when it's active. Only YOLO
-is unsandboxed. Labels are plain text (no icons); `alt+m` cycles in the order
-below. The table describes the **shipped defaults** — every mode is data and can
+Default, Plan Mode, and Build all run in-project `bash` inside the OS sandbox.
+The footer always shows the mode, the network state, and their shortcuts —
+e.g. `Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)` —
+with the network chip green while the domain allowlist filters and orange when
+open (see [Network](#network)). Only YOLO is unsandboxed. Labels are plain text
+(no icons); `alt+m` cycles in the order below. The table describes the **shipped defaults** — every mode is data and can
 be retuned, and you can add your own, in `permission-mode.json` (see
 [Configuration](#configuration)).
 
@@ -128,6 +130,31 @@ and runs **unsandboxed** once you approve it; and `edit`/`write` to
 > extension disables the sandbox for the project (falling back to prompting)
 > instead of letting every command fail with `bwrap: ... Not a directory`. Use a
 > normal clone for full Build-mode sandboxing.
+
+### Network
+
+In the sandboxed modes, bash network traffic is filtered by the mode's **domain
+allowlist** (package registries + GitHub by default). This is no longer a silent
+wall — a request to a host outside the allowlist **pauses while you're asked**
+(*Allow for session / Allow forever / Deny*), then proceeds or fails:
+
+- **`alt+n`** toggles filtering for the session: `Network: filtered` (green) ⇄
+  `Network: open` (orange) in the footer, which always shows the shortcut.
+- **`/net`** — `status` (allowlist, session grants/denies), `allow <domain…>`
+  (grant for the session), `open` / `restrict` (same as `alt+n`), `reset`
+  (forget session grants/denies).
+- The model has a **`request_network_access`** tool: it names the domains and a
+  reason, you approve or deny — one prompt can cover several domains (e.g. all
+  hosts an install needs). Denied hosts stay denied for the session (no
+  prompt-storms from retrying installers), and any blocked host is reported in
+  the command output so the model knows exactly what happened instead of
+  guessing at proxies.
+- "Allow forever" persists the domain to the active mode's allowlist in your
+  global config. Set a mode's `sandbox.askOnBlockedHost` to `false` to restore
+  silent denying.
+
+Grants, denies, and the open toggle are **session-scoped** (except "Allow
+forever") and apply instantly — no sandbox restart.
 
 ### CLI flags
 
@@ -255,7 +282,8 @@ Modes are data, layered in this order:
         "allowWrite": [".", "/tmp"],
         "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
         "denyWrite": [],
-        "network": { "allowedDomains": ["github.com", "*.github.com"], "deniedDomains": [] }
+        "network": { "allowedDomains": ["github.com", "*.github.com"], "deniedDomains": [] },
+        "askOnBlockedHost": true          // live prompt for hosts outside the allowlist (false = silent deny)
       },
       "permission": {
         "path": { "*": "allow", "*.env": "deny" },  // cross-cutting gate (deny overrides per-tool allow)

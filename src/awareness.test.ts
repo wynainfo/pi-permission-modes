@@ -50,12 +50,38 @@ test("read-only mode: says READ-ONLY instead of listing writable paths", () => {
   assert.doesNotMatch(out, /Writable paths:/);
 });
 
-test("empty network allowlist: says bash has no network", () => {
+test("empty network allowlist: says nothing is allowlisted, still offers the ask flow", () => {
   const out = sandboxAwarenessPrompt(mode({}, { network: { allowedDomains: [], deniedDomains: [] } }), { active: true });
   assert.ok(out);
-  assert.match(out, /No network access from bash/);
+  assert.match(out, /No domains are allowlisted/);
+  assert.match(out, /request_network_access/);
   const noNet = sandboxAwarenessPrompt(mode({}, { network: undefined }), { active: true });
-  assert.match(noNet ?? "", /No network access from bash/);
+  assert.match(noNet ?? "", /No domains are allowlisted/);
+});
+
+test("network bullet: live-ask flow and the request tool are explained", () => {
+  const out = sandboxAwarenessPrompt(mode(), { active: true });
+  assert.match(out ?? "", /pauses while the user is asked/);
+  assert.match(out ?? "", /request_network_access/);
+});
+
+test("network bullet: session-granted domains are listed alongside the mode allowlist", () => {
+  const out = sandboxAwarenessPrompt(mode(), { active: true, sessionDomains: ["api.internal.io"] });
+  assert.match(out ?? "", /api\.internal\.io/);
+});
+
+test("networkOpen: says filtering is disabled instead of listing domains", () => {
+  const out = sandboxAwarenessPrompt(mode(), { active: true, networkOpen: true });
+  assert.ok(out);
+  assert.match(out, /Network filtering is disabled for this session/);
+  assert.ok(!out.includes("registry.npmjs.org"));
+});
+
+test("askOnBlockedHost:false: silent-deny wording, tool still offered", () => {
+  const out = sandboxAwarenessPrompt(mode({}, { askOnBlockedHost: false }), { active: true });
+  assert.match(out ?? "", /silently unreachable/);
+  assert.match(out ?? "", /request_network_access/);
+  assert.doesNotMatch(out ?? "", /pauses while the user is asked/);
 });
 
 test("denyWrite entries are listed when present", () => {

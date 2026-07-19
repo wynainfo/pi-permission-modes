@@ -7,6 +7,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Blocked network hosts now ask instead of silently failing.** The sandbox
+  proxy consults a live callback for any host outside the domain allowlist —
+  the connection waits while you choose *Allow for session / Allow forever /
+  Deny*. Denies are remembered for the session (no prompt-storms from
+  retrying installers); dismissed prompts deny without being remembered;
+  headless sessions deny as before. Every blocked host is appended to the
+  command output, so the model sees exactly which connection the sandbox
+  refused instead of blaming phantom proxies. Opt back into silent denying
+  with `sandbox.askOnBlockedHost: false` (projects may force it off, never
+  on).
+- **`request_network_access` tool** (all modes): the model asks for one or
+  more domains with a reason; a single prompt covers the whole batch. Grants
+  apply instantly — the callback reads live session state, no sandbox
+  re-init. "Allow forever" persists to the active mode's allowlist in the
+  global config, computed against the stock+global base so a project's
+  tightened list is never baked in.
+- **`/net` command and `alt+n`**: `/net status | allow <domain…> | open |
+  restrict | reset`; `alt+n` toggles filtering for the session. The footer
+  now always shows the state and the shortcuts:
+  `Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)` —
+  green when filtered, orange when open.
 - **Sandbox awareness in the system prompt.** Sandboxed modes now inject a
   factual `## Sandbox & permissions` section each turn, generated from the
   active mode's **merged** profile: writable paths, denied reads, the network

@@ -81,6 +81,13 @@ export interface SandboxProfile {
   denyWrite?: string[];
   denyRead?: string[];
   network?: { allowedDomains?: string[]; deniedDomains?: string[] };
+  /**
+   * Ask the user live when bash tries to reach a host outside the allowlist
+   * (the connection waits while they decide). Defaults to true; false denies
+   * silently as before. Project configs may set it to false (stricter), never
+   * back to true.
+   */
+  askOnBlockedHost?: boolean;
 }
 
 /** One named mode. */

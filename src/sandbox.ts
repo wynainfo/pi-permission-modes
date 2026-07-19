@@ -30,10 +30,26 @@ const EXTENSION_DIR = fileURLToPath(new URL("..", import.meta.url));
 export function createSandboxedBashOps(
   SandboxManager: SandboxManagerType,
   customConfig?: Partial<SandboxConfig>,
+  drainBlockedHosts?: () => string[],
 ): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout }) {
+      // Any network denial during this run (allowlist miss the user didn't
+      // approve) is recorded by the ask callback; surface it to the model
+      // after the run so a refused connection is diagnosable, not mystery.
+      const emitBlockedHint = () => {
+        const hosts = drainBlockedHosts?.() ?? [];
+        if (hosts.length > 0) {
+          onData(
+            Buffer.from(
+              `\n[permission-mode] network: connection(s) blocked by the sandbox allowlist: ${hosts.join(", ")}. ` +
+                "Request access with the request_network_access tool, or ask the user (/net allow <domain>).\n",
+            ),
+          );
+        }
+      };
       if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
+      drainBlockedHosts?.(); // discard denials that belong to earlier runs
       // Clear any leftover 0-byte placeholders the sandbox plants for its
       // mandatory-deny paths (a stale .git would also break this run).
       removeSandboxPlaceholders(cwd);
@@ -71,6 +87,7 @@ export function createSandboxedBashOps(
           child.on("close", (code) => {
             if (timer) clearTimeout(timer);
             signal?.removeEventListener("abort", onAbort);
+            emitBlockedHint();
             if (signal?.aborted) reject(new Error("aborted"));
             else if (timedOut) reject(new Error(`timeout:${timeout}`));
             else resolve({ exitCode: code });
@@ -96,6 +113,14 @@ export interface InitOptions {
   notify: Notify;
   /** The active mode's sandbox profile to initialize the runtime with. */
   profile: SandboxProfile;
+  /**
+   * Live network ask: called by the runtime's proxy for a host no allow/deny
+   * rule matches, WHILE the connection waits. Return true to allow. Undefined
+   * keeps the historic silent-deny behavior.
+   */
+  askHost?: (host: string, port: number | undefined) => Promise<boolean>;
+  /** Drained by the bash wrapper to report hosts blocked during a run. */
+  drainBlockedHosts?: () => string[];
 }
 
 /**
@@ -112,6 +137,8 @@ export class SandboxController {
   private degraded = false;
   private hasUI = false;
   private notifyFn: Notify = () => {};
+  private askHost: ((host: string, port: number | undefined) => Promise<boolean>) | undefined;
+  private drainBlockedHosts: (() => string[]) | undefined;
   ready = false;
   disabled = false;
   warn: string | undefined;
@@ -129,7 +156,7 @@ export class SandboxController {
   bashOps(opts: { readOnly?: boolean } = {}): BashOperations | null {
     if (!this.manager || !this.profile) return null;
     const customConfig = opts.readOnly ? readOnlyOverride(profileToConfig(this.profile)) : undefined;
-    return createSandboxedBashOps(this.manager, customConfig);
+    return createSandboxedBashOps(this.manager, customConfig, this.drainBlockedHosts);
   }
 
   /** Install instructions shown when the runtime is missing or fails to init. */
@@ -138,7 +165,7 @@ export class SandboxController {
     return `Fix: cd ${EXTENSION_DIR} && npm install${linux}`;
   }
 
-  async init({ cwd, noSandbox, hasUI, notify, profile }: InitOptions): Promise<void> {
+  async init({ cwd, noSandbox, hasUI, notify, profile, askHost, drainBlockedHosts }: InitOptions): Promise<void> {
     this.ready = false;
     this.disabled = false;
     this.degraded = false;
@@ -147,6 +174,8 @@ export class SandboxController {
     this.appliedKey = undefined;
     this.hasUI = hasUI;
     this.notifyFn = notify;
+    this.askHost = askHost;
+    this.drainBlockedHosts = drainBlockedHosts;
 
     if (noSandbox) {
       this.disabled = true;
@@ -221,7 +250,14 @@ export class SandboxController {
 
     try {
       if (this.ready) await this.manager.reset();
-      await this.manager.initialize({ network: cfg.network, filesystem: cfg.filesystem } as never);
+      // The ask callback rides along so unmatched hosts prompt instead of
+      // silently failing; it reads live session state, so grants/`/net open`
+      // apply instantly without re-initializing.
+      const ask = this.askHost;
+      await this.manager.initialize(
+        { network: cfg.network, filesystem: cfg.filesystem } as never,
+        ask ? (p: { host: string; port?: number }) => ask(p.host, p.port) : undefined,
+      );
       this.ready = true;
       this.appliedKey = key;
       this.warn = undefined;

@@ -8,6 +8,7 @@ import {
   isUnsafeDomain,
   loadModeConfig,
   loadStockDefaults,
+  persistModeDomains,
   persistModeRule,
   profileToConfig,
   readOnlyOverride,
@@ -242,6 +243,48 @@ test("persistModeRule: creates the global file with the learned rule, round-trip
   const c = loadModeConfig(s.cwd, s.agentDir, () => {});
   assert.equal(decide(c.modes.default, "tool", "fooTool"), "allow");
   assert.equal(decide(c.modes.default, "tool", "otherTool"), "ask"); // others still prompt
+  s.cleanup();
+});
+
+test("persistModeDomains: appends to the FULL stock+global allowlist, round-trips", () => {
+  const s = sandbox();
+  const stockDomains = loadStockDefaults().modes.default.sandbox.network?.allowedDomains ?? [];
+  const file = persistModeDomains(s.agentDir, "default", ["api.internal.io"]);
+  const written = JSON.parse(readFileSync(file, "utf-8"));
+  // mergeGlobal replaces `network` wholesale, so the stock domains must be
+  // baked into the persisted list or they'd be lost on the next load.
+  const list = written.modes.default.sandbox.network.allowedDomains as string[];
+  for (const d of stockDomains) assert.ok(list.includes(d), `stock domain ${d} preserved`);
+  assert.ok(list.includes("api.internal.io"));
+  const c = loadModeConfig(s.cwd, s.agentDir, () => {});
+  assert.ok(c.modes.default.sandbox.network?.allowedDomains?.includes("api.internal.io"));
+  assert.ok(c.modes.default.sandbox.network?.allowedDomains?.includes(stockDomains[0]));
+  // Idempotent: persisting again doesn't duplicate.
+  persistModeDomains(s.agentDir, "default", ["api.internal.io"]);
+  const again = JSON.parse(readFileSync(file, "utf-8")).modes.default.sandbox.network.allowedDomains as string[];
+  assert.equal(again.filter((d) => d === "api.internal.io").length, 1);
+  s.cleanup();
+});
+
+test("persistModeDomains: never bakes a project's tightened list into the global config", () => {
+  // Project intersects the allowlist down to one domain; a forever-grant made
+  // while that project is open must still persist against the UNTIGHTENED base.
+  const s = sandbox({ project: { modes: { default: { sandbox: { network: { allowedDomains: ["github.com"] } } } } } });
+  const stockDomains = loadStockDefaults().modes.default.sandbox.network?.allowedDomains ?? [];
+  const file = persistModeDomains(s.agentDir, "default", ["api.internal.io"]);
+  const list = JSON.parse(readFileSync(file, "utf-8")).modes.default.sandbox.network.allowedDomains as string[];
+  for (const d of stockDomains) assert.ok(list.includes(d), `stock domain ${d} not lost to project tightening`);
+  s.cleanup();
+});
+
+test("project: askOnBlockedHost can be forced off (silent deny), never back on", () => {
+  const s = sandbox({
+    global: { modes: { default: { sandbox: { askOnBlockedHost: false } } } },
+    project: { modes: { default: { sandbox: { askOnBlockedHost: true } }, build: { sandbox: { askOnBlockedHost: false } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.modes.default.sandbox.askOnBlockedHost, false); // project cannot re-enable asking
+  assert.equal(c.modes.build.sandbox.askOnBlockedHost, false); // project may force silent-deny
   s.cleanup();
 });
 
