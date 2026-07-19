@@ -184,6 +184,16 @@ or privilege escalation you approve, since you authorized it; `deny` never runs.
 > `denyRead` secrets are blocked at the kernel), and a non-sandboxing mode (YOLO)
 > confines nothing. [SECURITY.md](SECURITY.md) has the full threat model.
 
+**Sandbox awareness.** While a sandboxed mode is active, a factual
+`## Sandbox & permissions` section is injected into the system prompt each turn:
+the writable paths, denied reads, and network allowlist of the **merged** profile
+(project overlays included), plus how the prompt flow works. The model then picks
+paths and domains that actually work — project-local installs instead of `~/.npm`,
+allowlisted hosts instead of dead fetches — and knows a boundary-crossing command
+is fine to issue because you'll simply be asked. When the sandbox is degraded, the
+section says so and points at the confirmation prompts instead. Opt a mode out
+with `"injectSandboxInfo": false`; unsandboxed modes (YOLO) never inject.
+
 **Tool hiding.** A mode's `hideTools` list removes those tools from the model
 *before* it reasons (via the active-tools allowlist), so it never attempts them.
 `show_plan` is never hidden.
@@ -238,6 +248,7 @@ Modes are data, layered in this order:
       "label": "Default",
       "color": "muted",                 // muted | mdLink | accent | error
       "systemPrompt": "@plan",          // optional; "@plan" = the dated Plan-mode prompt
+      "injectSandboxInfo": true,        // inject the mode's sandbox boundaries into the system prompt (default true)
       "sandbox": {
         "enabled": true,                // false = run bash unsandboxed (YOLO-style)
         "writable": true,               // false = bash runs read-only (Plan-style)

@@ -93,6 +93,14 @@ export interface ModeDef {
    * `planModeSystemPrompt(today)`; any other string is injected verbatim.
    */
   systemPrompt?: string;
+  /**
+   * Inject a factual description of this mode's sandbox boundaries (writable
+   * paths, denied reads, network allowlist, prompt flow) into the system
+   * prompt each turn, so the model picks paths/domains that work instead of
+   * discovering the sandbox through failed commands. Defaults to true; set
+   * false to opt out. Modes with `sandbox.enabled: false` never inject.
+   */
+  injectSandboxInfo?: boolean;
   sandbox: SandboxProfile;
   permission: Partial<Record<Surface, SurfaceValue>>;
   /** Tool names hidden from the model while this mode is active. */

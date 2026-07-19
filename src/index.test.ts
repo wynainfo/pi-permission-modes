@@ -267,10 +267,14 @@ test("plan mode: Markdown-only writes, plan prompt injected, show_plan stays vis
     assert.match(denied?.reason ?? "", /Markdown/);
     assert.equal(h.ctx.prompts.length, 0);
 
-    // The @plan sentinel resolves into the injected system prompt.
+    // The @plan sentinel resolves into the injected system prompt, and the
+    // sandbox-awareness section rides along above it (degraded variant here,
+    // since the harness runs --no-sandbox).
     const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
     assert.match(res.systemPrompt, /^BASE\n\n/);
+    assert.match(res.systemPrompt, /Sandbox & permissions \(Plan Mode\)/);
     assert.match(res.systemPrompt, /Plan Mode is active/);
+    assert.ok(res.systemPrompt.indexOf("Sandbox & permissions") < res.systemPrompt.indexOf("Plan Mode is active"));
 
     // Tool visibility ran and show_plan is present.
     assert.ok(h.pi.activeTools.includes("show_plan"));
@@ -288,6 +292,8 @@ test("yolo: never prompts, never blocks, protected paths bypassed", { skip }, as
     assert.equal(await h.call("edit", { path: ".env" }), undefined);
     assert.equal(await h.call("write", { path: ".git/config" }), undefined);
     assert.equal(h.ctx.prompts.length, 0);
+    // Unsandboxed mode: no sandbox-awareness injection either.
+    assert.equal(await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx), undefined);
   } finally {
     h.cleanup();
   }
@@ -388,8 +394,12 @@ test("headless fallback: restrictive policy WITHOUT the plan prompt, not exporte
     assert.equal(h.ctx.status, "Plan Mode");
     const denied = await h.call("write", { path: "src/app.ts" });
     assert.equal(denied?.block, true); // … and its policy fully applies
-    // … but the planning system prompt is NOT injected into the headless worker.
-    assert.equal(await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx), undefined);
+    // … but the planning system prompt is NOT injected into the headless
+    // worker — only the FACTUAL sandbox-awareness section is (boundary
+    // knowledge helps; a planning prompt would misdirect).
+    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(res.systemPrompt, /Sandbox & permissions/);
+    assert.doesNotMatch(res.systemPrompt, /Plan Mode is active/);
     // The implicit fallback is not forwarded as if it were an explicit choice:
     // a grandchild derives its own fallback (and skips the prompt too).
     assert.equal(process.env.PI_PERMISSION_MODE, undefined);
@@ -520,6 +530,27 @@ test("custom unsandboxed mode still honors bash ask", { skip }, async () => {
     const denied = await h.call("bash", { command: "touch owned" });
     assert.equal(denied?.block, true);
     assert.match(h.ctx.prompts[0]?.title ?? "", /will run unsandboxed/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("injectSandboxInfo:false opts a mode out of the awareness injection", { skip }, async () => {
+  const h = await setup();
+  try {
+    // Default (sandboxed, no systemPrompt) injects the awareness section …
+    const before = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(before.systemPrompt, /Sandbox & permissions \(Default\)/);
+
+    // … until the global config opts it out; then nothing is injected at all.
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      JSON.stringify({ modes: { default: { injectSandboxInfo: false } } }),
+    );
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.equal(await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx), undefined);
   } finally {
     h.cleanup();
   }

@@ -29,6 +29,7 @@
  *   bash-parse.ts   tree-sitter command extraction + heuristic fallback
  *   config-load.ts  layered permission-mode.json loader
  *   approvals.ts    session-scoped "Allow for session" store
+ *   awareness.ts    sandbox-boundary system-prompt section (injected each turn)
  *   paths.ts        out-of-project / protected-path predicates
  *   heuristics.ts   bash escape/privilege scan (tree-sitter fallback)
  *   sandbox.ts      SandboxController (runtime lifecycle, per-mode profile)
@@ -45,6 +46,7 @@ import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { askWithSession, SessionApprovals } from "./approvals.ts";
+import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate } from "./bash-enforce.ts";
 import { analyzeBash } from "./bash-parse.ts";
 import { loadModeConfig, loadStockDefaults, persistModeRule, profileToConfig, stockDefaultsFile } from "./config-load.ts";
@@ -318,16 +320,28 @@ export default async function (pi: ExtensionAPI) {
     approvedUnsandboxed.delete(event.toolCallId);
   });
 
-  // Inject the active mode's system prompt (if any). The handler runs each turn
-  // and reads the live mode, so it auto-clears when the mode changes. The "@plan"
-  // sentinel resolves to the date-stamped Plan-mode prompt. A mode picked as the
-  // implicit headless fallback keeps its policy but skips the prompt injection.
+  // Inject the sandbox-awareness section and the active mode's system prompt
+  // (if any). The handler runs each turn and reads the live mode + sandbox
+  // state, so it auto-updates when the mode changes. The "@plan" sentinel
+  // resolves to the date-stamped Plan-mode prompt. A mode picked as the
+  // implicit headless fallback keeps the FACTUAL awareness section (boundary
+  // knowledge helps a worker avoid failing commands) but skips the mode's
+  // STEERING systemPrompt, which would misdirect a headless worker.
   pi.on("before_agent_start", async (event) => {
     applyToolVisibility(); // keep hidden tools hidden as the tool set evolves
-    const sp = currentMode().systemPrompt;
-    if (!sp || fallbackMode) return undefined;
-    const resolved = sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp;
-    return { systemPrompt: `${event.systemPrompt}\n\n${resolved}` };
+    const m = currentMode();
+    const parts: string[] = [];
+    const aware = sandboxAwarenessPrompt(m, {
+      active: sandbox.ready && !sandbox.disabled,
+      reason: sandbox.disabled ? "disabled via --no-sandbox" : sandbox.warn,
+    });
+    if (aware) parts.push(aware);
+    const sp = m.systemPrompt;
+    if (sp && !fallbackMode) {
+      parts.push(sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp);
+    }
+    if (parts.length === 0) return undefined;
+    return { systemPrompt: [event.systemPrompt, ...parts].join("\n\n") };
   });
 
   // Skill gating: skills aren't tools — they're invoked via `/skill:<name>` text,

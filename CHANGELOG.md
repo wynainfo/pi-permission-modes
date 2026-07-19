@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Sandbox awareness in the system prompt.** Sandboxed modes now inject a
+  factual `## Sandbox & permissions` section each turn, generated from the
+  active mode's **merged** profile: writable paths, denied reads, the network
+  allowlist, and how the prompt flow works (boundary-crossing commands are
+  fine to issue — the user is asked automatically). Previously the model
+  discovered the sandbox by crashing into it (writes to `$HOME`, installs
+  into `~/.npm`, fetches from non-allowlisted domains) and wasted turns
+  retrying variants. When the sandbox is degraded the section says so and
+  points at the confirmation prompts instead. Headless-fallback children get
+  the factual section too (their steering `systemPrompt` stays skipped). Opt
+  out per mode with `"injectSandboxInfo": false`; unsandboxed modes (YOLO)
+  never inject.
+
 ## [2.1.2]
 
 ### Security

@@ -84,6 +84,7 @@
         "label": { "type": "string", "description": "Footer label." },
         "color": { "enum": ["muted", "mdLink", "accent", "error"], "description": "Footer label color." },
         "systemPrompt": { "type": "string", "description": "System prompt to inject; '@plan' resolves to the dated Plan-mode prompt." },
+        "injectSandboxInfo": { "type": "boolean", "description": "Inject the mode's sandbox boundaries (writable paths, denied reads, network allowlist) into the system prompt each turn (default true). Modes with sandbox.enabled:false never inject." },
         "sandbox": { "$ref": "#/$defs/sandbox" },
         "permission": { "$ref": "#/$defs/permission" },
         "hideTools": { "type": "array", "items": { "type": "string" }, "description": "Tools hidden from the model in this mode." },
