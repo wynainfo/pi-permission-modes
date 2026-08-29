@@ -2,6 +2,10 @@
   "$schema": "./schemas/permission-mode.schema.json",
   "defaultMode": "default",
   "cycleOrder": ["default", "plan", "build", "yolo"],
+  "keyBindings": {
+    "sandbox": "alt+m",
+    "network": "alt+n"
+  },
   "modes": {
     "default": {
       "label": "Default",

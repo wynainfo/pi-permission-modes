@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   FALLBACK_CONFIG,
   isUnsafeDomain,
+  loadGlobalModeConfig,
   loadModeConfig,
   loadStockDefaults,
   persistModeDomains,
@@ -55,6 +56,7 @@ test("loadStockDefaults: reads the shipped JSON → four modes, correct defaults
   assert.equal(errors.length, 0, errors.join("; ")); // stock file present & valid
   assert.equal(c.defaultMode, "default");
   assert.deepEqual(c.cycleOrder, ["default", "plan", "build", "yolo"]);
+  assert.deepEqual(c.keyBindings, { sandbox: "alt+m", network: "alt+n" });
   assert.deepEqual(Object.keys(c.modes).sort(), ["build", "default", "plan", "yolo"]);
   assert.ok(stockDefaultsFile().endsWith("permission-mode.defaults.json"));
 });
@@ -62,6 +64,7 @@ test("loadStockDefaults: reads the shipped JSON → four modes, correct defaults
 test("FALLBACK_CONFIG is a valid, safe single-mode config", () => {
   assert.equal(FALLBACK_CONFIG.defaultMode, "default");
   assert.deepEqual(Object.keys(FALLBACK_CONFIG.modes), ["default"]);
+  assert.deepEqual(FALLBACK_CONFIG.keyBindings, { sandbox: "alt+m", network: "alt+n" });
   const d = FALLBACK_CONFIG.modes.default;
   assert.equal(d.sandbox.enabled, true); // sandboxed
   assert.equal(decide(d, "bash", "ls"), "ask"); // never silently allows
@@ -100,6 +103,41 @@ test("global: full authority — add a mode, redefine a built-in, change default
   assert.equal(decide(c.modes.default, "read", "x"), "allow"); // untouched surface preserved
   assert.ok(c.modes.review); // new mode added
   assert.equal(c.modes.review.label, "Review");
+  s.cleanup();
+});
+
+test("global: status format and shortcut overrides merge over stock defaults", () => {
+  const s = sandbox({
+    global: {
+      statusFormat: "%m · %n (%N)",
+      keyBindings: { sandbox: ["ctrl+m", "alt+m"] },
+    },
+  });
+  const c = loadGlobalModeConfig(s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.statusFormat, "%m · %n (%N)");
+  assert.deepEqual(c.keyBindings, {
+    sandbox: ["ctrl+m", "alt+m"],
+    network: "alt+n",
+  });
+  assert.equal(s.errors.length, 0);
+  s.cleanup();
+});
+
+test("project: status format and shortcuts are ignored", () => {
+  const s = sandbox({
+    global: {
+      statusFormat: "%m global",
+      keyBindings: { sandbox: "ctrl+m", network: "ctrl+n" },
+    },
+    project: {
+      statusFormat: "%m project",
+      keyBindings: { sandbox: "alt+x", network: [] },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.statusFormat, "%m global");
+  assert.deepEqual(c.keyBindings, { sandbox: "ctrl+m", network: "ctrl+n" });
+  assert.ok(s.errors.some((error) => /cannot change statusFormat\/keyBindings/.test(error)));
   s.cleanup();
 });
 

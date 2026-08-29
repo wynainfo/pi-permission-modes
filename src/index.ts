@@ -1,7 +1,8 @@
 /**
  * Permission Mode extension
  *
- * Switchable, data-driven permission modes (cycle with alt+m or /perm). A MODE
+ * Switchable, data-driven permission modes (cycle with a configurable shortcut
+ * or /perm). A MODE
  * is a JSON bundle of a sandbox profile + an allow/ask/deny permission policy +
  * UI metadata, defined in `schema.ts` (built-in defaults) and overridable in
  * `permission-mode.json`. The four shipped modes:
@@ -53,13 +54,14 @@ import { bashExecPlan, bashGate } from "./bash-enforce.ts";
 import { analyzeBash } from "./bash-parse.ts";
 import {
   isUnsafeDomain,
+  loadGlobalModeConfig,
   loadModeConfig,
-  loadStockDefaults,
   persistModeDomains,
   persistModeRule,
   profileToConfig,
   stockDefaultsFile,
 } from "./config-load.ts";
+import { loadPermissionKeybindings, shortcutText } from "./keybindings.ts";
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
 import { isOutside, isProtectedWrite } from "./paths.ts";
@@ -104,19 +106,24 @@ const BUILTIN_HANDLED = new Set([
 const NEVER_HIDE = new Set(["show_plan"]);
 
 export default async function (pi: ExtensionAPI) {
-  // The engine starts on the shipped stock defaults (permission-mode.defaults.json);
-  // session_start reloads the merged config (stock + global full-authority +
-  // project tighten-only) from permission-mode.json.
-  let config: PermissionModeConfig = loadStockDefaults();
+  const root = process.cwd();
+  // Shortcuts must be registered during extension initialization, so load the
+  // stock + global layers before registration. session_start adds the trusted
+  // project's tighten-only policy layer; projects cannot change UI settings.
+  let config: PermissionModeConfig = loadGlobalModeConfig(getAgentDir());
+  const keyBindings = loadPermissionKeybindings(config.keyBindings);
+  const modeShortcut = shortcutText(keyBindings.sandbox);
+  const networkShortcut = shortcutText(keyBindings.network);
+  const statusOptions = () => ({ format: config.statusFormat, modeShortcut, networkShortcut });
+  const networkActionHint = (command: string) => (networkShortcut ? `${networkShortcut} or ${command}` : command);
   let modeName = config.defaultMode;
   // True when the current mode was auto-picked as the headless-child safety
   // fallback (no --perm flag, session entry, or forwarded env). The mode's
   // POLICY fully applies, but its systemPrompt is not injected — a planning
-  // prompt steering a headless worker to write plan files and ask about alt+m
+  // prompt steering a headless worker to write plan files and switch modes
   // would misdirect it — and the fallback isn't exported to child processes
   // as if it were an explicit choice (children re-derive their own fallback).
   let fallbackMode = false;
-  const root = process.cwd();
 
   const currentMode = (): ModeDef => config.modes[modeName] ?? config.modes[config.defaultMode];
 
@@ -223,7 +230,7 @@ export default async function (pi: ExtensionAPI) {
     const m = currentMode();
     await sandbox.applyProfile(m.sandbox); // re-init runtime if the profile changed
     applyToolVisibility();
-    updateStatus(ctx, m, sandbox, net.open);
+    updateStatus(ctx, m, sandbox, net.open, statusOptions());
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
     if (persist) pi.appendEntry<PermState>("perm-mode", { mode: modeName });
   };
@@ -270,10 +277,12 @@ export default async function (pi: ExtensionAPI) {
     return { name: resolved ?? modeName, fallback: false };
   };
 
-  pi.registerShortcut("alt+m", {
-    description: `Cycle permission mode (${config.cycleOrder.join(" -> ")})`,
-    handler: async (ctx) => cycle(ctx),
-  });
+  for (const key of keyBindings.sandbox) {
+    pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+      description: `Cycle permission mode (${config.cycleOrder.join(" -> ")})`,
+      handler: async (ctx) => cycle(ctx),
+    });
+  }
   pi.registerCommand("perm", {
     description: `Set or cycle permission mode: /perm [${config.cycleOrder.join("|")}|init|clear-approvals]`,
     handler: async (args, ctx) => {
@@ -308,19 +317,21 @@ export default async function (pi: ExtensionAPI) {
       return ctx.ui.notify("permission-mode: network is not filtered in this mode/state — nothing to toggle", "info");
     }
     net.open = !net.open;
-    updateStatus(ctx, currentMode(), sandbox, net.open);
+    updateStatus(ctx, currentMode(), sandbox, net.open, statusOptions());
     ctx.ui.notify(
       net.open
-        ? "Network: OPEN for this session — domain filtering disabled (alt+n or /net restrict to re-enable)"
+        ? `Network: OPEN for this session — domain filtering disabled (${networkActionHint("/net restrict")} to re-enable)`
         : "Network: filtered — domain allowlist active",
       net.open ? "warning" : "info",
     );
   };
 
-  pi.registerShortcut("alt+n", {
-    description: "Toggle network filtering for this session (filtered <-> open)",
-    handler: toggleNetwork,
-  });
+  for (const key of keyBindings.network) {
+    pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+      description: "Toggle network filtering for this session (filtered <-> open)",
+      handler: toggleNetwork,
+    });
+  }
 
   pi.registerCommand("net", {
     description: "Network sandbox: /net [status|allow <domain…>|open|restrict|reset]",
@@ -339,7 +350,7 @@ export default async function (pi: ExtensionAPI) {
       }
       if (sub === "reset") {
         net.clear();
-        updateStatus(ctx, m, sandbox, net.open);
+        updateStatus(ctx, m, sandbox, net.open, statusOptions());
         return ctx.ui.notify("permission-mode: cleared session network grants/denies; filtering restored", "info");
       }
       if (sub === "allow") {
@@ -359,8 +370,8 @@ export default async function (pi: ExtensionAPI) {
       const state = !networkEnforcing()
         ? "OPEN — nothing filters in this mode/state"
         : net.open
-          ? "OPEN for this session (/net restrict or alt+n to re-enable filtering)"
-          : "filtered (alt+n or /net open to disable)";
+          ? `OPEN for this session (${networkActionHint("/net restrict")} to re-enable filtering)`
+          : `filtered (${networkActionHint("/net open")} to disable)`;
       return ctx.ui.notify(
         [
           `Network (${m.label}): ${state}`,
@@ -387,7 +398,7 @@ export default async function (pi: ExtensionAPI) {
         [
           `Sandbox: ACTIVE for ${m.label} (${m.sandbox.writable ? "project-writable" : "read-only"})`,
           "",
-          `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
+          `Network: ${net.open ? "OPEN for this session" : "filtered"}${networkShortcut ? ` (${networkShortcut})` : ""}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
           `Deny read:  ${c.filesystem?.denyRead?.join(", ") || "(none)"}`,
@@ -490,6 +501,10 @@ export default async function (pi: ExtensionAPI) {
     config = loadModeConfig(ctx.cwd, getAgentDir(), (m) =>
       ctx.hasUI ? ctx.ui.notify(m, "warning") : console.error(m),
     );
+    for (const warning of keyBindings.warnings) {
+      if (ctx.hasUI) ctx.ui.notify(warning, "warning");
+      else console.error(warning);
+    }
     if (!config.modes[modeName]) modeName = config.defaultMode;
     // Resolve the start mode BEFORE init so the sandbox initializes with the
     // right profile, then setMode reconciles status (applyProfile is a no-op).
@@ -544,7 +559,11 @@ export default async function (pi: ExtensionAPI) {
     if (aware) parts.push(aware);
     const sp = m.systemPrompt;
     if (sp && !fallbackMode) {
-      parts.push(sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp);
+      parts.push(
+        sp === PLAN_PROMPT_SENTINEL
+          ? planModeSystemPrompt(new Date().toISOString().slice(0, 10), modeShortcut)
+          : sp,
+      );
     }
     if (parts.length === 0) return undefined;
     return { systemPrompt: [event.systemPrompt, ...parts].join("\n\n") };

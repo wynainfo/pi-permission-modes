@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Configurable extension shortcuts** in the global
+  `~/.pi/agent/permission-mode/permission-mode.json`: `keyBindings.sandbox` and
+  `keyBindings.network` accept one key, multiple keys, or `[]` to disable. All
+  footer hints, network notices, and the Plan-mode handoff use the configured
+  keys; run `/reload` after editing.
+- **Custom footer templates** via global `statusFormat`, with `%m` / `%M` for the
+  mode label/shortcut and `%n` / `%N` for network state/shortcut. Semantic colors
+  and the sandbox-degradation warning are preserved. Project configs cannot
+  override these UI settings.
+
 ## [2.2.0]
 
 ### Added

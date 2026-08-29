@@ -5,7 +5,8 @@
  *   1. permission-mode.defaults.json (shipped) — the four built-in modes, loaded
  *      over a minimal in-code fallback (FALLBACK_CONFIG).
  *   2. <agentDir>/permission-mode/permission-mode.json (global) — FULL authority:
- *      may add modes, redefine built-ins, and change defaultMode / cycleOrder.
+ *      may add modes, redefine built-ins, change defaultMode / cycleOrder, and
+ *      configure the footer and extension shortcuts.
  *   3. <cwd>/.pi/permission-mode.json (project) — TIGHTEN-ONLY: may only make an
  *      existing mode stricter. Its permission policy is attached as a separate
  *      most-restrictive overlay (so it can never loosen, regardless of patterns);
@@ -45,6 +46,7 @@ const noop: OnError = () => {};
 export const FALLBACK_CONFIG: PermissionModeConfig = {
   defaultMode: "default",
   cycleOrder: ["default"],
+  keyBindings: { sandbox: "alt+m", network: "alt+n" },
   modes: {
     default: {
       label: "Default",
@@ -197,7 +199,22 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
   const cycleOrder = (over.cycleOrder ?? base.cycleOrder).filter((n) => modes[n]);
   let defaultMode = over.defaultMode ?? base.defaultMode;
   if (!modes[defaultMode]) defaultMode = cycleOrder[0] ?? base.defaultMode;
-  return { defaultMode, cycleOrder, modes };
+
+  let statusFormat = base.statusFormat;
+  if (over.statusFormat !== undefined) {
+    if (typeof over.statusFormat === "string") statusFormat = over.statusFormat;
+    else onError("permission-mode: statusFormat must be a string; ignoring");
+  }
+
+  let keyBindings = base.keyBindings;
+  if (over.keyBindings !== undefined) {
+    if (over.keyBindings && typeof over.keyBindings === "object" && !Array.isArray(over.keyBindings)) {
+      keyBindings = { ...base.keyBindings, ...over.keyBindings };
+    } else {
+      onError("permission-mode: keyBindings must be an object; ignoring");
+    }
+  }
+  return { defaultMode, cycleOrder, modes, statusFormat, keyBindings };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +257,9 @@ function tightenSandbox(base: SandboxProfile, over: Partial<SandboxProfile>, onE
 function applyProject(config: PermissionModeConfig, project: Partial<PermissionModeConfig>, onError: OnError): void {
   if (project.defaultMode || project.cycleOrder) {
     onError("permission-mode: project config cannot change defaultMode/cycleOrder; ignoring");
+  }
+  if (project.statusFormat !== undefined || project.keyBindings !== undefined) {
+    onError("permission-mode: project config cannot change statusFormat/keyBindings; ignoring");
   }
   for (const [name, raw] of Object.entries(project.modes ?? {})) {
     const base = config.modes[name];
@@ -302,12 +322,17 @@ export function globalConfigFile(agentDir: string): string {
   return path.join(agentDir, "permission-mode", "permission-mode.json");
 }
 
-export function loadModeConfig(cwd: string, agentDir: string, onError: OnError = noop): PermissionModeConfig {
-  const projectPath = path.join(cwd, ".pi", "permission-mode.json");
-
+export function loadGlobalModeConfig(agentDir: string, onError: OnError = noop): PermissionModeConfig {
   let config = loadStockDefaults(onError);
   const global = parseConfigFile(globalConfigFile(agentDir), onError);
   if (global) config = mergeGlobal(config, global, onError);
+  return config;
+}
+
+export function loadModeConfig(cwd: string, agentDir: string, onError: OnError = noop): PermissionModeConfig {
+  const projectPath = path.join(cwd, ".pi", "permission-mode.json");
+
+  const config = loadGlobalModeConfig(agentDir, onError);
   const project = parseConfigFile(projectPath, onError);
   if (project) applyProject(config, project, onError);
   return config;

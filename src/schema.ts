@@ -127,13 +127,26 @@ export interface ModeDef {
   projectOverlay?: Partial<Record<Surface, SurfaceValue>>;
 }
 
-/** Top-level config: the mode registry plus cycle/default metadata. */
+/** A configurable extension shortcut; an empty array disables it. */
+export type KeyBindingValue = string | string[];
+
+/** Extension-owned shortcuts stored in the global permission-mode config. */
+export interface PermissionKeyBindingConfig {
+  sandbox?: KeyBindingValue;
+  network?: KeyBindingValue;
+}
+
+/** Top-level config: mode metadata plus global-only UI and shortcut settings. */
 export interface PermissionModeConfig {
   $schema?: string;
   defaultMode: string;
-  /** alt+m cycle order; also the display order. */
+  /** Mode cycle order; also the display order. */
   cycleOrder: string[];
   modes: Record<string, ModeDef>;
+  /** Optional footer template. Project configs cannot override it. */
+  statusFormat?: string;
+  /** Extension shortcuts. Project configs cannot override them. */
+  keyBindings: PermissionKeyBindingConfig;
 }
 
 /** Sentinel a mode's `systemPrompt` can use to request the Plan-mode prompt. */
@@ -148,7 +161,10 @@ export const PLAN_PROMPT_SENTINEL = "@plan";
  * `"@plan"` sentinel). `today` is an ISO date (YYYY-MM-DD) stamped at call time
  * so the suggested plan filename uses the current date.
  */
-export function planModeSystemPrompt(today: string): string {
+export function planModeSystemPrompt(today: string, modeShortcut = "alt+m"): string {
+  const switchInstruction = modeShortcut
+    ? `press \`${modeShortcut}\` (or run \`/perm build\`)`
+    : "run `/perm build`";
   return [
     "## Plan Mode is active",
     "",
@@ -167,7 +183,7 @@ export function planModeSystemPrompt(today: string): string {
     "   displays it.",
     "4. After show_plan, do NOT summarize, recap, or describe the plan, and add no other",
     "   commentary. Your entire reply must be a single short line: ask the user to review",
-    "   the plan and press `alt+m` (or run `/perm build`) to switch to Build mode and apply it.",
+    `   the plan and ${switchInstruction} to switch to Build mode and apply it.`,
     "",
     "For quick questions that aren't planning tasks, just answer normally.",
   ].join("\n");

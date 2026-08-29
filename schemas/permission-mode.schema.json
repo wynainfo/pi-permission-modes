@@ -13,8 +13,16 @@
     },
     "cycleOrder": {
       "type": "array",
-      "description": "Order modes are cycled with alt+m; also the display order.",
+      "description": "Order in which modes are cycled; also the display order.",
       "items": { "type": "string" }
+    },
+    "statusFormat": {
+      "type": "string",
+      "description": "Optional global footer template. Tokens: %m mode label, %M mode shortcut, %n network state, %N network shortcut. Ignored in project config."
+    },
+    "keyBindings": {
+      "$ref": "#/$defs/keyBindings",
+      "description": "Extension shortcuts. A string or string array binds keys; an empty array disables the shortcut. Ignored in project config."
     },
     "modes": {
       "type": "object",
@@ -23,6 +31,20 @@
     }
   },
   "$defs": {
+    "keyBindingValue": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      ]
+    },
+    "keyBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sandbox": { "$ref": "#/$defs/keyBindingValue", "description": "Cycle permission modes (default alt+m)." },
+        "network": { "$ref": "#/$defs/keyBindingValue", "description": "Toggle session network filtering (default alt+n)." }
+      }
+    },
     "action": {
       "enum": ["allow", "ask", "deny"],
       "description": "allow = pass through; ask = prompt; deny = block."

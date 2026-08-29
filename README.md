@@ -77,17 +77,18 @@ for OS-level enforcement.
 
 ## Modes
 
-Cycle with **`alt+m`** or set directly with **`/perm <mode>`**. The current mode
-is persisted per session (survives `/reload`, resume, and branch navigation) and
-shown in the footer.
+Cycle with **`alt+m`** by default (customizable below), or set directly with
+**`/perm <mode>`**. The current mode is persisted per session (survives
+`/reload`, resume, and branch navigation) and shown in the footer.
 
 Default, Plan Mode, and Build all run in-project `bash` inside the OS sandbox.
-The footer always shows the mode, the network state, and their shortcuts —
+The default footer shows the mode, network state, and configured shortcuts —
 e.g. `Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)` —
 with the network chip green while the domain allowlist filters and orange when
 open (see [Network](#network)). Only YOLO is unsandboxed. Labels are plain text
-(no icons); `alt+m` cycles in the order below. The table describes the **shipped defaults** — every mode is data and can
-be retuned, and you can add your own, in `permission-mode.json` (see
+(no icons); the mode shortcut cycles in the order below. The table describes the
+**shipped defaults** — every mode is data and can be retuned, and you can add
+your own, in `permission-mode.json` (see
 [Configuration](#configuration)).
 
 | Mode | Behavior |
@@ -138,10 +139,10 @@ allowlist** (package registries + GitHub by default). This is no longer a silent
 wall — a request to a host outside the allowlist **pauses while you're asked**
 (*Allow for session / Allow forever / Deny*), then proceeds or fails:
 
-- **`alt+n`** toggles filtering for the session: `Network: filtered` (green) ⇄
-  `Network: open` (orange) in the footer, which always shows the shortcut.
+- **`alt+n`** toggles filtering for the session by default: `Network: filtered`
+  (green) ⇄ `Network: open` (orange) in the footer.
 - **`/net`** — `status` (allowlist, session grants/denies), `allow <domain…>`
-  (grant for the session), `open` / `restrict` (same as `alt+n`), `reset`
+  (grant for the session), `open` / `restrict` (same toggle), `reset`
   (forget session grants/denies).
 - The model has a **`request_network_access`** tool: it names the domains and a
   reason, you approve or deny — one prompt can cover several domains (e.g. all
@@ -254,14 +255,16 @@ Modes are data, layered in this order:
    (the four built-in modes). This is the same format you edit; copy it to make
    your own, or run **`/perm init`** to drop a copy at the global path below.
 2. `~/.pi/agent/permission-mode/permission-mode.json` (**global, full authority**):
-   redefine built-in modes, add your own, and set `defaultMode` / `cycleOrder`.
-   (Stable location, independent of where `pi install` placed the extension.)
+   redefine built-in modes, add your own, set `defaultMode` / `cycleOrder`, and
+   configure `statusFormat` / `keyBindings`. (Stable location, independent of
+   where `pi install` placed the extension.)
 3. `<project>/.pi/permission-mode.json` (**project, tighten-only**): may only make
    an existing mode *stricter*. Its permission policy is applied as a
    most-restrictive overlay (so it can only `ask`/`deny` more, never loosen — no
    matter what patterns it uses), and its sandbox is intersected/unioned the
-   stricter way. A project config **cannot** add modes, change defaults, or widen
-   anything. Opening an untrusted repo can never weaken your protection.
+   stricter way. A project config **cannot** add modes, change defaults, override
+   the global footer/shortcuts, or widen anything. Opening an untrusted repo can
+   never weaken your protection.
 
 ### Shape
 
@@ -270,6 +273,11 @@ Modes are data, layered in this order:
   "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
   "defaultMode": "default",
   "cycleOrder": ["default", "plan", "build", "yolo"],
+  "statusFormat": "%m (%M) | Network: %n (%N)", // optional full footer replacement
+  "keyBindings": {                              // global only; string or string[]
+    "sandbox": ["alt+m", "shift+tab"],          // [] disables mode cycling shortcut
+    "network": "alt+n"                          // [] disables network shortcut
+  },
   "modes": {
     "default": {                        // values here are illustrative — run /perm init for the real defaults
       "label": "Default",
@@ -300,6 +308,14 @@ Modes are data, layered in this order:
   }
 }
 ```
+
+`statusFormat` supports `%m` (colored mode label), `%M` (mode shortcut), `%n`
+(colored network state), and `%N` (network shortcut). Omit it to keep the default
+layout, including the `(sandboxed in project dir)` hint. Sandbox degradation
+warnings are always appended, even if a custom template omits status tokens.
+Multiple shortcut keys are shown with `/`; an empty array disables that shortcut.
+After changing `statusFormat` or `keyBindings`, run **`/reload`**. These two
+settings are read only from the global config, never from a project overlay.
 
 **Actions:** `allow` (pass through), `ask` (prompt), `deny` (block). A surface is
 either a single action or a `{ "<glob>": <action> }` map where **`*` matches any

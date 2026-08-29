@@ -157,6 +157,8 @@ async function setup(
     permFlag?: string;
     /** Simulate a parent-forwarded PI_PERMISSION_MODE. */
     envMode?: string;
+    /** Seed the global permission-mode.json before extension initialization. */
+    globalConfig?: unknown;
     entries?: Array<{ type: string; customType?: string; data?: unknown }>;
   } = {},
 ): Promise<Harness> {
@@ -165,6 +167,11 @@ async function setup(
   const agentDir = path.join(base, "agent");
   mkdirSync(path.join(root, "src"), { recursive: true });
   mkdirSync(agentDir, { recursive: true });
+  if (opts.globalConfig !== undefined) {
+    const configDir = path.join(agentDir, "permission-mode");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(path.join(configDir, "permission-mode.json"), JSON.stringify(opts.globalConfig));
+  }
 
   const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
   const prevCwd = process.cwd();
@@ -445,6 +452,44 @@ test("alt+m cycles modes and persists the choice as a session entry", { skip }, 
     assert.deepEqual(h.pi.entries.at(-1), { customType: "perm-mode", data: { mode: "plan" } });
     await h.pi.shortcuts.get("alt+m")!(h.ctx);
     assert.match(h.ctx.status, /^Build /);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("custom status and shortcut strings/arrays are loaded before registration", { skip }, async () => {
+  const h = await setup({
+    globalConfig: {
+      statusFormat: "%m | mode=%M | net=%n | toggle=%N",
+      keyBindings: {
+        sandbox: ["ctrl+m", "shift+m"],
+        network: ["ctrl+n", "shift+n"],
+      },
+    },
+  });
+  try {
+    assert.deepEqual([...h.pi.shortcuts.keys()].sort(), ["ctrl+m", "ctrl+n", "shift+m", "shift+n"]);
+    assert.equal(h.ctx.status, "Default | mode=ctrl+m/shift+m | net=open | toggle=ctrl+n/shift+n");
+
+    await h.pi.shortcuts.get("shift+m")!(h.ctx);
+    assert.match(h.ctx.status, /^Plan Mode \| mode=ctrl\+m\/shift\+m/);
+    const prompt = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(prompt.systemPrompt, /press `ctrl\+m\/shift\+m`/);
+    assert.doesNotMatch(prompt.systemPrompt, /alt\+m|alt\+n/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("empty shortcut arrays disable registration and remove shortcut hints", { skip }, async () => {
+  const h = await setup({ globalConfig: { keyBindings: { sandbox: [], network: [] } } });
+  try {
+    assert.equal(h.pi.shortcuts.size, 0);
+    assert.equal(h.ctx.status, "Default  Network: open");
+    await h.perm("plan");
+    const prompt = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(prompt.systemPrompt, /run `\/perm build` to switch/);
+    assert.doesNotMatch(prompt.systemPrompt, /press `|alt\+m|alt\+n/);
   } finally {
     h.cleanup();
   }
