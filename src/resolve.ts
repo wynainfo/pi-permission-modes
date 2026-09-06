@@ -42,7 +42,7 @@ export function matchPattern(pattern: string, target: string): boolean {
     else re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   re += "$";
-  return new RegExp(re).test(t);
+  return new RegExp(re, "s").test(t);
 }
 
 /**

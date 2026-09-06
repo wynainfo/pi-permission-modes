@@ -9,6 +9,7 @@ test("matchPattern: * spans path separators, ? is one char", () => {
   assert.ok(matchPattern("*.md", "src/deep/foo.md")); // * crosses /
   assert.ok(!matchPattern("*.md", "foo.ts"));
   assert.ok(matchPattern("*", "anything/at/all"));
+  assert.ok(matchPattern("*", "printf one\nprintf two"));
   assert.ok(matchPattern("file?.txt", "file1.txt"));
   assert.ok(!matchPattern("file?.txt", "file12.txt"));
 });
@@ -51,6 +52,11 @@ const mode = (permission: ModeDef["permission"]): ModeDef => ({
   color: "muted",
   sandbox: { enabled: true, writable: true },
   permission,
+});
+
+test("decide: bash wildcard allows multiline commands", () => {
+  const m = mode({ bash: { "*": "allow" } });
+  assert.equal(decide(m, "bash", "printf one\nprintf two"), "allow");
 });
 
 test("decide: path gate overrides a per-tool allow (most-restrictive)", () => {
