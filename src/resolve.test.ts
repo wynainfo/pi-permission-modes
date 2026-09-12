@@ -9,6 +9,7 @@ test("matchPattern: * spans path separators, ? is one char", () => {
   assert.ok(matchPattern("*.md", "src/deep/foo.md")); // * crosses /
   assert.ok(!matchPattern("*.md", "foo.ts"));
   assert.ok(matchPattern("*", "anything/at/all"));
+  assert.ok(matchPattern("*", "line one\nline two")); // * must also cross newlines
   assert.ok(matchPattern("file?.txt", "file1.txt"));
   assert.ok(!matchPattern("file?.txt", "file12.txt"));
 });

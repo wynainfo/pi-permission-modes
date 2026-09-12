@@ -37,8 +37,8 @@ export function matchPattern(pattern: string, target: string): boolean {
   const t = expandHome(target);
   let re = "^";
   for (const ch of p) {
-    if (ch === "*") re += ".*";
-    else if (ch === "?") re += ".";
+    if (ch === "*") re += "[\\s\\S]*";
+    else if (ch === "?") re += "[\\s\\S]";
     else re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   re += "$";
