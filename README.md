@@ -223,7 +223,9 @@ with `"injectSandboxInfo": false`; unsandboxed modes (YOLO) never inject.
 
 **Tool hiding.** A mode's `hideTools` list removes those tools from the model
 *before* it reasons (via the active-tools allowlist), so it never attempts them.
-`show_plan` is never hidden.
+This applies to `show_plan` too: hiding it is a deliberate operator choice —
+setups that don't use Plan Mode lose nothing, and a Plan-mode user who hides it
+loses only the rendered plan preview (the plan file itself is still written).
 
 **Skills & extension tools.** Skills are gated by name at `/skill:<name>` (the
 `skill` surface); any non-builtin/extension tool (including MCP-as-tool in a host

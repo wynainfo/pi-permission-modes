@@ -284,6 +284,22 @@ test("plan mode: Markdown-only writes, plan prompt injected, show_plan stays vis
   }
 });
 
+test("hideTools: show_plan hides when a mode explicitly lists it", { skip }, async () => {
+  const h = await setup();
+  try {
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      JSON.stringify({ modes: { default: { hideTools: ["show_plan"] } } }),
+    );
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.ok(!h.pi.activeTools.includes("show_plan"));
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("yolo: never prompts, never blocks, protected paths bypassed", { skip }, async () => {
   const h = await setup();
   try {

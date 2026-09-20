@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **`hideTools` now hides `show_plan` when a mode explicitly lists it.** The
+  hard-coded exemption ("`show_plan` is never hidden") treated an explicit
+  operator setting as a typo and silently ignored it. Config is intent: a mode
+  that lists `show_plan` in `hideTools` (e.g. setups without Plan Mode) gets
+  exactly that. Stock defaults are unchanged — without an explicit entry,
+  `show_plan` stays visible everywhere, including Plan Mode.
+
 ## [2.2.0]
 
 ### Added

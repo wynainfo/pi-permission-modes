@@ -100,9 +100,6 @@ const BUILTIN_HANDLED = new Set([
   "request_network_access", // prompts on its own — gating it would double-prompt
 ]);
 
-/** Our own tools that must never be hidden (show_plan is needed in Plan mode). */
-const NEVER_HIDE = new Set(["show_plan"]);
-
 export default async function (pi: ExtensionAPI) {
   // The engine starts on the shipped stock defaults (permission-mode.defaults.json);
   // session_start reloads the merged config (stock + global full-authority +
@@ -205,7 +202,7 @@ export default async function (pi: ExtensionAPI) {
 
   // Hide a mode's `hideTools` from the model (pre-exposure), restoring the rest.
   const applyToolVisibility = () => {
-    const hide = new Set((currentMode().hideTools ?? []).filter((n) => !NEVER_HIDE.has(n)));
+    const hide = new Set(currentMode().hideTools ?? []);
     const all = pi.getAllTools().map((t) => t.name);
     pi.setActiveTools(hide.size ? all.filter((n) => !hide.has(n)) : all);
   };
