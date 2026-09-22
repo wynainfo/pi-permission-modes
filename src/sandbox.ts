@@ -4,6 +4,9 @@
  * Wraps `@anthropic-ai/sandbox-runtime` (loaded lazily so a missing dependency
  * degrades gracefully instead of crashing) behind a small `SandboxController`
  * that owns init / wrap / reset and the readiness state surfaced in the footer.
+ *
+ * On Windows, falls back to the WinSandboxController for path confinement
+ * enforcement (no bubblewrap/sandbox-exec equivalent on Windows).
  */
 
 import { spawn } from "node:child_process";
@@ -14,6 +17,7 @@ import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-
 import { gitFileBlocksSandbox, removeSandboxPlaceholders } from "./paths.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
+import { isPowerShellAvailable, createWinSandboxOperations } from "./win-sandbox.ts";
 
 // Real type of the runtime singleton, erased at compile time so a missing
 // dependency never breaks loading. Replaces the former `any`.
@@ -139,6 +143,8 @@ export class SandboxController {
   private notifyFn: Notify = () => {};
   private askHost: ((host: string, port: number | undefined) => Promise<boolean>) | undefined;
   private drainBlockedHosts: (() => string[]) | undefined;
+  /** Current working directory (for Windows path confinement). */
+  cwd: string | undefined;
   ready = false;
   disabled = false;
   warn: string | undefined;
@@ -150,10 +156,22 @@ export class SandboxController {
 
   /**
    * Wrap a fresh BashOperations around the active runtime, or null when
-   * unavailable. With `readOnly`, the command runs with project writes disabled
+   * unavailable. On Windows (no bubblewrap/sandbox-exec), delegates to the
+   * WinSandboxController for path confinement wrapping.
+   *
+   * With `readOnly`, the command runs with project writes disabled
    * (Plan mode) — the library still allows its own default scratch paths.
    */
   bashOps(opts: { readOnly?: boolean } = {}): BashOperations | null {
+    // On Windows, use path-confinement wrapping (no bubblewrap/sandbox-exec)
+    if (process.platform === "win32") {
+      if (!this.profile) return null;
+      const profile = { ...this.profile };
+      if (opts.readOnly) {
+        profile.allowWrite = []; // No writes in read-only mode
+      }
+      return createWinSandboxOperations(profile, this.cwd ?? "");
+    }
     if (!this.manager || !this.profile) return null;
     const customConfig = opts.readOnly ? readOnlyOverride(profileToConfig(this.profile)) : undefined;
     return createSandboxedBashOps(this.manager, customConfig, this.drainBlockedHosts);
@@ -172,6 +190,7 @@ export class SandboxController {
     this.warn = undefined;
     this.manager = null;
     this.appliedKey = undefined;
+    this.cwd = cwd;
     this.hasUI = hasUI;
     this.notifyFn = notify;
     this.askHost = askHost;
@@ -181,6 +200,13 @@ export class SandboxController {
       this.disabled = true;
       this.degraded = true;
       this.profile = profile;
+      return;
+    }
+    if (process.platform === "win32") {
+      // On Windows, use the WinSandboxController for path confinement.
+      // It reports ready=true when PowerShell is available.
+      this.profile = profile;
+      await this.applyProfile(profile);
       return;
     }
     if (process.platform !== "darwin" && process.platform !== "linux") {
@@ -241,7 +267,24 @@ export class SandboxController {
    */
   async applyProfile(profile: SandboxProfile): Promise<void> {
     this.profile = profile;
-    if (this.degraded || !this.manager) return;
+    if (this.degraded) return;
+
+    // On Windows, report ready only when we can enforce path confinement
+    // (PowerShell present) AND the mode asks for sandboxing. Without
+    // PowerShell the WinSandboxController degrades to policy-only (allow/ask/
+    // deny gates still apply), so the sandboxed modes fall back to prompting.
+    if (process.platform === "win32") {
+      const psAvailable = isPowerShellAvailable();
+      this.ready = !this.disabled && !!profile.enabled && psAvailable;
+      this.warn = this.disabled
+        ? "sandbox disabled via --no-sandbox"
+        : psAvailable
+          ? undefined
+          : "PowerShell not available — policy-only enforcement";
+      return;
+    }
+
+    if (!this.manager) return;
     if (!profile.enabled) return; // non-sandboxing mode (e.g. YOLO): keep prior init
 
     const cfg = profileToConfig(profile);

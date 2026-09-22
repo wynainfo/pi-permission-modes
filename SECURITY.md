@@ -76,8 +76,14 @@ you can rely on it appropriately.
   headless worker), and without re-exporting the fallback to its own children
   (they derive the same fallback themselves). Don't rely on forwarding as a
   security boundary — the child enforces its own modes regardless.
-- **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`) and macOS only.
-  Windows is unsupported; the sandboxed modes degrade to prompting there.
+- **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`) and macOS —
+  full OS-level sandbox (`bubblewrap` / `sandbox-exec`). **Windows** ships a
+  **path-confinement sandbox** via the `WinSandboxController` (PowerShell-based):
+  writes are confined to the project directory, protected Windows paths
+  (System32, registry files, etc.) are blocked, and privilege escalation
+  attempts are detected. This is best-effort at the command layer — the
+  policy engine's gates (allow/ask/deny) remain the primary enforcement.
+  For full OS-level sandboxing, run pi under **WSL2**.
 - **Git worktrees/submodules** can't be OS-sandboxed (bubblewrap can't bind
   `.git/hooks` under a `.git` file); those projects degrade to prompting.
 

@@ -5,6 +5,13 @@ permission-mode.json
 sandbox.json
 .pi/
 
+# Test coverage output (c8 / node --test --experimental-test-coverage)
+coverage/
+
+# Plan-mode artifacts written under project plan/ (user content, not source)
+plan/
+PLAN.md
+
 # Misc
 *.local.json
 *.log

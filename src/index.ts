@@ -524,14 +524,20 @@ export default async function (pi: ExtensionAPI) {
     approvedUnsandboxed.delete(event.toolCallId);
   });
 
-  // Inject the sandbox-awareness section and the active mode's system prompt
-  // (if any). The handler runs each turn and reads the live mode + sandbox
-  // state, so it auto-updates when the mode changes. The "@plan" sentinel
-  // resolves to the date-stamped Plan-mode prompt. A mode picked as the
-  // implicit headless fallback keeps the FACTUAL awareness section (boundary
-  // knowledge helps a worker avoid failing commands) but skips the mode's
-  // STEERING systemPrompt, which would misdirect a headless worker.
-  pi.on("before_agent_start", async (event) => {
+  // Tell the agent, each turn, which mode is active and what its sandbox
+  // boundaries are. The handler runs live (mode + sandbox + network state are
+  // read at emit time), so it auto-updates when the mode changes.
+  //
+  // Cache note (why this injects a message instead of rewriting the system
+  // prompt): the system prompt is the FIRST block of the LLM request, so any
+  // change there — even a 4-token mode label — invalidates the provider's
+  // prompt-cache prefix and re-bills the whole context (often tens of thousands
+  // of tokens). Returning a `message` instead keeps the system prompt
+  // byte-identical and pi appends the payload as a role:user message at the
+  // TAIL of the request, so a mode switch re-bills only the small tail. The
+  // message is persisted into the session (survives sub-turns and resume) and
+  // `display:false` keeps it out of the transcript.
+  pi.on("before_agent_start", async () => {
     applyToolVisibility(); // keep hidden tools hidden as the tool set evolves
     const m = currentMode();
     const parts: string[] = [];
@@ -543,11 +549,22 @@ export default async function (pi: ExtensionAPI) {
     });
     if (aware) parts.push(aware);
     const sp = m.systemPrompt;
+    // A mode picked as the implicit headless fallback keeps the FACTUAL
+    // awareness section (boundary knowledge helps a worker avoid failing
+    // commands) but skips the mode's STEERING systemPrompt, which would
+    // misdirect a headless worker.
     if (sp && !fallbackMode) {
       parts.push(sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp);
     }
     if (parts.length === 0) return undefined;
-    return { systemPrompt: [event.systemPrompt, ...parts].join("\n\n") };
+    return {
+      message: {
+        customType: "perm-mode-aware",
+        content: parts.join("\n\n"),
+        // Hidden from the TUI transcript — the footer already shows the mode.
+        display: false,
+      },
+    };
   });
 
   // Skill gating: skills aren't tools — they're invoked via `/skill:<name>` text,

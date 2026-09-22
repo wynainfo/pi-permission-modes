@@ -1,12 +1,14 @@
 /**
  * Sandbox awareness — the factual "these are your enforcement boundaries"
- * system-prompt section injected each turn (via before_agent_start) while a
- * sandboxed mode is active.
+ * per-turn brief the agent sees once per turn (injected via before_agent_start)
+ * while a sandboxed mode is active. index.ts delivers it as a conversation-tail
+ * custom message (not a system-prompt rewrite) so switching modes never
+ * invalidates the LLM's prompt-cache prefix.
  *
  * Without it the model discovers the sandbox by crashing into it: writes to
  * $HOME, installs into ~/.npm, fetches from non-allowlisted domains — then
  * wastes turns probing variants of a command the kernel will never allow.
- * This section is generated from the ACTIVE mode's merged profile (so global
+ * This brief is generated from the ACTIVE mode's merged profile (so global
  * overrides and project tighten-only overlays are reflected truthfully) and
  * states where writes work, which reads are denied, which domains are
  * reachable, and how the prompt flow handles everything else.
@@ -38,10 +40,10 @@ export interface AwarenessOptions {
 const renderWritePath = (p: string): string => (p === "." || p === "./" ? "the project directory" : p);
 
 /**
- * The sandbox-boundary section for `mode`, or undefined when there is nothing
+ * The sandbox-boundary brief for `mode`, or undefined when there is nothing
  * to inject: the mode opted out (`injectSandboxInfo: false`) or doesn't
  * sandbox at all (`sandbox.enabled: false` — full permissions need no
- * boundary briefing).
+ * boundary briefing). index.ts places the result in a per-turn message.
  */
 export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): string | undefined {
   if (mode.injectSandboxInfo === false) return undefined;
@@ -60,7 +62,10 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     ].join("\n");
   }
 
-  const lines = [header, "", "Bash runs inside an OS-level sandbox with these boundaries:", ""];
+  // On Windows, the sandbox uses path confinement (policy-enforced) instead of
+  // an OS-level sandbox like bubblewrap.
+  const sandboxType = process.platform === "win32" ? "a path-confinement sandbox" : "an OS-level sandbox";
+  const lines = [header, "", `Bash runs inside ${sandboxType} with these boundaries:`, ""];
 
   if (!sb.writable) {
     lines.push(
@@ -95,7 +100,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     "- Commands beyond these boundaries (out-of-project paths, sudo/doas) are fine to issue: the user is asked for permission automatically, and approved commands run outside the sandbox.",
     mode.bypassProtectedPaths
       ? "- File tools (read/edit/write/…) are policy-gated rather than OS-sandboxed."
-      : "- File tools (read/edit/write/…) are policy-gated rather than OS-sandboxed; writes to protected paths (.git/, .env*, dotfiles) are blocked.",
+      : "- File tools (read/edit/write/…) are policy-gated; writes to protected paths (.git/, .env*, dotfiles) are blocked.",
     "",
     "If a command fails with a permission or network error without a prompt having appeared, the sandbox blocked it silently — ask the user for that step instead of retrying variants.",
   );

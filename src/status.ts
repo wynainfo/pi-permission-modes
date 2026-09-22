@@ -10,6 +10,7 @@ import type { SandboxController } from "./sandbox.ts";
  * Render the `perm` status chip:
  *
  *   Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)
+ *   Build (sandboxed (path confinement), alt+m)  Network: open
  *   YOLO (alt+m)  Network: open
  *
  * The shortcut hints are always shown — toggling is the least discoverable
@@ -22,7 +23,12 @@ export function updateStatus(ctx: ExtensionContext, mode: ModeDef, sandbox: Sand
   const t = ctx.ui.theme;
   const enforcing = mode.sandbox.enabled && sandbox.ready;
   let status = t.fg(mode.color, mode.label);
-  status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");
+  let label = enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)";
+  // On Windows, indicate the type of sandboxing (path confinement vs OS-level)
+  if (enforcing && process.platform === "win32") {
+    label = "(sandboxed (path confinement), alt+m)";
+  }
+  status += " " + t.fg("dim", label);
   if (mode.sandbox.enabled && sandbox.warn && !sandbox.disabled) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
   if (enforcing) {
     status +=

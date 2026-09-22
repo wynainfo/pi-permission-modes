@@ -62,8 +62,30 @@ sudo apt install -y bubblewrap socat ripgrep
 - `ripgrep` — provides `rg`.
 
 On **macOS** the sandbox uses the built-in `sandbox-exec` — no extra packages.
-Native **Windows** is unsupported (modes degrade to prompting); run pi under WSL
-for OS-level enforcement.
+
+On **native Windows**, the extension provides **path confinement sandboxing**
+via the `WinSandboxController`. Instead of an OS-level sandbox (bubblewrap /
+sandbox-exec), it wraps PowerShell and Git Bash commands with strict path
+enforcement — writes are confined to the project directory, protected Windows
+paths (System32, registry files, etc.) are blocked, and privilege escalation
+attempts are detected. PowerShell is required (PowerShell 7 preferred); without
+it the extension falls back to policy-only enforcement (the allow/ask/deny
+ gates still apply). The footer shows
+`Build (sandboxed (path confinement), alt+m)` to distinguish it from the
+full OS-level sandbox.
+
+> **Note:** Windows path confinement is best-effort at the command layer.
+The policy engine's gates (allow/ask/deny) remain the primary enforcement. For
+full OS-level sandboxing, run pi under WSL2 (see Linux instructions above).
+
+### Windows tips
+
+- Install **PowerShell 7** (`pwsh`) from the Microsoft Store or GitHub for the
+  best experience.
+- **Git Bash** is optional but recommended for the `bash` tool — the sandbox
+  controller uses it when available.
+- On Windows, `alt+m` cycles modes and `alt+n` toggles network filtering, just
+  like other platforms.
 
 ### Verify
 
@@ -212,14 +234,19 @@ or privilege escalation you approve, since you authorized it; `deny` never runs.
 > confines nothing. [SECURITY.md](SECURITY.md) has the full threat model.
 
 **Sandbox awareness.** While a sandboxed mode is active, a factual
-`## Sandbox & permissions` section is injected into the system prompt each turn:
-the writable paths, denied reads, and network allowlist of the **merged** profile
+`## Sandbox & permissions` brief is given to the model each turn: the writable
+paths, denied reads, and network allowlist of the **merged** profile
 (project overlays included), plus how the prompt flow works. The model then picks
 paths and domains that actually work — project-local installs instead of `~/.npm`,
 allowlisted hosts instead of dead fetches — and knows a boundary-crossing command
 is fine to issue because you'll simply be asked. When the sandbox is degraded, the
-section says so and points at the confirmation prompts instead. Opt a mode out
+brief says so and points at the confirmation prompts instead. Opt a mode out
 with `"injectSandboxInfo": false`; unsandboxed modes (YOLO) never inject.
+
+Cache note: the brief is delivered as a short message appended to the end of each
+turn (not a system-prompt rewrite), so switching modes leaves the system prompt
+byte-identical and never invalidates the provider's prompt-cache prefix — only
+the small tail re-bills.
 
 **Tool hiding.** A mode's `hideTools` list removes those tools from the model
 *before* it reasons (via the active-tools allowlist), so it never attempts them.
@@ -274,8 +301,8 @@ Modes are data, layered in this order:
     "default": {                        // values here are illustrative — run /perm init for the real defaults
       "label": "Default",
       "color": "muted",                 // muted | mdLink | accent | error
-      "systemPrompt": "@plan",          // optional; "@plan" = the dated Plan-mode prompt
-      "injectSandboxInfo": true,        // inject the mode's sandbox boundaries into the system prompt (default true)
+      "systemPrompt": "@plan",          // optional; "@plan" = the dated Plan-mode prompt (delivered per-turn)
+      "injectSandboxInfo": true,        // include the mode's sandbox boundaries in the per-turn brief (default true)
       "sandbox": {
         "enabled": true,                // false = run bash unsandboxed (YOLO-style)
         "writable": true,               // false = bash runs read-only (Plan-style)
