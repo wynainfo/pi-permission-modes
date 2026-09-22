@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import test from "node:test";
-import { decide, decideBashCommand, expandHome, matchPattern, mostRestrictive, resolveSurface } from "./resolve.ts";
+import { decide, decideBashChain, decideBashCommand, expandHome, matchPattern, mostRestrictive, resolveSurface } from "./resolve.ts";
 import type { ModeDef } from "./schema.ts";
 
 test("matchPattern: * spans path separators, ? is one char", () => {
@@ -130,4 +130,28 @@ test("decideBashCommand: project overlay path rules tighten bash (most-restricti
 test("decideBashCommand: undefined when no layer matches (caller picks default)", () => {
   const m = mode({});
   assert.equal(decideBashCommand(m, "ls", []), undefined);
+});
+
+test("decideBashChain: most-restrictive across the chain", () => {
+  const m = mode({ path: { "*": "allow" }, bash: { "*": "allow", "curl *": "ask", "sudo *": "deny" } });
+  assert.equal(decideBashChain(m, [{ name: "git", args: ["status"] }]), "allow");
+  assert.equal(decideBashChain(m, [{ name: "git", args: ["status"] }, { name: "curl", args: ["x"] }]), "ask");
+  assert.equal(decideBashChain(m, [{ name: "curl", args: ["x"] }, { name: "sudo", args: ["id"] }]), "deny");
+});
+
+test("decideBashChain: an unmatched command falls back to ask, not allow", () => {
+  // A sparse custom mode with no "*" rule: commands it never mentions must
+  // prompt (least privilege, as decide() does for file tools) — the dispatcher
+  // used to treat them as "allow" within a chain.
+  const sparse = mode({ bash: { "git *": "allow" } });
+  assert.equal(decideBashChain(sparse, [{ name: "git", args: ["status"] }]), "allow");
+  assert.equal(decideBashChain(sparse, [{ name: "ls", args: [] }]), "ask");
+  assert.equal(decideBashChain(sparse, [{ name: "git", args: ["status"] }, { name: "ls", args: [] }]), "ask");
+  assert.equal(decideBashChain(sparse, []), "ask");
+  // The same shape through decide() (unsandboxed / heuristic path) already asked.
+  assert.equal(decide(sparse, "bash", "ls"), "ask");
+  // An explicit fallback is honored; a "*" rule (as every built-in has) never hits it.
+  assert.equal(decideBashChain(sparse, [{ name: "ls", args: [] }], "allow"), "allow");
+  const star = mode({ path: { "*": "allow" }, bash: { "*": "allow" } });
+  assert.equal(decideBashChain(star, [{ name: "ls", args: [] }]), "allow");
 });

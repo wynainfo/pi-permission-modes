@@ -63,7 +63,7 @@ import {
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
 import { isOutside, isProtectedWrite, sandboxAllowedRoots } from "./paths.ts";
-import { decide, decideBashCommand, mostRestrictive } from "./resolve.ts";
+import { decide, decideBashChain } from "./resolve.ts";
 import { SandboxController } from "./sandbox.ts";
 import {
   type Action,
@@ -616,14 +616,9 @@ export default async function (pi: ExtensionAPI) {
       // see decideBashCommand), most-restrictive across the chain; detect
       // escapes/privilege.
       const analysis = await analyzeBash(command, root, bounds);
-      let action: Action;
-      if (analysis.commands.length > 0) {
-        action = analysis.commands
-          .map((c) => decideBashCommand(m, c.name, c.args) ?? "allow")
-          .reduce<Action>((a, b) => mostRestrictive(a, b) ?? "allow", "allow");
-      } else {
-        action = decide(m, "bash", command);
-      }
+      // A command no layer matches falls back to "ask" (see decideBashChain).
+      const action: Action =
+        analysis.commands.length > 0 ? decideBashChain(m, analysis.commands) : decide(m, "bash", command);
       const gate = bashGate(action, analysis.outsideReason, m.sandbox.enabled, sandbox.ready);
       if (gate.kind === "block") return { block: true, reason: gate.reason };
       if (gate.kind === "prompt") {

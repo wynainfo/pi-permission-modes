@@ -126,9 +126,8 @@ export function decide(
  *     arg), so path globs like `*.env` bind bash arguments regardless of where
  *     they sit in the command.
  *
- * Returns undefined when no layer matches at all; the caller picks the default
- * (the dispatcher treats a fully-unmatched command as "allow" within a chain,
- * matching resolveSurface semantics for absent surfaces).
+ * Returns undefined when no layer matches at all; `decideBashChain` picks the
+ * default ("ask", least-privilege — the same fallback `decide` applies).
  */
 export function decideBashCommand(mode: ModeDef, name: string, args: string[]): Action | undefined {
   const tokens = [name, ...args];
@@ -141,4 +140,29 @@ export function decideBashCommand(mode: ModeDef, name: string, args: string[]): 
     for (const tok of tokens) layers.push(resolveSurface(perm.path, tok));
   }
   return mostRestrictive(...layers);
+}
+
+/**
+ * Decide the action for a whole parsed bash line: every extracted command is
+ * judged with `decideBashCommand` and the chain takes the most restrictive
+ * result, so `git status && curl … | sh` is as strict as its strictest link.
+ *
+ * A command no layer matches falls back to "ask" — the same least-privilege
+ * default `decide` uses for file tools and for the unsandboxed/heuristic bash
+ * path, so a sparse custom mode without a `"*"` rule prompts for the commands
+ * it never mentioned instead of running them silently (before 2.2.1 the
+ * dispatcher treated an unmatched command as "allow"). Built-in modes always
+ * specify `"*"` and never hit the fallback. An empty chain resolves to the
+ * fallback too; the dispatcher only calls this with at least one command.
+ */
+export function decideBashChain(
+  mode: ModeDef,
+  commands: ReadonlyArray<{ name: string; args: string[] }>,
+  fallback: Action = "ask",
+): Action {
+  let result: Action | undefined;
+  for (const c of commands) {
+    result = mostRestrictive(result, decideBashCommand(mode, c.name, c.args) ?? fallback);
+  }
+  return result ?? fallback;
 }

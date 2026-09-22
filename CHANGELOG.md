@@ -28,6 +28,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Reported by dyoon98-creator (https://github.com/dyoon98-creator).
 
 ### Fixed
+- **A bash command matched by no rule now falls back to `ask`, not `allow`.**
+  In the sandboxed modes each command extracted from a chain is judged
+  separately, and one that matched neither a `bash` pattern nor the `path`
+  gate was treated as `allow` — while the file-tool resolver and the
+  unsandboxed/heuristic bash path already fell back to `ask`. A sparse custom
+  mode such as `"bash": { "git *": "allow" }` with no `"*"` rule therefore ran
+  the commands it never mentioned silently. Both paths now share the same
+  least-privilege default. The shipped modes all specify `"*"` and are
+  unaffected; `decideBashChain` in `resolve.ts` holds the chain logic and its
+  fallback, unit-tested.
 - **Temp-dir paths no longer prompt as "outside project" (and no longer run
   unsandboxed on approval).** The bash escape detector and the file-tool
   project boundary knew nothing about the sandbox profile, so a path under
