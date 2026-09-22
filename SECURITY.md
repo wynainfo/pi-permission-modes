@@ -20,10 +20,10 @@ you can rely on it appropriately.
    boundary.
 2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`) — the real enforcement for
    in-project `bash` in the sandboxed modes: `bubblewrap` (Linux) / `sandbox-exec`
-   (macOS) confine **writes** to the profile's `allowWrite` (project + `/tmp` by
-   default) and deny reads of the profile's `denyRead` secrets, regardless of what
-   the command does. A `bash` action of `allow` still runs **sandboxed**; the
-   sandbox is what actually contains it.
+   (macOS) confine **writes** to the profile's `allowWrite` (project + `/tmp/pi`
+   + the session's scratch directory by default) and deny reads of the profile's
+   `denyRead` secrets, regardless of what the command does. A `bash` action of
+   `allow` still runs **sandboxed**; the sandbox is what actually contains it.
 
 ## Known limitations (read these)
 
@@ -76,6 +76,38 @@ you can rely on it appropriately.
   headless worker), and without re-exporting the fallback to its own children
   (they derive the same fallback themselves). Don't rely on forwarding as a
   security boundary — the child enforces its own modes regardless.
+- **Sandbox-writable directories are in-bounds, and shared.** A path under the
+  active profile's `allowWrite` (`/tmp/pi` by default), the session's scratch
+  directory, or the runtime's own `/tmp/claude` is *not* treated as an escape:
+  no prompt, and the command stays sandboxed. Everything the agent writes
+  there is plain user-owned data on a world-readable `/tmp` — the `/tmp/pi`
+  base is sticky/world-writable like `/tmp` itself and each session folder is
+  `0700`, but files an agent puts directly under the shared base are visible
+  to every pi session (and every process of your user) on the host. Don't
+  route secrets through temp files. A global/project config that drops
+  `/tmp/pi` from `allowWrite` narrows the shared part; the session folder
+  itself is **always** writable and in-bounds (the extension appends it to
+  the profile — a project config cannot remove it).
+- **The runtime has write paths of its own.** `@anthropic-ai/sandbox-runtime`
+  unconditionally allows writes to `/tmp/claude` (and points `TMPDIR` there
+  unless `CLAUDE_TMPDIR` is set — this extension sets it to the scratch
+  directory), `~/.npm/_logs`, `~/.claude/debug`, and — on macOS — the user's
+  `$TMPDIR` under `/var/folders/…`. These are not in your config and cannot be
+  removed from it; only `/tmp/claude` is treated as in-bounds by the prompt
+  layer, the others still prompt.
+- **Temp-dir narrowing is enforced on Linux, partial on macOS, policy-only on
+  Windows.** On Linux only `allowWrite` (plus the runtime's built-ins) is
+  writable — a tool that hardcodes `/tmp` and ignores `TMPDIR` fails silently
+  (the kernel denies it; the awareness prompt tells the model to ask you). On
+  macOS the per-user `/var/folders/…` temp dir stays writable regardless. On
+  Windows there is no OS sandbox at all: `allowWrite` only feeds the prompt
+  bounds, and the scratch directory lives under `os.tmpdir()`.
+- **Scratch sweep is hygiene, not a guarantee.** At session start, sibling
+  folders under the scratch base untouched for 7 days are deleted (directories
+  only — files and symlinks are skipped, never followed; another user's
+  folder can't be deleted and is skipped). It keys on directory mtime. Treat
+  the scratch base as ephemeral and don't rely on the sweep to remove
+  anything sensitive.
 - **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`) and macOS only.
   Windows is unsupported; the sandboxed modes degrade to prompting there.
 - **Git worktrees/submodules on Linux** can't be OS-sandboxed (bubblewrap can't

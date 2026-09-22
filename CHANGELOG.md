@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0]
+
+### Added
+- **Per-session scratch directory.** Every session gets `/tmp/pi/<session-id>/`
+  (Linux/macOS; `<os.tmpdir()>/pi/<session-id>/` on Windows; base overridable
+  with `PI_PERMISSION_TMPDIR`). The awareness section names it, `TMPDIR`
+  points there inside bash (sandboxed runs via the runtime's `CLAUDE_TMPDIR`,
+  unsandboxed runs via the bash tool's spawn hook; Windows also gets
+  `TEMP`/`TMP`), it is always sandbox-writable and in-bounds — appended to
+  the active profile, so a config that narrows the shared base can't make
+  the instruction untrue — and `/sandbox` shows it. Keyed on pi's session id,
+  so `/reload` and resume find their files; nothing is deleted at shutdown.
+  Instead sibling folders untouched for 7 days are swept at session start
+  (directories only; files/symlinks never touched; the current folder is
+  touched on start). YOLO, otherwise silent, now gets a short "scratch
+  directory" pointer so temp files stay per-session there too.
+
+### Changed
+- **Shipped `allowWrite` narrowed from `/tmp` to `/tmp/pi`** in Default, Plan,
+  and Build. The sandbox no longer lets bash write anywhere under `/tmp`, only
+  under the shared pi base and the session folder — so sessions can't clobber
+  each other's or other tools' temp files. A tool that hardcodes `/tmp` and
+  ignores `TMPDIR` now fails inside the sandbox (silently — the awareness
+  prompt tells the model to ask); add `/tmp` back to a mode's `allowWrite`
+  if you depend on one. Existing global configs that list `/tmp` keep it.
+- The awareness section's writable-paths bullet no longer suggests `/tmp/...`
+  for temp files; the scratch-directory bullet does.
+- SECURITY.md documents the temp-dir caveats: in-bounds dirs are shared and
+  world-readable, the runtime's own unconditional write paths (`/tmp/claude`,
+  `~/.npm/_logs`, `~/.claude/debug`, macOS `$TMPDIR`), and that narrowing is
+  enforced on Linux, partial on macOS, policy-only on Windows.
+
 ## [2.2.1]
 
 ### Security

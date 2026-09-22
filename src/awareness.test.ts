@@ -17,7 +17,7 @@ function mode(over: Partial<ModeDef> = {}, sandboxOver: Partial<ModeDef["sandbox
     sandbox: {
       enabled: true,
       writable: true,
-      allowWrite: [".", "/tmp"],
+      allowWrite: [".", "/tmp/pi"],
       denyWrite: [],
       denyRead: ["~/.ssh", "~/.aws", "~/.gnupg"],
       network: { allowedDomains: DOMAINS, deniedDomains: [] },
@@ -32,7 +32,8 @@ test("writable sandboxed mode: renders paths, secrets, domains, and the prompt f
   const out = sandboxAwarenessPrompt(mode(), { active: true });
   assert.ok(out);
   assert.match(out, /^## Sandbox & permissions \(Default\)\n/);
-  assert.match(out, /Writable paths: the project directory, \/tmp\./); // "." rendered friendly
+  assert.match(out, /Writable paths: the project directory, \/tmp\/pi\./); // "." rendered friendly
+  assert.doesNotMatch(out, /scratch directory/); // none given → no scratch bullet
   for (const p of ["~/.ssh", "~/.aws", "~/.gnupg"]) assert.ok(out.includes(p), `denyRead ${p} listed`);
   for (const d of DOMAINS) assert.ok(out.includes(d), `domain ${d} listed`);
   assert.match(out, /asked for permission automatically/); // boundary-crossing is fine to issue
@@ -96,9 +97,33 @@ test("bypassProtectedPaths drops the protected-path clause", () => {
   assert.match(out, /policy-gated/); // the file-tools line itself stays
 });
 
-test("unsandboxed mode (YOLO): no injection", () => {
+test("unsandboxed mode (YOLO): no injection without a scratch dir, a short scratch section with one", () => {
   const yolo = mode({ label: "YOLO", bypassProtectedPaths: true }, { enabled: false });
   assert.equal(sandboxAwarenessPrompt(yolo, { active: false }), undefined);
+  const out = sandboxAwarenessPrompt(yolo, { active: false, scratchDir: "/tmp/pi/sess-1" });
+  assert.ok(out);
+  assert.match(out, /^## Scratch directory \(YOLO\)\n/);
+  assert.match(out, /Bash runs unsandboxed in this mode\./);
+  assert.match(out, /scratch directory: \/tmp\/pi\/sess-1 \(\$TMPDIR inside bash points there\)/);
+  assert.doesNotMatch(out, /Sandbox & permissions|Writable paths|Network/); // nothing else to brief
+  // The opt-out covers the scratch section too.
+  assert.equal(sandboxAwarenessPrompt(mode({ injectSandboxInfo: false }, { enabled: false }), { active: false, scratchDir: "/tmp/pi/s" }), undefined);
+});
+
+test("scratch dir: its own bullet in a writable sandboxed mode, listed once, mentioned when degraded, absent read-only", () => {
+  const dir = "/tmp/pi/sess-1";
+  const out = sandboxAwarenessPrompt(mode({}, { allowWrite: [".", "/tmp/pi", dir] }), { active: true, scratchDir: dir });
+  assert.ok(out);
+  assert.match(out, /- Writable paths: the project directory, \/tmp\/pi\. Use them for installs and build output/); // not listed there
+  assert.match(out, /\n- Keep temporary files, downloads, and throwaway scripts in this session's scratch directory: \/tmp\/pi\/sess-1 /);
+  assert.equal(out.split(dir).length - 1, 1); // exactly one mention
+  assert.match(out, /cleaned up automatically/);
+  // Degraded: the short note still names the scratch dir (bounds still apply, no prompt there).
+  const degraded = sandboxAwarenessPrompt(mode(), { active: false, reason: "x", scratchDir: dir });
+  assert.match(degraded ?? "", /scratch directory: \/tmp\/pi\/sess-1/);
+  // Read-only bash (Plan): nothing can be written there from bash, so it isn't advertised.
+  const ro = sandboxAwarenessPrompt(mode({ label: "Plan Mode" }, { writable: false }), { active: true, scratchDir: dir });
+  assert.doesNotMatch(ro ?? "", /scratch directory/);
 });
 
 test("injectSandboxInfo:false opts out entirely", () => {

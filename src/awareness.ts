@@ -32,32 +32,46 @@ export interface AwarenessOptions {
   networkOpen?: boolean;
   /** Session-granted domains (via prompts, /net allow, request_network_access). */
   sessionDomains?: string[];
+  /** This session's scratch directory (scratch.ts); TMPDIR points there inside bash. */
+  scratchDir?: string;
 }
+
+/** The one-sentence scratch-directory instruction, shared by every variant. */
+const scratchSentence = (dir: string): string =>
+  `Keep temporary files, downloads, and throwaway scripts in this session's scratch directory: ${dir} ` +
+  "($TMPDIR inside bash points there) — not elsewhere under /tmp and not in the project; it is cleaned up automatically.";
 
 /** Render an allowWrite entry for the prompt ("." is the project root). */
 const renderWritePath = (p: string): string => (p === "." || p === "./" ? "the project directory" : p);
 
 /**
  * The sandbox-boundary section for `mode`, or undefined when there is nothing
- * to inject: the mode opted out (`injectSandboxInfo: false`) or doesn't
+ * to inject: the mode opted out (`injectSandboxInfo: false`), or it doesn't
  * sandbox at all (`sandbox.enabled: false` — full permissions need no
- * boundary briefing).
+ * boundary briefing) and there is no scratch directory to point at. An
+ * unsandboxed mode WITH a scratch directory gets a short section naming it:
+ * keeping temp files per session is worth it even when nothing confines bash.
  */
 export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): string | undefined {
   if (mode.injectSandboxInfo === false) return undefined;
   const sb = mode.sandbox;
-  if (!sb.enabled) return undefined;
+  if (!sb.enabled) {
+    if (!opts.scratchDir) return undefined;
+    return [`## Scratch directory (${mode.label})`, "", `Bash runs unsandboxed in this mode. ${scratchSentence(opts.scratchDir)}`].join("\n");
+  }
 
   const header = `## Sandbox & permissions (${mode.label})`;
 
   if (!opts.active) {
-    return [
+    const lines = [
       header,
       "",
       `This mode normally runs bash inside an OS sandbox, but the sandbox is unavailable here${opts.reason ? ` (${opts.reason})` : ""}.`,
       "Bash commands run with full user permissions and ask for the user's confirmation instead — issue them normally",
       "and let the prompt do the gating.",
-    ].join("\n");
+    ];
+    if (opts.scratchDir) lines.push("", scratchSentence(opts.scratchDir));
+    return lines.join("\n");
   }
 
   const lines = [header, "", "Bash runs inside an OS-level sandbox with these boundaries:", ""];
@@ -67,10 +81,12 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       "- Bash is READ-ONLY: filesystem writes from bash fail regardless of path (no mkdir, no redirects, no installs). Use the Write/Edit tools for the file changes this mode permits.",
     );
   } else {
-    const writable = (sb.allowWrite ?? []).map(renderWritePath);
+    // The scratch dir gets its own bullet below; don't list it twice.
+    const writable = (sb.allowWrite ?? []).filter((p) => p !== opts.scratchDir).map(renderWritePath);
     lines.push(
-      `- Writable paths: ${writable.join(", ") || "(none)"}. Use them for installs, temp files, and downloads (./node_modules, an in-project venv, /tmp/...).`,
+      `- Writable paths: ${writable.join(", ") || "(none)"}. Use them for installs and build output (./node_modules, an in-project venv).`,
     );
+    if (opts.scratchDir) lines.push(`- ${scratchSentence(opts.scratchDir)}`);
   }
   if (sb.denyWrite?.length) {
     lines.push(`- Additionally write-denied: ${sb.denyWrite.join(", ")}.`);

@@ -174,7 +174,7 @@ test("project: sandbox intersect/union + unsafe domains rejected", () => {
       modes: {
         build: {
           sandbox: {
-            allowWrite: ["."], // intersect with ['.','/tmp'] → ['.']
+            allowWrite: ["."], // intersect with ['.','/tmp/pi'] → ['.']
             denyRead: ["~/.config"], // union
             network: { allowedDomains: ["github.com", "*.com"] }, // *.com rejected
           },

@@ -104,9 +104,10 @@ through wrappers like `env`/`nice`/`xargs` and `bash -c '…'` scripts) prompts,
 and runs **unsandboxed** once you approve it; and `edit`/`write` to
 **protected paths** (`.git/`, `.env`, dotfiles, … — see
 [below](#how-protection-works)) are hard-blocked. The mode's **sandbox-writable
-directories** (`allowWrite` — `/tmp` by default — plus the runtime's own
-`/tmp/claude`, where it points `TMPDIR`) count as *in-bounds*: a temp file there
-is not an escape, so it neither prompts nor runs unsandboxed.
+directories** (`allowWrite` — `/tmp/pi` by default — plus the session's
+[scratch directory](#scratch-directory) and the runtime's own `/tmp/claude`)
+count as *in-bounds*: a temp file there is not an escape, so it neither prompts
+nor runs unsandboxed.
 
 > **When the sandbox is unavailable** (missing dependency, init failure,
 > `--no-sandbox`, or — on Linux — the project is a **git worktree/submodule**, see below):
@@ -135,6 +136,30 @@ is not an escape, so it neither prompts nor runs unsandboxed.
 > directory`. Use a normal clone for full Build-mode sandboxing. **On macOS**
 > worktrees and submodules sandbox normally: `sandbox-exec` protects git by
 > denying the `.git/hooks` and `.git/config` paths, no mount involved.
+
+### Scratch directory
+
+Every session gets its own **scratch directory** for temporary files:
+`/tmp/pi/<session-id>/` on Linux and macOS, `<os.tmpdir()>/pi/<session-id>/`
+on Windows (override the base with the `PI_PERMISSION_TMPDIR` env var, e.g. for
+a `noexec` `/tmp`). The awareness section names it, `TMPDIR` points there inside
+bash (sandboxed *and* unsandboxed runs; Windows also gets `TEMP`/`TMP`), and it
+is always sandbox-writable and in-bounds — even if a global or project config
+drops the shared `/tmp/pi` base from `allowWrite`, so the instruction to use it
+stays truthful. `/sandbox` shows the path.
+
+Sandbox-wise, all pi sessions on the host share the `/tmp/pi` base (it is in
+the shipped `allowWrite`; the base is created sticky and world-writable like
+`/tmp`, each session folder is `0700`). Instruction-wise, each session is told
+to use only its own folder — including YOLO, which is otherwise unsandboxed but
+still gets a short "scratch directory" pointer. Plan mode's read-only bash can't
+write there (like everywhere else), so it isn't advertised there.
+
+Nothing is deleted at shutdown — `/reload` and session resume find their files
+again (the folder is keyed on pi's session id). Instead, at every session start,
+**sibling folders untouched for 7 days are removed**; the current folder is
+touched on start so a long-lived session isn't swept by a peer. Files and
+symlinks under the base are never touched.
 
 ### Network
 
@@ -200,7 +225,8 @@ Two independent layers compose:
 2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`): the real enforcement for
    bash. When a mode's `sandbox.enabled` is true, in-project bash runs wrapped by
    `sandbox-exec` (macOS) / `bubblewrap` (Linux), confining **writes** to the
-   profile's `allowWrite` (project + `/tmp` by default) and denying reads of the
+   profile's `allowWrite` (project + `/tmp/pi` + the session's scratch directory
+   by default) and denying reads of the
    profile's `denyRead` secrets — regardless of what the command does. A mode with
    `sandbox.writable:false` (Plan) runs bash **read-only**; `sandbox.enabled:false`
    (YOLO) runs it unsandboxed.
@@ -286,7 +312,7 @@ Modes are data, layered in this order:
       "sandbox": {
         "enabled": true,                // false = run bash unsandboxed (YOLO-style)
         "writable": true,               // false = bash runs read-only (Plan-style)
-        "allowWrite": [".", "/tmp"],
+        "allowWrite": [".", "/tmp/pi"],
         "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
         "denyWrite": [],
         "network": { "allowedDomains": ["github.com", "*.github.com"], "deniedDomains": [] },
@@ -326,7 +352,7 @@ Add a mode under `modes` in the global config and (optionally) list it in
   "modes": {
     "review": {
       "label": "Review", "color": "mdLink",
-      "sandbox": { "enabled": true, "writable": false, "allowWrite": [".", "/tmp"], "denyRead": ["~/.ssh"] },
+      "sandbox": { "enabled": true, "writable": false, "allowWrite": [".", "/tmp/pi"], "denyRead": ["~/.ssh"] },
       "permission": { "read": "allow", "bash": "allow", "web_search": "deny", "write": "deny", "edit": "deny" },
       "hideTools": ["edit", "write"]
     }
@@ -338,6 +364,15 @@ Add a mode under `modes` in the global config and (optionally) list it in
 > glob patterns from its `allowWrite`/`denyRead`/`denyWrite` lists on Linux — use
 > literal paths there (macOS supports globs). This applies to the **sandbox**
 > lists, not the `permission` policy globs, which are matched by this extension.
+
+> **Temp directories, per platform.** The runtime *always* allows writes to its
+> own `/tmp/claude` (and, on macOS, to the user's `$TMPDIR` under
+> `/var/folders/…`), regardless of `allowWrite`; on macOS `/tmp` is
+> `/private/tmp` and both spellings are handled. Windows has no OS sandbox, so
+> there `allowWrite` only feeds the prompt bounds. A tool that hardcodes `/tmp`
+> and ignores `TMPDIR` fails **silently** inside the sandbox (no prompt — the
+> kernel denies it); add `/tmp` back to the mode's `allowWrite` if you need
+> such a tool, at the cost of sharing `/tmp` with everything else on the host.
 
 ---
 

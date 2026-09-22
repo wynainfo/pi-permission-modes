@@ -9,7 +9,7 @@
       "sandbox": {
         "enabled": true,
         "writable": true,
-        "allowWrite": [".", "/tmp"],
+        "allowWrite": [".", "/tmp/pi"],
         "denyWrite": [],
         "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
         "network": {
@@ -50,7 +50,7 @@
       "sandbox": {
         "enabled": true,
         "writable": false,
-        "allowWrite": [".", "/tmp"],
+        "allowWrite": [".", "/tmp/pi"],
         "denyWrite": [],
         "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
         "network": {
@@ -90,7 +90,7 @@
       "sandbox": {
         "enabled": true,
         "writable": true,
-        "allowWrite": [".", "/tmp"],
+        "allowWrite": [".", "/tmp/pi"],
         "denyWrite": [],
         "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
         "network": {

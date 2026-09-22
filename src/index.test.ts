@@ -17,7 +17,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -107,7 +107,7 @@ interface FakeCtx {
     setStatus(key: string, value: string): void;
     theme: { fg(color: string, text: string): string };
   };
-  sessionManager: { getEntries(): Array<{ type: string; customType?: string; data?: unknown }> };
+  sessionManager: { getEntries(): Array<{ type: string; customType?: string; data?: unknown }>; getSessionId(): string };
 }
 
 function makeCtx(cwd: string, opts: { hasUI?: boolean; entries?: Array<{ type: string; customType?: string; data?: unknown }> } = {}): FakeCtx {
@@ -131,7 +131,7 @@ function makeCtx(cwd: string, opts: { hasUI?: boolean; entries?: Array<{ type: s
       },
       theme: { fg: (_color, text) => text },
     },
-    sessionManager: { getEntries: () => opts.entries ?? [] },
+    sessionManager: { getEntries: () => opts.entries ?? [], getSessionId: () => "sess-test" },
   };
   return ctx;
 }
@@ -143,6 +143,9 @@ interface Harness {
   ctx: FakeCtx;
   root: string;
   agentDir: string;
+  /** The scratch base this harness redirects PI_PERMISSION_TMPDIR to, and the session's folder under it. */
+  scratchBase: string;
+  scratchDir: string;
   /** Emit a tool_call and return its result ({block,reason} | undefined). */
   call(toolName: string, input: Record<string, unknown>): Promise<{ block?: boolean; reason?: string } | undefined>;
   /** Run the /perm command (mode switch etc.). */
@@ -172,9 +175,13 @@ async function setup(
   mkdirSync(path.join(root, "src"), { recursive: true });
   mkdirSync(agentDir, { recursive: true });
 
+  const scratchBase = path.join(base, "scratch");
+
   const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const prevScratch = process.env.PI_PERMISSION_TMPDIR;
   const prevCwd = process.cwd();
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  process.env.PI_PERMISSION_TMPDIR = scratchBase; // never touch the real /tmp/pi from tests
   delete process.env.PI_PERMISSION_MODE;
   if (opts.envMode !== undefined) process.env.PI_PERMISSION_MODE = opts.envMode;
 
@@ -197,6 +204,8 @@ async function setup(
     ctx,
     root,
     agentDir,
+    scratchBase,
+    scratchDir: path.join(scratchBase, "sess-test"),
     call: (toolName, input) =>
       pi.emit("tool_call", { type: "tool_call", toolCallId: `t${++callId}`, toolName, input }, ctx) as Promise<
         { block?: boolean; reason?: string } | undefined
@@ -205,6 +214,9 @@ async function setup(
     cleanup: () => {
       if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+      if (prevScratch === undefined) delete process.env.PI_PERMISSION_TMPDIR;
+      else process.env.PI_PERMISSION_TMPDIR = prevScratch;
+      delete process.env.CLAUDE_TMPDIR;
       delete process.env.PI_PERMISSION_MODE;
       rmSync(base, { recursive: true, force: true });
     },
@@ -243,9 +255,9 @@ test("default mode: reads free, writes prompt, protected paths hard-block", { sk
 test("sandbox-writable temp dirs are in-bounds: no 'outside project' prompt, no unsandboxed escape", { skip }, async () => {
   const h = await setup();
   try {
-    // Default: reads are free in-project; /tmp (in the mode's allowWrite) is
+    // Default: reads are free in-project; /tmp/pi (in the mode's allowWrite) is
     // in-bounds too, so the external_directory ask does not fold in. /etc still does.
-    assert.equal(await h.call("read", { path: "/tmp/pi-scratch/out.txt" }), undefined);
+    assert.equal(await h.call("read", { path: "/tmp/pi/scratch/out.txt" }), undefined);
     assert.equal(h.ctx.prompts.length, 0);
     h.ctx.answers.push("Deny");
     assert.equal((await h.call("read", { path: "/etc/hostname" }))?.block, true);
@@ -254,24 +266,76 @@ test("sandbox-writable temp dirs are in-bounds: no 'outside project' prompt, no 
     // Bash: the sandbox is off in this harness, so in-project bash prompts as
     // "sandbox unavailable" — a /tmp path must get THAT prompt, not the
     // "path outside project" escape prompt (which would run it unsandboxed).
-    h.ctx.answers.push("Deny", "Deny");
-    await h.call("bash", { command: "mktemp -d /tmp/pi.XXXX" });
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: "mktemp -d /tmp/pi/scratch.XXXX" });
     assert.match(h.ctx.prompts[1]?.title ?? "", /sandbox unavailable/);
+    // A sibling of the base is NOT inside it (prefix ≠ containment): still an escape.
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: "mktemp -d /tmp/pi.XXXX" });
+    assert.match(h.ctx.prompts[2]?.title ?? "", /path outside project: \/tmp\/pi\.XXXX/);
+    h.ctx.answers.push("Deny");
     await h.call("bash", { command: "cat /etc/passwd" });
-    assert.match(h.ctx.prompts[2]?.title ?? "", /path outside project: \/etc\/passwd/);
+    assert.match(h.ctx.prompts[3]?.title ?? "", /path outside project: \/etc\/passwd/);
 
-    // Build: a write into /tmp passes silently (allowWrite covers it).
+    // Build: a write into /tmp/pi passes silently (allowWrite covers it).
     await h.perm("build");
-    assert.equal(await h.call("write", { path: "/tmp/pi-scratch/notes.txt" }), undefined);
-    assert.equal(h.ctx.prompts.length, 3);
+    assert.equal(await h.call("write", { path: "/tmp/pi/scratch/notes.txt" }), undefined);
+    assert.equal(h.ctx.prompts.length, 4);
 
     // YOLO doesn't sandbox, so allowWrite is meaningless — its own
     // external_directory:allow is what keeps /tmp (and everything) silent.
     await h.perm("yolo");
-    assert.equal(await h.call("write", { path: "/tmp/pi-scratch/notes.txt" }), undefined);
-    assert.equal(h.ctx.prompts.length, 3);
+    assert.equal(await h.call("write", { path: "/tmp/pi/scratch/notes.txt" }), undefined);
+    assert.equal(h.ctx.prompts.length, 4);
   } finally {
     h.cleanup();
+  }
+});
+
+test("session scratch dir: created per session, TMPDIR, in-bounds, advertised, stale siblings swept", { skip }, async () => {
+  // Plant a stale and a fresh sibling BEFORE the session starts.
+  const base = mkdtempSync(path.join(tmpdir(), "perm-scratch-e2e-"));
+  const prev = process.env.PI_PERMISSION_TMPDIR;
+  process.env.PI_PERMISSION_TMPDIR = base;
+  const stale = path.join(base, "old-session");
+  const fresh = path.join(base, "other-live-session");
+  mkdirSync(stale);
+  mkdirSync(fresh);
+  const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  utimesSync(stale, old, old);
+  const h = await setup(); // setup overrides PI_PERMISSION_TMPDIR to its own base…
+  process.env.PI_PERMISSION_TMPDIR = base; // …so re-point and start again to exercise this base
+  await h.pi.emit("session_start", {}, h.ctx);
+  try {
+    const dir = path.join(base, "sess-test");
+    assert.ok(existsSync(dir), "scratch dir created from the session id");
+    assert.equal(process.env.CLAUDE_TMPDIR, dir); // the runtime points TMPDIR here inside the sandbox
+    assert.ok(!existsSync(stale), "stale sibling swept");
+    assert.ok(existsSync(fresh), "fresh sibling kept");
+
+    // In-bounds: a read inside it is not an out-of-project ask (Default).
+    assert.equal(await h.call("read", { path: path.join(dir, "notes.txt") }), undefined);
+    assert.equal(h.ctx.prompts.length, 0);
+    // Bash to it prompts as "sandbox unavailable" (the harness runs --no-sandbox), never as an escape.
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: `mktemp -p ${dir}` });
+    assert.match(h.ctx.prompts[0]?.title ?? "", /sandbox unavailable/);
+
+    // Advertised in the awareness section (degraded variant here).
+    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(res.systemPrompt, /Sandbox & permissions \(Default\)/);
+    assert.ok(res.systemPrompt.includes(dir));
+    assert.match(res.systemPrompt, /\$TMPDIR inside bash points there/);
+
+    // Re-entering session_start (resume / reload) keeps the same folder and its files.
+    writeFileSync(path.join(dir, "keep.txt"), "x");
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.ok(existsSync(path.join(dir, "keep.txt")));
+  } finally {
+    h.cleanup();
+    if (prev === undefined) delete process.env.PI_PERMISSION_TMPDIR;
+    else process.env.PI_PERMISSION_TMPDIR = prev;
+    rmSync(base, { recursive: true, force: true });
   }
 });
 
@@ -376,8 +440,11 @@ test("yolo: never prompts, never blocks, protected paths bypassed", { skip }, as
     assert.equal(await h.call("edit", { path: ".env" }), undefined);
     assert.equal(await h.call("write", { path: ".git/config" }), undefined);
     assert.equal(h.ctx.prompts.length, 0);
-    // Unsandboxed mode: no sandbox-awareness injection either.
-    assert.equal(await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx), undefined);
+    // Unsandboxed mode: no sandbox boundary briefing — only the scratch-dir pointer.
+    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(res.systemPrompt, /## Scratch directory \(YOLO\)/);
+    assert.ok(res.systemPrompt.includes(h.scratchDir));
+    assert.doesNotMatch(res.systemPrompt, /Sandbox & permissions/);
   } finally {
     h.cleanup();
   }

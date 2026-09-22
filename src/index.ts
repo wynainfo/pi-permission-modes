@@ -65,12 +65,14 @@ import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } fro
 import { isOutside, isProtectedWrite, sandboxAllowedRoots } from "./paths.ts";
 import { decide, decideBashChain } from "./resolve.ts";
 import { SandboxController } from "./sandbox.ts";
+import { SCRATCH_BASE_ENV, ensureScratchDir, scratchBase, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
   type Action,
   type ModeDef,
   PLAN_PROMPT_SENTINEL,
   type PermissionModeConfig,
   planModeSystemPrompt,
+  type SandboxProfile,
   type Surface,
 } from "./schema.ts";
 import { createShowPlanTool } from "./show-plan.ts";
@@ -119,6 +121,14 @@ export default async function (pi: ExtensionAPI) {
   const root = process.cwd();
 
   const currentMode = (): ModeDef => config.modes[modeName] ?? config.modes[config.defaultMode];
+
+  // This session's scratch directory (scratch.ts), created at session_start.
+  // The EFFECTIVE sandbox profile — what the runtime is initialized with, what
+  // the bounds are computed from, what /sandbox shows — is the mode's profile
+  // with the scratch dir appended to allowWrite, so it is always writable and
+  // never prompts, whatever the config says about the shared base.
+  let scratchDir: string | undefined;
+  const effectiveSandbox = (m: ModeDef): SandboxProfile => withScratchDir(m.sandbox, scratchDir);
 
   const sandbox = new SandboxController();
   // toolCallIds the user explicitly approved to run OUTSIDE the sandbox.
@@ -190,7 +200,17 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
-  const localBash = createBashTool(root);
+  // Unsandboxed runs (YOLO, approved escapes, degraded) get TMPDIR pointed at
+  // the scratch dir via the spawn hook; sandboxed runs get it from the runtime
+  // (CLAUDE_TMPDIR, set at session_start). Windows tools read TEMP/TMP.
+  const localBash = createBashTool(root, {
+    spawnHook: (c) => {
+      if (!scratchDir) return c;
+      const env = { ...c.env, TMPDIR: scratchDir };
+      if (process.platform === "win32") Object.assign(env, { TEMP: scratchDir, TMP: scratchDir });
+      return { ...c, env };
+    },
+  });
 
   pi.registerFlag("perm", {
     description: `Start in permission mode: ${config.cycleOrder.join(" | ")}`,
@@ -233,7 +253,7 @@ export default async function (pi: ExtensionAPI) {
     // derives the same safe fallback itself (and skips the systemPrompt too).
     if (!viaFallback) process.env.PI_PERMISSION_MODE = modeName;
     const m = currentMode();
-    await sandbox.applyProfile(m.sandbox); // re-init runtime if the profile changed
+    await sandbox.applyProfile(effectiveSandbox(m)); // re-init runtime if the profile changed
     applyToolVisibility();
     updateStatus(ctx, m, sandbox, net.open);
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
@@ -394,11 +414,12 @@ export default async function (pi: ExtensionAPI) {
       }
       if (sandbox.disabled) return ctx.ui.notify("Sandbox disabled via --no-sandbox", "info");
       if (!sandbox.ready) return ctx.ui.notify(`Sandbox unavailable: ${sandbox.warn ?? "unknown"}`, "warning");
-      const c = profileToConfig(m.sandbox);
+      const c = profileToConfig(effectiveSandbox(m));
       ctx.ui.notify(
         [
           `Sandbox: ACTIVE for ${m.label} (${m.sandbox.writable ? "project-writable" : "read-only"})`,
           "",
+          `Scratch dir: ${scratchDir ?? "(none)"}`,
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
@@ -508,12 +529,26 @@ export default async function (pi: ExtensionAPI) {
     // right profile, then setMode reconciles status (applyProfile is a no-op).
     const picked = pickMode(ctx, true);
     modeName = picked.name;
+    // Per-session scratch directory, created up front so the sandbox profile,
+    // the bounds, and the awareness prompt all agree on it. Keyed on the
+    // session id (a resumed session finds its files); stale siblings swept.
+    const base = scratchBase();
+    const dir = path.join(base, scratchDirName(ctx.sessionManager.getSessionId?.()));
+    if (ensureScratchDir(dir, { sharedBase: !process.env[SCRATCH_BASE_ENV] })) {
+      scratchDir = dir;
+      process.env.CLAUDE_TMPDIR = dir; // the runtime points TMPDIR here inside sandboxed commands
+      sweepScratchDirs(base, dir);
+    } else {
+      scratchDir = undefined;
+      delete process.env.CLAUDE_TMPDIR;
+      if (ctx.hasUI) ctx.ui.notify(`permission-mode: could not create the scratch directory ${dir}`, "warning");
+    }
     await sandbox.init({
       cwd: ctx.cwd,
       noSandbox: pi.getFlag("no-sandbox") === true,
       hasUI: ctx.hasUI,
       notify: (m) => ctx.ui.notify(m, "warning"),
-      profile: currentMode().sandbox,
+      profile: effectiveSandbox(currentMode()),
       // Live network gate: the proxy consults session state for every host
       // outside the allowlist; unknown hosts prompt via askNetHost.
       askHost: (host, port) => net.decide(host, port, askNetHost),
@@ -553,6 +588,7 @@ export default async function (pi: ExtensionAPI) {
       reason: sandbox.disabled ? "disabled via --no-sandbox" : sandbox.warn,
       networkOpen: net.open,
       sessionDomains: net.grants(),
+      scratchDir,
     });
     if (aware) parts.push(aware);
     const sp = m.systemPrompt;
@@ -594,7 +630,7 @@ export default async function (pi: ExtensionAPI) {
     // The mode's sandbox-writable dirs (/tmp, …) are in-bounds: a path the
     // sandbox already permits is not an escape, so it must neither prompt as
     // "outside project" nor — worse — run unsandboxed once the user approves.
-    const bounds = sandboxAllowedRoots(root, m.sandbox);
+    const bounds = sandboxAllowedRoots(root, effectiveSandbox(m));
 
     // Hard backstop: never write to protected paths (file tools aren't sandboxed),
     // unless the mode explicitly trusts everything (YOLO). Matched lexically AND
