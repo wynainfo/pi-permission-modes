@@ -335,6 +335,20 @@ test("yolo: never prompts, never blocks, protected paths bypassed", { skip }, as
   }
 });
 
+test("our tools carry a promptSnippet (listed in the system prompt's Available tools section)", { skip }, async () => {
+  const h = await setup();
+  try {
+    for (const name of ["show_plan", "request_network_access"]) {
+      const tool = h.pi.tools.get(name) as { promptSnippet?: string } | undefined;
+      assert.ok(tool, `${name} registered`);
+      assert.match(tool?.promptSnippet ?? "", /\S/, `${name} has a promptSnippet`);
+      assert.ok(!tool?.promptSnippet?.includes("\n"), `${name} snippet is one line`);
+    }
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("web_search: ask in Default, session-wide grant", { skip }, async () => {
   const h = await setup();
   try {

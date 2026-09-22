@@ -45,6 +45,9 @@ export async function createShowPlanTool(root: string): Promise<ToolDefinition> 
   const tool: ToolDefinition = {
     name: "show_plan",
     label: "Show Plan",
+    // One-liner for the "Available tools" section of the default system prompt
+    // (custom tools are omitted from that section without it).
+    promptSnippet: "Render a written plan Markdown file (plan/<date>_<description>.md) to the user for review",
     description:
       "Render a plan Markdown file to the user in the terminal for review. In Plan Mode, after writing " +
       "the plan to plan/<date>_<description>.md, call show_plan with that path. The file is shown as " +

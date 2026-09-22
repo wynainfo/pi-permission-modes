@@ -426,6 +426,7 @@ export default async function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "request_network_access",
     label: "Request network access",
+    promptSnippet: "Ask the user to allow bash network access to domains outside the sandbox allowlist",
     description:
       "Ask the user to allow bash network access to one or more domains outside the sandbox allowlist. " +
       "Use it when a blocked host stops you (downloads, installs, API troubleshooting), or to get every needed " +

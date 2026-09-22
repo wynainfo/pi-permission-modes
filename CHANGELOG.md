@@ -51,6 +51,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   absolute paths, relative escapes, and privilege escalation prompt exactly
   as before; unsandboxed modes (YOLO) are governed solely by their
   `external_directory` policy, as before.
+- **`show_plan` and `request_network_access` now carry a `promptSnippet`**, so
+  they are listed in the system prompt's "Available tools" section like the
+  built-ins instead of reaching the model only through the JSON schema, which
+  weakened tool awareness in some models. (#3)
 
 ## [2.2.0]
 
