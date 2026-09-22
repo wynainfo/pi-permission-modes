@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.2.1]
 
+### Security
+- **A newline inside a bash argument bypassed `ask`/`deny` bash policy.** The
+  glob matcher compiled `*` to a regex `.*` without the dotAll flag, and `.`
+  excludes `\n` in JavaScript — so any command whose joined `name args…`
+  string spanned lines matched no `bash` pattern at all, not even `"*"`. In
+  the sandboxed modes the per-token `path` layer still matched and contributed
+  `allow`, so most-restrictive resolved to `allow`: `sudo sh -c "\nid\n"`
+  skipped a `"sudo *": "deny"` rule, and in the shipped Default mode a
+  multi-line argument turned `bash: {"*": "ask"}` into a silent run with no
+  prompt. The OS sandbox still contained in-project writes, so this is a
+  prompting/policy failure rather than a containment escape (see
+  SECURITY.md, "Gating ≠ containment") — but `deny` is documented as a hard
+  boundary and could be skipped with a single newline. Affected 2.0.0–2.2.0.
+  The same miss made unsandboxed modes fall through to the `ask` fallback,
+  so YOLO prompted on every heredoc or multi-line script. Fix: the matcher
+  now uses the dotAll flag, so `*` and `?` span newlines and `"*"` is a true
+  universal fallback for multi-line targets. Regression tests added at the
+  matcher, resolver, and dispatcher levels.
+
+  Reported by dyoon98-creator (https://github.com/dyoon98-creator).
+
 ### Fixed
 - **Temp-dir paths no longer prompt as "outside project" (and no longer run
   unsandboxed on approval).** The bash escape detector and the file-tool

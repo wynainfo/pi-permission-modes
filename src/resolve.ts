@@ -28,9 +28,16 @@ export function expandHome(s: string): string {
 }
 
 /**
- * Glob match: `*` matches any run of characters INCLUDING `/` (so `*` is a true
- * universal fallback and `*.md` matches nested paths); `?` matches exactly one
- * character. `~`/`$HOME` are expanded on both pattern and target before matching.
+ * Glob match: `*` matches any run of characters INCLUDING `/` AND newlines (so
+ * `*` is a true universal fallback, `*.md` matches nested paths, and a
+ * multi-line bash command still hits the mode's `"*"` rule); `?` matches
+ * exactly one character, newline included. `~`/`$HOME` are expanded on both
+ * pattern and target before matching.
+ *
+ * The regex is compiled with the `s` (dotAll) flag on purpose: without it `.`
+ * excludes `\n`, so a single newline inside a command argument made every
+ * pattern miss — and since the per-token `path` layer still matched, an
+ * `ask`/`deny` bash policy silently resolved to `allow` (fixed in 2.2.1).
  */
 export function matchPattern(pattern: string, target: string): boolean {
   const p = expandHome(pattern);
@@ -42,7 +49,7 @@ export function matchPattern(pattern: string, target: string): boolean {
     else re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   re += "$";
-  return new RegExp(re).test(t);
+  return new RegExp(re, "s").test(t);
 }
 
 /**

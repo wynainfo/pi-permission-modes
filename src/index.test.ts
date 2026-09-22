@@ -571,6 +571,48 @@ test("custom unsandboxed mode still honors bash ask", { skip }, async () => {
   }
 });
 
+test("multi-line bash commands: policy applies across newlines (no silent allow, no YOLO noise)", { skip }, async () => {
+  const h = await setup();
+  try {
+    // YOLO: a multi-line command used to fall through every "*" rule to the
+    // "ask" fallback and prompt on every heredoc/script.
+    await h.perm("yolo");
+    assert.equal(await h.call("bash", { command: "cat <<'EOF' > notes.txt\nline one\nline two\nEOF" }), undefined);
+    assert.equal(h.ctx.prompts.length, 0);
+
+    // A deny rule must hold when a newline sits inside an argument, both in an
+    // unsandboxed mode (decide over the whole line) and in a sandboxed one
+    // (decideBashCommand per extracted command, where the per-token path layer
+    // used to be the only match and yielded "allow").
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      JSON.stringify({
+        modes: {
+          yolo: { permission: { bash: { "*": "allow", "rm -rf *": "deny" } } },
+          default: { permission: { bash: { "*": "ask", "sudo *": "deny" } } },
+        },
+      }),
+    );
+    await h.pi.emit("session_start", {}, h.ctx);
+
+    await h.perm("yolo");
+    assert.equal(await h.call("bash", { command: "echo 'a\nb'" }), undefined);
+    const rm = await h.call("bash", { command: "rm -rf 'a\nb'" });
+    assert.equal(rm?.block, true);
+    assert.match(rm?.reason ?? "", /denied by policy/);
+
+    await h.perm("default");
+    const sudo = await h.call("bash", { command: "sudo sh -c '\nid\n'" });
+    assert.equal(sudo?.block, true);
+    assert.match(sudo?.reason ?? "", /denied by policy/);
+    assert.equal(h.ctx.prompts.length, 0); // deny blocks outright, nothing asked
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("network: /net allow + status, request tool degrades gracefully, alt+n informs", { skip }, async () => {
   const h = await setup();
   try {

@@ -18,6 +18,16 @@ test("matchPattern: regex metacharacters in the pattern are literal", () => {
   assert.ok(!matchPattern("a.b+c", "aXbbbc")); // '.' and '+' must be literal
 });
 
+test("matchPattern: * and ? span newlines (multi-line bash commands hit the '*' rule)", () => {
+  // Regression: `.` excludes `\n` in JS regexes, so a newline inside a command
+  // argument used to make every glob miss — dropping the bash `ask`/`deny`.
+  assert.ok(matchPattern("*", "echo 'a\nb'"));
+  assert.ok(matchPattern("sudo *", "sudo sh -c \nid\n"));
+  assert.ok(matchPattern("rm -rf *", "rm -rf a\nb"));
+  assert.ok(matchPattern("echo ?", "echo \n"));
+  assert.ok(!matchPattern("git *", "sudo\ngit status")); // anchoring still holds across lines
+});
+
 test("matchPattern: ~ and $HOME expand on both sides", () => {
   const home = os.homedir();
   assert.ok(matchPattern("~/.ssh/*", `${home}/.ssh/id_rsa`));
@@ -93,6 +103,21 @@ test("decideBashCommand: bash surface matches the joined name+args string", () =
   assert.equal(decideBashCommand(m, "git", ["push", "origin", "main"]), "ask");
   assert.equal(decideBashCommand(m, "git", ["status"]), "allow");
   assert.equal(decideBashCommand(m, "sudo", ["rm", "-rf", "/"]), "deny");
+});
+
+test("decideBashCommand: a newline in an argument cannot downgrade ask/deny to allow", () => {
+  // The bash layer must keep matching when the joined "name args…" string
+  // spans lines; otherwise the per-token path layer alone decides ("allow").
+  const m = mode({ path: { "*": "allow" }, bash: { "*": "allow", "rm -rf *": "deny", "sudo *": "deny" } });
+  assert.equal(decideBashCommand(m, "sudo", ["sh", "-c", "id"]), "deny");
+  assert.equal(decideBashCommand(m, "sudo", ["sh", "-c", "\nid\n"]), "deny");
+  assert.equal(decideBashCommand(m, "rm", ["-rf", "a\nb"]), "deny");
+  const ask = mode({ path: { "*": "allow" }, bash: { "*": "ask" } });
+  assert.equal(decideBashCommand(ask, "echo", ["hi"]), "ask");
+  assert.equal(decideBashCommand(ask, "echo", ["hi\nthere"]), "ask");
+  // decide() over the whole command line (heuristic fallback / unsandboxed modes).
+  const allow = mode({ path: { "*": "allow" }, bash: { "*": "allow" } });
+  assert.equal(decide(allow, "bash", "ls -la\npwd"), "allow");
 });
 
 test("decideBashCommand: project overlay path rules tighten bash (most-restrictive)", () => {

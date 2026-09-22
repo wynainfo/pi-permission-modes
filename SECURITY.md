@@ -93,3 +93,5 @@ Non-sensitive hardening ideas are welcome as regular
 
 - **Sandbox/policy downgrade via project config** (fixed in 2.1.2) — reported
   by Magnus Gille (https://gille.ai/).
+- **Bash `ask`/`deny` policy bypass via a newline in a command argument**
+  (fixed in 2.2.1) — reported by dyoon98-creator (https://github.com/dyoon98-creator).
