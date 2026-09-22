@@ -44,7 +44,9 @@ class FakePi {
   commands = new Map<string, (args: string, ctx: unknown) => Promise<unknown>>();
   shortcuts = new Map<string, (ctx: unknown) => Promise<unknown>>();
   tools = new Map<string, { name: string }>();
-  activeTools: string[] = [];
+  /** Mirrors pi: the built-in defaults are active at start (as with the stock
+   * `defaultTools`), registered tools join automatically; grep/find/ls stay off. */
+  activeTools: string[] = ["read", "bash", "edit", "write"];
   entries: Array<{ customType: string; data: unknown }> = [];
 
   registerFlag(name: string, def: { default?: unknown }) {
@@ -61,12 +63,16 @@ class FakePi {
   }
   registerTool(tool: { name: string }) {
     this.tools.set(tool.name, tool);
+    if (!this.activeTools.includes(tool.name)) this.activeTools.push(tool.name);
   }
   getAllTools() {
     return [...this.tools.values()];
   }
+  getActiveTools() {
+    return [...this.activeTools];
+  }
   setActiveTools(names: string[]) {
-    this.activeTools = names;
+    this.activeTools = [...names];
   }
   appendEntry(customType: string, data: unknown) {
     this.entries.push({ customType, data });
@@ -314,6 +320,48 @@ test("plan mode: Markdown-only writes, plan prompt injected, show_plan stays vis
 
     // Tool visibility ran and show_plan is present.
     assert.ok(h.pi.activeTools.includes("show_plan"));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("tool visibility: respects the user's active set, hides/restores only hideTools (#2)", { skip }, async () => {
+  const h = await setup();
+  try {
+    // Session start must not enable tools the user has off (grep/find/ls stay absent).
+    const initial = ["read", "bash", "edit", "write", "show_plan", "request_network_access"];
+    assert.deepEqual(h.pi.activeTools, initial);
+    await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx); // runs every turn: idempotent
+    assert.deepEqual(h.pi.activeTools, initial);
+
+    // A mode hiding edit/write/grep/show_plan: edit+write go, grep was never on
+    // (so nothing to remember), show_plan is never hidden.
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      JSON.stringify({
+        modes: {
+          review: {
+            label: "Review",
+            color: "mdLink",
+            sandbox: { enabled: true, writable: false },
+            permission: { read: "allow", bash: "allow", write: "deny", edit: "deny" },
+            hideTools: ["edit", "write", "grep", "show_plan"],
+          },
+        },
+      }),
+    );
+    await h.pi.emit("session_start", {}, h.ctx);
+    await h.perm("review");
+    assert.deepEqual(h.pi.activeTools, ["read", "bash", "show_plan", "request_network_access"]);
+    await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx);
+    assert.deepEqual(h.pi.activeTools, ["read", "bash", "show_plan", "request_network_access"]);
+
+    // Switching back restores exactly what we hid — grep stays off.
+    await h.perm("default");
+    assert.deepEqual([...h.pi.activeTools].sort(), [...initial].sort());
+    assert.ok(!h.pi.activeTools.includes("grep"));
   } finally {
     h.cleanup();
   }

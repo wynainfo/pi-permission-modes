@@ -60,6 +60,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `.git` file) ran on every platform, but only the Linux runtime mounts that
   path — `sandbox-exec` denies the `.git/hooks`/`.git/config` paths in its
   profile instead. The guard is now Linux-only. (#4)
+- **The extension no longer enables every built-in tool.** Tool hiding
+  rebuilt the active set from *all* registered tools minus `hideTools`, which
+  silently re-enabled `grep`, `find`, `ls`, and `powershell` for everyone and
+  overrode `defaultTools` in `settings.json`. It now starts from pi's current
+  active set, remembers only what it hid, and restores only that on a mode
+  switch — your own tool selection stays in force. (#2)
 
 ## [2.2.0]
 

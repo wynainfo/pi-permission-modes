@@ -204,10 +204,22 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // Hide a mode's `hideTools` from the model (pre-exposure), restoring the rest.
+  //
+  // The base is pi's CURRENT active set, not every registered tool: the user's
+  // own tool selection (`defaultTools` in settings, --exclude-tools) must stay
+  // in force — the old "all tools minus hideTools" base silently re-enabled
+  // grep/find/ls/powershell for everyone (#2). We remember what WE hid (a
+  // subset of what was active at the time) so a mode switch restores exactly
+  // that and nothing else, and we only call setActiveTools when the set
+  // actually changes (this runs every turn).
+  let hiddenByUs = new Set<string>();
   const applyToolVisibility = () => {
     const hide = new Set((currentMode().hideTools ?? []).filter((n) => !NEVER_HIDE.has(n)));
-    const all = pi.getAllTools().map((t) => t.name);
-    pi.setActiveTools(hide.size ? all.filter((n) => !hide.has(n)) : all);
+    const current = pi.getActiveTools();
+    const base = [...new Set([...current, ...hiddenByUs])]; // active as it would be without our hiding
+    const next = base.filter((n) => !hide.has(n));
+    hiddenByUs = new Set(base.filter((n) => hide.has(n)));
+    if (next.length !== current.length || next.some((n, i) => n !== current[i])) pi.setActiveTools(next);
   };
 
   const setMode = async (name: string, ctx: ExtensionContext, persist = true, viaFallback = false) => {
