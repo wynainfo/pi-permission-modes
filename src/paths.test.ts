@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   gitFileBlocksSandbox,
+  gitFileDegradesSandbox,
   isMarkdown,
   isOutside,
   isPlanFile,
@@ -277,4 +278,23 @@ test("sandboxAllowedRoots: allowWrite resolved to absolute roots + the runtime t
   // Read-only sandbox (Plan) keeps its roots: reads there are fine, writes fail in the sandbox as in-project.
   assert.ok(sandboxAllowedRoots(ROOT, { enabled: true, writable: false, allowWrite: ["/tmp"] }).includes("/tmp"));
   assert.deepEqual(sandboxAllowedRoots(ROOT, { enabled: true, writable: true }), SANDBOX_RUNTIME_TMP_PATHS);
+});
+
+test("gitFileDegradesSandbox: a worktree/submodule gitfile degrades on Linux only", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "perm-gitfile-"));
+  try {
+    writeFileSync(path.join(root, ".git"), "gitdir: /somewhere/.git/worktrees/x\n");
+    assert.equal(gitFileBlocksSandbox(root), true);
+    assert.equal(gitFileDegradesSandbox(root, "linux"), true); // bwrap binds .git/hooks
+    assert.equal(gitFileDegradesSandbox(root, "darwin"), false); // sandbox-exec denies paths, no mount
+    assert.equal(gitFileDegradesSandbox(root, "win32"), false); // no OS sandbox at all
+    // A 0-byte placeholder or a real .git directory never degrades anywhere.
+    writeFileSync(path.join(root, ".git"), "");
+    assert.equal(gitFileDegradesSandbox(root, "linux"), false);
+    rmSync(path.join(root, ".git"));
+    mkdirSync(path.join(root, ".git"));
+    assert.equal(gitFileDegradesSandbox(root, "linux"), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

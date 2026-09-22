@@ -190,6 +190,17 @@ export function gitFileBlocksSandbox(root: string): boolean {
 }
 
 /**
+ * True when the project's gitfile must degrade the OS sandbox on THIS
+ * platform. Only the Linux runtime (bubblewrap) bind-mounts `<cwd>/.git/hooks`
+ * and fails through a `.git` file; the macOS runtime (sandbox-exec) protects
+ * git by denying the `.git/hooks` and `.git/config` paths in its profile and
+ * never mounts anything, so worktrees and submodules sandbox normally there.
+ */
+export function gitFileDegradesSandbox(root: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "linux" && gitFileBlocksSandbox(root);
+}
+
+/**
  * True when `p` is a Markdown file inside the project's `plan/` directory — the
  * files Plan Mode writes and `show_plan` renders. Lexical (no realpath); this is
  * a UI-routing predicate, not a security boundary.

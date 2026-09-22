@@ -78,8 +78,10 @@ you can rely on it appropriately.
   security boundary — the child enforces its own modes regardless.
 - **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`) and macOS only.
   Windows is unsupported; the sandboxed modes degrade to prompting there.
-- **Git worktrees/submodules** can't be OS-sandboxed (bubblewrap can't bind
-  `.git/hooks` under a `.git` file); those projects degrade to prompting.
+- **Git worktrees/submodules on Linux** can't be OS-sandboxed (bubblewrap can't
+  bind `.git/hooks` under a `.git` file); those projects degrade to prompting.
+  On macOS the `sandbox-exec` profile denies the `.git/hooks`/`.git/config`
+  paths instead of mounting them, so worktrees sandbox normally there.
 
 ## Reporting a vulnerability
 

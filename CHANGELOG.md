@@ -55,6 +55,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   they are listed in the system prompt's "Available tools" section like the
   built-ins instead of reaching the model only through the JSON schema, which
   weakened tool awareness in some models. (#3)
+- **macOS git worktrees/submodules are sandboxed again.** The gitfile guard
+  that degrades the OS sandbox (bubblewrap can't bind `.git/hooks` under a
+  `.git` file) ran on every platform, but only the Linux runtime mounts that
+  path — `sandbox-exec` denies the `.git/hooks`/`.git/config` paths in its
+  profile instead. The guard is now Linux-only. (#4)
 
 ## [2.2.0]
 

@@ -109,7 +109,7 @@ directories** (`allowWrite` — `/tmp` by default — plus the runtime's own
 is not an escape, so it neither prompts nor runs unsandboxed.
 
 > **When the sandbox is unavailable** (missing dependency, init failure,
-> `--no-sandbox`, or the project is a **git worktree/submodule** — see below):
+> `--no-sandbox`, or — on Linux — the project is a **git worktree/submodule**, see below):
 > Default/Plan/Build show `(!) <reason>` in the footer, and in-project `bash` that
 > would have been sandboxed instead **prompts** for confirmation — you are never
 > silently unprotected.
@@ -127,12 +127,14 @@ is not an escape, so it neither prompts nor runs unsandboxed.
 > directories (`.vscode/`, `.git/`, …) and non-empty files (`.gitmodules`, …) are
 > never touched.
 >
-> A **real git worktree/submodule** (`.git` is a *non-empty* file pointing at the
-> real gitdir) genuinely can't be sandboxed — bubblewrap can't bind `.git/hooks`
-> under a file, and that file is legitimate so we won't delete it. There the
-> extension disables the sandbox for the project (falling back to prompting)
-> instead of letting every command fail with `bwrap: ... Not a directory`. Use a
-> normal clone for full Build-mode sandboxing.
+> **On Linux**, a **real git worktree/submodule** (`.git` is a *non-empty* file
+> pointing at the real gitdir) genuinely can't be sandboxed — bubblewrap can't
+> bind `.git/hooks` under a file, and that file is legitimate so we won't delete
+> it. There the extension disables the sandbox for the project (falling back to
+> prompting) instead of letting every command fail with `bwrap: ... Not a
+> directory`. Use a normal clone for full Build-mode sandboxing. **On macOS**
+> worktrees and submodules sandbox normally: `sandbox-exec` protects git by
+> denying the `.git/hooks` and `.git/config` paths, no mount involved.
 
 ### Network
 

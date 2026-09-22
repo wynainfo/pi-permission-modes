@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
-import { gitFileBlocksSandbox, removeSandboxPlaceholders } from "./paths.ts";
+import { gitFileDegradesSandbox, removeSandboxPlaceholders } from "./paths.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
 
@@ -212,17 +212,19 @@ export class SandboxController {
     // .git), so .git below isn't mistaken for a worktree.
     removeSandboxPlaceholders(cwd);
 
-    // bubblewrap unconditionally binds <cwd>/.git/hooks; if .git is a REAL file
-    // (git worktree/submodule) that bind fails and every sandboxed command
-    // errors — and we must not delete that legitimate file. Degrade to prompting.
-    if (gitFileBlocksSandbox(cwd)) {
+    // bubblewrap (Linux) unconditionally binds <cwd>/.git/hooks; if .git is a
+    // REAL file (git worktree/submodule) that bind fails and every sandboxed
+    // command errors — and we must not delete that legitimate file. Degrade to
+    // prompting there. macOS's sandbox-exec profile denies the git paths
+    // instead of mounting them, so worktrees sandbox normally on macOS.
+    if (gitFileDegradesSandbox(cwd)) {
       this.degraded = true;
       this.profile = profile;
       this.warn = "sandbox off: project .git is a file (worktree/submodule); bwrap can't bind .git/hooks";
       if (hasUI) {
         notify(
           "permission-mode: OS sandbox disabled for this project — its `.git` is a file (git worktree/submodule), " +
-            "which bubblewrap can't sandbox. In-project bash will prompt for confirmation instead. " +
+            "which bubblewrap can't sandbox on Linux. In-project bash will prompt for confirmation instead. " +
             "Use a normal clone for full sandboxing.",
         );
       }
