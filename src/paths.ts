@@ -13,6 +13,8 @@
 
 import { realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
+import { expandHome } from "./resolve.ts";
+import type { SandboxProfile } from "./schema.ts";
 
 /** Device pseudo-files that are "outside" the project but harmless to allow. */
 export const SAFE_OUTSIDE_RE = /^\/dev\/(null|zero|stdin|stdout|stderr|tty|urandom|random)$/;
@@ -53,17 +55,57 @@ function canonicalize(p: string): string {
   }
 }
 
+/** True when canonical `target` is `dir` itself or nested under it. */
+function isWithin(dir: string, target: string): boolean {
+  const rel = path.relative(canonicalize(dir), target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 /**
  * True when `p`, resolved against `root` (with symlinks followed), escapes the
- * project directory. Empty/undefined paths are treated as in-project (tools
- * default to cwd).
+ * project directory AND every directory in `alsoInside` — the mode's
+ * sandbox-writable roots (see `sandboxAllowedRoots`), which count as
+ * in-bounds: a temp dir the sandbox already lets bash write to is not an
+ * escape, so it neither prompts nor runs unsandboxed. Empty/undefined paths
+ * are treated as in-project (tools default to cwd).
  */
-export function isOutside(root: string, p?: string): boolean {
+export function isOutside(root: string, p?: string, alsoInside: readonly string[] = []): boolean {
   if (!p) return false;
   const target = canonicalize(path.resolve(root, p));
-  const realRoot = canonicalize(root);
-  const rel = path.relative(realRoot, target);
-  return rel.startsWith("..") || path.isAbsolute(rel);
+  if (isWithin(root, target)) return false;
+  return !alsoInside.some((dir) => isWithin(dir, target));
+}
+
+/**
+ * Temp dir the sandbox runtime allows writes to unconditionally, on top of a
+ * profile's `allowWrite` (it also points TMPDIR there inside sandboxed
+ * commands; macOS canonicalizes /tmp to /private/tmp). Its other built-ins
+ * (~/.npm/_logs, ~/.claude/debug) stay prompt-gated — nothing targets them
+ * deliberately.
+ */
+export const SANDBOX_RUNTIME_TMP_PATHS = ["/tmp/claude", "/private/tmp/claude"];
+
+/**
+ * The directories a sandboxed mode lets bash write to, as absolute paths: the
+ * profile's `allowWrite` entries (`.`/relative resolved against `root`,
+ * `~`/`$HOME` expanded, glob entries skipped — the Linux runtime drops those
+ * too) plus the runtime's own temp dir. They are the extra in-bounds roots for
+ * the bash escape detector and the file-tool project boundary, so `/tmp/...`
+ * stops prompting as "outside project" while the sandbox permits it anyway.
+ * Empty when the mode doesn't sandbox (`enabled:false`): its `allowWrite` is
+ * then meaningless and the mode's `external_directory` policy alone applies.
+ * `writable:false` (Plan) still counts — reads there are fine and the sandbox
+ * blocks writes itself, exactly as it does in-project.
+ */
+export function sandboxAllowedRoots(root: string, profile: SandboxProfile): string[] {
+  if (!profile.enabled) return [];
+  const out: string[] = [];
+  for (const raw of [...(profile.allowWrite ?? []), ...SANDBOX_RUNTIME_TMP_PATHS]) {
+    if (/[*?[\]{}]/.test(raw)) continue;
+    const abs = path.resolve(root, expandHome(raw));
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out;
 }
 
 /** True when the path is a Markdown file (planning files allowed in Read mode). */

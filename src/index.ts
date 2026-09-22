@@ -62,7 +62,7 @@ import {
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
-import { isOutside, isProtectedWrite } from "./paths.ts";
+import { isOutside, isProtectedWrite, sandboxAllowedRoots } from "./paths.ts";
 import { decide, decideBashCommand, mostRestrictive } from "./resolve.ts";
 import { SandboxController } from "./sandbox.ts";
 import {
@@ -578,6 +578,10 @@ export default async function (pi: ExtensionAPI) {
     // tools surface as Record<string, unknown> anyway) and guard each field.
     const input = event.input as Record<string, unknown>;
     const inPath = typeof input.path === "string" ? input.path : undefined;
+    // The mode's sandbox-writable dirs (/tmp, …) are in-bounds: a path the
+    // sandbox already permits is not an escape, so it must neither prompt as
+    // "outside project" nor — worse — run unsandboxed once the user approves.
+    const bounds = sandboxAllowedRoots(root, m.sandbox);
 
     // Hard backstop: never write to protected paths (file tools aren't sandboxed),
     // unless the mode explicitly trusts everything (YOLO). Matched lexically AND
@@ -611,7 +615,7 @@ export default async function (pi: ExtensionAPI) {
       // bash surface AND the cross-cutting path gate (joined string + each token,
       // see decideBashCommand), most-restrictive across the chain; detect
       // escapes/privilege.
-      const analysis = await analyzeBash(command, root);
+      const analysis = await analyzeBash(command, root, bounds);
       let action: Action;
       if (analysis.commands.length > 0) {
         action = analysis.commands
@@ -640,7 +644,7 @@ export default async function (pi: ExtensionAPI) {
     const surface = FILE_TOOL_SURFACE[toolName];
     if (surface && inPath !== undefined) {
       const path = inPath;
-      const outside = isOutside(root, path);
+      const outside = isOutside(root, path, bounds);
       const action = decide(m, surface, path, { isOutside: outside });
       if (action === "deny") {
         // Friendly message for the Plan-mode "Markdown only" case (read-only mode).

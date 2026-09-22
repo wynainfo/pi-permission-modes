@@ -67,6 +67,18 @@ test("outsideReasonFromCommands: out-of-project path argument", () => {
   assert.equal(outsideReasonFromCommands([{ name: "cat", args: ["src/app.ts"], isNested: false }], root), undefined);
 });
 
+test("outsideReasonFromCommands: sandbox-writable roots are in-bounds, not escapes", () => {
+  const root = "/home/u/proj";
+  const c = (...a: string[]): BashCommand => ({ name: a[0], args: a.slice(1), isNested: false });
+  assert.match(outsideReasonFromCommands([c("mktemp", "-d", "/tmp/pi.XXXX")], root) ?? "", /path outside project/);
+  assert.equal(outsideReasonFromCommands([c("mktemp", "-d", "/tmp/pi.XXXX")], root, ["/tmp"]), undefined);
+  assert.equal(outsideReasonFromCommands([c("cat", "/tmp/claude/out.txt")], root, ["/tmp/claude"]), undefined);
+  // Only the listed roots: a different absolute path still prompts.
+  assert.match(outsideReasonFromCommands([c("cat", "/etc/passwd")], root, ["/tmp"]) ?? "", /path outside project/);
+  // Privilege escalation is unaffected by bounds.
+  assert.equal(outsideReasonFromCommands([c("sudo", "ls", "/tmp")], root, ["/tmp"]), "privilege escalation");
+});
+
 test("outsideReasonFromCommands: /dev/null is allowed", () => {
   assert.equal(outsideReasonFromCommands([{ name: "echo", args: [], isNested: false }], "/p"), undefined);
   assert.equal(

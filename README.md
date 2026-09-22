@@ -103,7 +103,10 @@ reaches outside the project or **escalates privileges**
 through wrappers like `env`/`nice`/`xargs` and `bash -c '…'` scripts) prompts,
 and runs **unsandboxed** once you approve it; and `edit`/`write` to
 **protected paths** (`.git/`, `.env`, dotfiles, … — see
-[below](#how-protection-works)) are hard-blocked.
+[below](#how-protection-works)) are hard-blocked. The mode's **sandbox-writable
+directories** (`allowWrite` — `/tmp` by default — plus the runtime's own
+`/tmp/claude`, where it points `TMPDIR`) count as *in-bounds*: a temp file there
+is not an escape, so it neither prompts nor runs unsandboxed.
 
 > **When the sandbox is unavailable** (missing dependency, init failure,
 > `--no-sandbox`, or the project is a **git worktree/submodule** — see below):

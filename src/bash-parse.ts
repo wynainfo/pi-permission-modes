@@ -181,9 +181,15 @@ export function expandShellCommands(
 /**
  * Reason to prompt (escape / privilege) derived from extracted commands — the
  * AST-based equivalent of `bashConfirmReason`, but it also sees commands and
- * paths nested inside substitutions/subshells.
+ * paths nested inside substitutions/subshells. `alsoInside` lists further
+ * in-bounds roots (the mode's sandbox-writable dirs): a path under one is not
+ * an escape.
  */
-export function outsideReasonFromCommands(commands: BashCommand[], root: string): string | undefined {
+export function outsideReasonFromCommands(
+  commands: BashCommand[],
+  root: string,
+  alsoInside: readonly string[] = [],
+): string | undefined {
   for (const c of commands) {
     if (isPrivilegeEscalation(c)) return "privilege escalation";
     for (const tok of [c.name, ...c.args]) {
@@ -193,7 +199,7 @@ export function outsideReasonFromCommands(commands: BashCommand[], root: string)
       else if (tok.includes("/") || tok === "..") target = path.resolve(root, tok);
       else continue;
       if (SAFE_OUTSIDE_RE.test(target)) continue;
-      if (isOutside(root, target)) return `path outside project: ${tok}`;
+      if (isOutside(root, target, alsoInside)) return `path outside project: ${tok}`;
     }
   }
   return undefined;
@@ -242,18 +248,21 @@ export interface BashAnalysis {
   usedFallback: boolean;
 }
 
-/** Analyze a bash command via tree-sitter, falling back to the regex heuristic. */
-export async function analyzeBash(command: string, root: string): Promise<BashAnalysis> {
+/**
+ * Analyze a bash command via tree-sitter, falling back to the regex heuristic.
+ * `alsoInside`: extra in-bounds roots (sandbox-writable dirs) for escape detection.
+ */
+export async function analyzeBash(command: string, root: string, alsoInside: readonly string[] = []): Promise<BashAnalysis> {
   const parser = await getTreeSitterParser();
   if (parser) {
     try {
       // Expand shell -c scripts so `bash -c 'sudo …'` exposes its inner
       // commands to privilege/escape detection and policy matching alike.
       const commands = expandShellCommands((s) => parser.parse(s), parser.parse(command));
-      return { commands, outsideReason: outsideReasonFromCommands(commands, root), usedFallback: false };
+      return { commands, outsideReason: outsideReasonFromCommands(commands, root, alsoInside), usedFallback: false };
     } catch {
       // parse failure → fall through to the heuristic
     }
   }
-  return { commands: [], outsideReason: bashConfirmReason(command, root), usedFallback: true };
+  return { commands: [], outsideReason: bashConfirmReason(command, root, alsoInside), usedFallback: true };
 }

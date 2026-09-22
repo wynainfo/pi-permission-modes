@@ -234,6 +234,41 @@ test("default mode: reads free, writes prompt, protected paths hard-block", { sk
   }
 });
 
+test("sandbox-writable temp dirs are in-bounds: no 'outside project' prompt, no unsandboxed escape", { skip }, async () => {
+  const h = await setup();
+  try {
+    // Default: reads are free in-project; /tmp (in the mode's allowWrite) is
+    // in-bounds too, so the external_directory ask does not fold in. /etc still does.
+    assert.equal(await h.call("read", { path: "/tmp/pi-scratch/out.txt" }), undefined);
+    assert.equal(h.ctx.prompts.length, 0);
+    h.ctx.answers.push("Deny");
+    assert.equal((await h.call("read", { path: "/etc/hostname" }))?.block, true);
+    assert.match(h.ctx.prompts[0]?.title ?? "", /Outside project/);
+
+    // Bash: the sandbox is off in this harness, so in-project bash prompts as
+    // "sandbox unavailable" — a /tmp path must get THAT prompt, not the
+    // "path outside project" escape prompt (which would run it unsandboxed).
+    h.ctx.answers.push("Deny", "Deny");
+    await h.call("bash", { command: "mktemp -d /tmp/pi.XXXX" });
+    assert.match(h.ctx.prompts[1]?.title ?? "", /sandbox unavailable/);
+    await h.call("bash", { command: "cat /etc/passwd" });
+    assert.match(h.ctx.prompts[2]?.title ?? "", /path outside project: \/etc\/passwd/);
+
+    // Build: a write into /tmp passes silently (allowWrite covers it).
+    await h.perm("build");
+    assert.equal(await h.call("write", { path: "/tmp/pi-scratch/notes.txt" }), undefined);
+    assert.equal(h.ctx.prompts.length, 3);
+
+    // YOLO doesn't sandbox, so allowWrite is meaningless — its own
+    // external_directory:allow is what keeps /tmp (and everything) silent.
+    await h.perm("yolo");
+    assert.equal(await h.call("write", { path: "/tmp/pi-scratch/notes.txt" }), undefined);
+    assert.equal(h.ctx.prompts.length, 3);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("bash: session grant covers the same command, not a longer chain", { skip }, async () => {
   const h = await setup();
   try {

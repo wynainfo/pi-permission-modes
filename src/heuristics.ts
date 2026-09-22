@@ -19,9 +19,10 @@ export const PRIVILEGE_RE = /\b(sudo|su|doas|pkexec|runuser|setpriv|chroot)\b/i;
 /**
  * Returns a human-readable reason to prompt before running `command`, or
  * undefined when the heuristic finds nothing concerning. `root` is the project
- * directory used to classify path tokens as in/out of project.
+ * directory used to classify path tokens as in/out of project; `alsoInside`
+ * lists further in-bounds roots (the sandbox-writable dirs, e.g. `/tmp`).
  */
-export function bashConfirmReason(command: string, root: string): string | undefined {
+export function bashConfirmReason(command: string, root: string, alsoInside: readonly string[] = []): string | undefined {
   if (PRIVILEGE_RE.test(command)) return "privilege escalation";
   for (const raw of command.split(/[\s;|&()<>]+/).filter(Boolean)) {
     const tok = raw.replace(/^['"]+|['"]+$/g, "");
@@ -32,7 +33,7 @@ export function bashConfirmReason(command: string, root: string): string | undef
     else if (tok.includes("/") || tok === "..") target = path.resolve(root, tok);
     else continue;
     if (SAFE_OUTSIDE_RE.test(target)) continue;
-    if (isOutside(root, target)) return `path outside project: ${tok}`;
+    if (isOutside(root, target, alsoInside)) return `path outside project: ${tok}`;
   }
   return undefined;
 }

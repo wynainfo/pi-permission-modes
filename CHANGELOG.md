@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1]
+
+### Fixed
+- **Temp-dir paths no longer prompt as "outside project" (and no longer run
+  unsandboxed on approval).** The bash escape detector and the file-tool
+  project boundary knew nothing about the sandbox profile, so a path under
+  the mode's own `allowWrite` — `/tmp` in every shipped sandboxed mode, plus
+  the runtime's `/tmp/claude` where it points `TMPDIR` — prompted as an
+  escape on every `mktemp`, download, or scratch file, even though the
+  sandbox permitted the write anyway. Worse, approving that prompt ran the
+  whole command unsandboxed, turning a harmless temp write into a real
+  containment escape. The sandbox-writable roots are now in-bounds for both
+  bash and the file tools: they neither prompt nor lift the sandbox. Other
+  absolute paths, relative escapes, and privilege escalation prompt exactly
+  as before; unsandboxed modes (YOLO) are governed solely by their
+  `external_directory` policy, as before.
+
 ## [2.2.0]
 
 ### Added

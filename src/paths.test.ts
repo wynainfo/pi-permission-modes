@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -14,6 +14,8 @@ import {
   resolvePlanPath,
   SAFE_OUTSIDE_RE,
   SANDBOX_PLACEHOLDER_PATHS,
+  SANDBOX_RUNTIME_TMP_PATHS,
+  sandboxAllowedRoots,
 } from "./paths.ts";
 
 const ROOT = "/home/proj";
@@ -240,4 +242,39 @@ test("isOutside: follows symlinks that escape the project", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test("isOutside: extra in-bounds roots (sandbox-writable dirs) are not outside", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "perm-bounds-"));
+  try {
+    const root = path.join(base, "proj");
+    const scratch = path.join(base, "scratch");
+    mkdirSync(root);
+    mkdirSync(scratch);
+    assert.equal(isOutside(root, path.join(scratch, "x.txt")), true);
+    assert.equal(isOutside(root, path.join(scratch, "x.txt"), [scratch]), false);
+    assert.equal(isOutside(root, scratch, [scratch]), false); // the root itself
+    assert.equal(isOutside(root, "../scratch/deep/x", [scratch]), false); // relative escape into a bound
+    assert.equal(isOutside(root, path.join(base, "other", "x"), [scratch]), true); // sibling stays outside
+    assert.equal(isOutside(root, path.join(base, "scratch2", "x"), [scratch]), true); // prefix ≠ containment
+    assert.equal(isOutside(root, "src/app.ts", [scratch]), false); // project untouched
+    // A symlink inside a bound that points elsewhere is still an escape.
+    mkdirSync(path.join(base, "other"));
+    symlinkSync(path.join(base, "other"), path.join(scratch, "link"));
+    assert.equal(isOutside(root, path.join(scratch, "link", "x"), [scratch]), true);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("sandboxAllowedRoots: allowWrite resolved to absolute roots + the runtime temp dir", () => {
+  const home = os.homedir();
+  const roots = sandboxAllowedRoots(ROOT, { enabled: true, writable: true, allowWrite: [".", "/tmp", "~/scratch", "build/*"] });
+  assert.deepEqual(roots, [ROOT, "/tmp", `${home}/scratch`, ...SANDBOX_RUNTIME_TMP_PATHS]); // glob entry skipped
+  // Non-sandboxing mode: no bounds (allowWrite is meaningless there).
+  assert.deepEqual(sandboxAllowedRoots(ROOT, { enabled: false, writable: true, allowWrite: ["/tmp"] }), []);
+  // Read-only sandbox (Plan) keeps its roots: reads there are fine, writes fail in the sandbox as in-project.
+  assert.ok(sandboxAllowedRoots(ROOT, { enabled: true, writable: false, allowWrite: ["/tmp"] }).includes("/tmp"));
+  assert.deepEqual(sandboxAllowedRoots(ROOT, { enabled: true, writable: true }), SANDBOX_RUNTIME_TMP_PATHS);
 });

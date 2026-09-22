@@ -38,3 +38,10 @@ test("known gaps: heuristic does not parse the shell", () => {
   // Privilege escalation hidden in command substitution token boundary.
   assert.equal(bashConfirmReason("echo $(printf 's'; printf 'udo') ls", ROOT), undefined);
 });
+
+
+test("sandbox-writable roots are in-bounds for the heuristic too (parity with the AST path)", () => {
+  assert.match(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT) ?? "", /path outside project/);
+  assert.equal(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT, ["/tmp"]), undefined);
+  assert.match(bashConfirmReason("cat /etc/passwd", ROOT, ["/tmp"]) ?? "", /path outside project/);
+});
