@@ -62,6 +62,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   links are now followed to where they point (bounded against cycles).
 
 ### Fixed
+- **Bash escape detection sees what it used to miss.** Redirect targets
+  (`echo x > /etc/evil`, `cat < /etc/hostname`, `$(< /etc/hostname)`), the
+  words of `[[ -f /etc/shadow ]]`, heredocs fed to a shell (`bash <<EOF`),
+  `eval` strings, `bash -o pipefail -c …`, `find … -exec sudo …`, `coproc`,
+  escaped and ANSI-C spellings (`\/etc/x`, `$'/etc/x'`), `$HOME`-built
+  paths, `~user`, glued flag values (`if=/etc/x`, `--git-dir=/etc/x`,
+  `-C/etc`), and a bare `cd`/`cd -`/`pushd` (which go to the home or an
+  unknown directory) all prompt now. A `bash` policy rule is also matched
+  against the basename of a path head, the command a wrapper runs, and the
+  quote-normalized spelling, so `"sudo*": "deny"` catches `/usr/bin/sudo`,
+  `time sudo`, and `\git push` catches `"git push*"`. Shell globs and brace
+  expansion remain matched as written (documented).
 - `/perm init` and "Allow forever" write the public `$schema` URL; the stock
   file's relative path did not resolve from the agent directory. The schema
   no longer requires `enabled`/`writable` on every `sandbox` block, since

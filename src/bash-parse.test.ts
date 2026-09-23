@@ -10,7 +10,9 @@ import {
   extractCommands,
   isPrivilegeEscalation,
   outsideReasonFromCommands,
+  policyAliases,
   type SyntaxNodeLike,
+  unwrapCommand,
 } from "./bash-parse.ts";
 
 // --- fake CST builders (mirror the tree-sitter-bash grammar shape) ----------
@@ -202,4 +204,107 @@ test("analyzeBash: real grammar sees through wrappers and shell -c (skips if WAS
   // A benign mention is not privilege escalation in the AST path.
   const benign = await analyzeBash("grep sudo README.md", "/home/u/projX");
   assert.equal(benign.outsideReason, undefined);
+});
+
+// --- redirects, heredocs, tests (fake trees mirroring tree-sitter-bash) -------
+
+test("extractCommands: redirect targets join the command's args; $(< file) and [[ ]] become pseudo-commands", () => {
+  const redirect = (op: string, target: string) => node("file_redirect", `${op} ${target}`, [node(op, op), word(target)]);
+  const tree = program(
+    node("redirected_statement", "", [cmd("echo", "x"), redirect(">", "/etc/evil")]),
+    node("redirected_statement", "", [cmd("cat"), redirect("<", "/etc/hostname"), node("file_redirect", "2>/dev/null", [node("file_descriptor", "2"), node(">", ">"), word("/dev/null")])]),
+    node("command", "", [cmdName("echo"), node("string", '"$(< /etc/passwd)"', [node("command_substitution", "$(< /etc/passwd)", [node("$(", "$("), redirect("<", "/etc/passwd"), node(")", ")")])])]),
+    node("test_command", "", [node("[[", "[["), node("unary_expression", "", [node("test_operator", "-f"), word("/etc/shadow")]), node("]]", "]]")]),
+  );
+  const cmds = extractCommands(tree);
+  assert.deepEqual(cmds.map((c) => [c.name, c.args]), [
+    ["echo", ["x", "/etc/evil"]],
+    ["cat", ["/etc/hostname", "/dev/null"]],
+    ["echo", ["$(< /etc/passwd)"]],
+    ["", ["/etc/passwd"]],
+    ["[[", ["/etc/shadow"]],
+  ]);
+  assert.equal(cmds[3].isNested, true);
+  const root = "/home/u/proj";
+  assert.match(outsideReasonFromCommands([cmds[0]], root) ?? "", /\/etc\/evil/);
+  assert.match(outsideReasonFromCommands([cmds[3]], root) ?? "", /\/etc\/passwd/);
+  assert.match(outsideReasonFromCommands([cmds[4]], root) ?? "", /\/etc\/shadow/);
+  assert.equal(outsideReasonFromCommands([{ name: "cat", args: ["x", "/dev/null"], isNested: false }], root), undefined);
+});
+
+test("extractCommands: a heredoc body attaches to its command and is expanded when the command is a shell", () => {
+  const heredoc = (body: string) => node("heredoc_redirect", "", [node("<<", "<<"), node("heredoc_start", "'EOF'"), node("heredoc_body", body), node("heredoc_end", "EOF")]);
+  const tree = program(node("redirected_statement", "", [cmd("bash"), heredoc("sudo id\n")]), node("redirected_statement", "", [cmd("cat"), heredoc("sudo id\n")]));
+  const cmds = extractCommands(tree);
+  assert.equal(cmds[0].heredoc, "sudo id\n");
+  const fakeParse = (script: string): BashCommand[] => (script.includes("sudo") ? [{ name: "sudo", args: ["id"], isNested: false }] : []);
+  const expanded = expandShellCommands(fakeParse, cmds);
+  // bash <<EOF: expanded (sudo seen); cat <<EOF: data, not expanded.
+  assert.deepEqual(expanded.map((c) => c.name), ["bash", "sudo", "cat"]);
+  assert.equal(outsideReasonFromCommands(expanded, "/p"), "privilege escalation");
+});
+
+test("expandShellCommands: eval strings, `bash -o pipefail -c`, `bash -s` with heredoc", () => {
+  const fakeParse = (script: string): BashCommand[] => [{ name: script.split(" ")[0], args: script.split(" ").slice(1), isNested: false }];
+  const bc = (name: string, ...args: string[]): BashCommand => ({ name, args, isNested: false });
+  assert.deepEqual(expandShellCommands(fakeParse, [bc("eval", "cat /etc/hostname")]).map((c) => c.name), ["eval", "cat"]);
+  assert.deepEqual(expandShellCommands(fakeParse, [bc("bash", "-o", "pipefail", "-c", "sudo id")]).map((c) => c.name), ["bash", "sudo"]);
+  assert.deepEqual(expandShellCommands(fakeParse, [{ ...bc("sh", "-s"), heredoc: "sudo id" }]).map((c) => c.name), ["sh", "sudo"]);
+  assert.deepEqual(expandShellCommands(fakeParse, [bc("bash", "--norc", "script.sh")]).map((c) => c.name), ["bash"]); // a file: not inspectable
+});
+
+test("unwrapCommand / policyAliases: wrappers, find -exec, path heads, quote-mangled spellings", () => {
+  const bc = (name: string, ...args: string[]): BashCommand => ({ name, args, isNested: false });
+  assert.deepEqual(unwrapCommand(bc("find", ".", "-exec", "sudo", "id", ";")), { name: "sudo", args: ["id", ";"] });
+  assert.deepEqual(unwrapCommand(bc("coproc", "sudo", "id")), { name: "sudo", args: ["id"] });
+  assert.equal(isPrivilegeEscalation(bc("find", ".", "-exec", "sudo", "id", ";")), true);
+  assert.equal(isPrivilegeEscalation(bc("fd", "-x", "doas", "id")), true);
+  assert.ok(policyAliases(bc("/usr/bin/sudo", "id")).includes("sudo id"));
+  assert.ok(policyAliases(bc("time", "sudo", "id")).includes("sudo id"));
+  assert.ok(policyAliases(bc("\\git", "push")).includes("git push"));
+  assert.ok(policyAliases(bc("git", 'pu""sh', "origin")).includes("git push origin"));
+  assert.deepEqual(policyAliases(bc("git", "status")), []);
+});
+
+test("outsideReasonFromCommands: normalized tokens, glued flag values, bare cd, ~user", () => {
+  const root = "/home/u/proj";
+  const bc = (name: string, ...args: string[]): BashCommand => ({ name, args, isNested: false });
+  assert.match(outsideReasonFromCommands([bc("cat", "\\/etc/hostname")], root) ?? "", /path outside project/);
+  assert.match(outsideReasonFromCommands([bc("cat", "$'/etc/hostname")], root) ?? "", /path outside project/); // closing quote already stripped by the parser
+  assert.match(outsideReasonFromCommands([bc("cat", "$HOME/.bashrc")], root) ?? "", /path outside project/);
+  assert.match(outsideReasonFromCommands([bc("cat", '"$HOME"/.bashrc')], root) ?? "", /path outside project/);
+  assert.match(outsideReasonFromCommands([bc("cat", "~root/.bashrc")], root) ?? "", /path outside project: ~root/);
+  assert.match(outsideReasonFromCommands([bc("dd", "if=/etc/hostname")], root) ?? "", /path outside project/);
+  assert.match(outsideReasonFromCommands([bc("git", "--git-dir=/etc/foo/.git", "log")], root) ?? "", /path outside project/);
+  assert.match(outsideReasonFromCommands([bc("tar", "-C/etc", "-cf", "-", "x")], root) ?? "", /path outside project/);
+  assert.match(outsideReasonFromCommands([bc("cd")], root) ?? "", /path outside project: cd/);
+  assert.match(outsideReasonFromCommands([bc("cd", "-")], root) ?? "", /path outside project: cd -/);
+  assert.match(outsideReasonFromCommands([bc("pushd", "-P")], root) ?? "", /path outside project/);
+  assert.equal(outsideReasonFromCommands([bc("cd", "src")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("dd", "if=input.bin", "of=/dev/null")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("grep", "-e", "a/b", "file")], root), undefined);
+});
+
+test("analyzeBash: real grammar sees redirects, heredoc scripts, eval, and find -exec (skips if WASM absent)", async () => {
+  const root = "/home/u/projX";
+  const cases: [string, RegExp | undefined][] = [
+    ["echo x > /etc/evil", /\/etc\/evil/],
+    ["cat < /etc/hostname", /\/etc\/hostname/],
+    ['echo "$(< /etc/hostname)"', /\/etc\/hostname/],
+    ["bash <<'EOF'\nsudo id\nEOF", /privilege escalation/],
+    ["cat <<'EOF'\nsudo id\nEOF", undefined], // data, not a script
+    ["[[ -f /etc/shadow ]] && echo yes", /\/etc\/shadow/],
+    ["eval 'cat /etc/hostname'", /\/etc\/hostname/],
+    ["find . -exec sudo id \\;", /privilege escalation/],
+    ["bash -o pipefail -c 'sudo id'", /privilege escalation/],
+    ["cat $'/etc/hostname'", /path outside project/],
+    ["cd; cat .bashrc", /path outside project: cd/],
+    ["echo hi > out.txt", undefined],
+  ];
+  for (const [command, expected] of cases) {
+    const a = await analyzeBash(command, root);
+    if (a.usedFallback) return; // WASM unavailable
+    if (expected) assert.match(a.outsideReason ?? "", expected, command);
+    else assert.equal(a.outsideReason, undefined, command);
+  }
 });

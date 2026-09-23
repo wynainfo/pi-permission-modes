@@ -13,7 +13,9 @@ you can rely on it appropriately.
    '…'` scripts are re-parsed recursively (depth-limited), and privilege
    escalation is detected through known wrapper commands (`env`, `nice`,
    `nohup`, `timeout`, `xargs`, …). Still foolable by variable-built commands
-   (`$CMD rm …`) and scripts read from files. If the tree-sitter grammar can't
+   (`$CMD rm …`), scripts read from files, and shell globs or brace
+   expansion (`cat .en?`, `cat .env{,}` are matched as written, not as what
+   the shell expands them to). If the tree-sitter grammar can't
    load, it falls back to the original token-scan heuristic
    (`bashConfirmReason`) - **not** a shell parser, foolable by variable-built
    paths etc. Either way this is the *prompting* layer, **not** the containment

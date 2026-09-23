@@ -129,13 +129,16 @@ export function decide(
  * Returns undefined when no layer matches at all; `decideBashChain` picks the
  * default ("ask", least-privilege — the same fallback `decide` applies).
  */
-export function decideBashCommand(mode: ModeDef, name: string, args: string[]): Action | undefined {
+export function decideBashCommand(mode: ModeDef, name: string, args: string[], aliases: readonly string[] = []): Action | undefined {
   const tokens = [name, ...args];
   const joined = tokens.join(" ").trim();
   const layers: (Action | undefined)[] = [];
   const sources = mode.projectOverlay ? [mode.permission, mode.projectOverlay] : [mode.permission];
   for (const perm of sources) {
     layers.push(resolveSurface(perm.bash, joined));
+    // Alternative spellings (basename of a path head, the command a wrapper
+    // runs): a `"sudo*": "deny"` must catch `/usr/bin/sudo id` and `time sudo id`.
+    for (const alt of aliases) layers.push(resolveSurface(perm.bash, alt));
     layers.push(resolveSurface(perm.path, joined));
     for (const tok of tokens) layers.push(resolveSurface(perm.path, tok));
   }
@@ -157,12 +160,12 @@ export function decideBashCommand(mode: ModeDef, name: string, args: string[]): 
  */
 export function decideBashChain(
   mode: ModeDef,
-  commands: ReadonlyArray<{ name: string; args: string[] }>,
+  commands: ReadonlyArray<{ name: string; args: string[]; aliases?: readonly string[] }>,
   fallback: Action = "ask",
 ): Action {
   let result: Action | undefined;
   for (const c of commands) {
-    result = mostRestrictive(result, decideBashCommand(mode, c.name, c.args) ?? fallback);
+    result = mostRestrictive(result, decideBashCommand(mode, c.name, c.args, c.aliases ?? []) ?? fallback);
   }
   return result ?? fallback;
 }

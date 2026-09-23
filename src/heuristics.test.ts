@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import test from "node:test";
-import { bashConfirmReason, PRIVILEGE_RE } from "./heuristics.ts";
+import { bashConfirmReason, normalizeBashToken, pathPartOfToken, PRIVILEGE_RE } from "./heuristics.ts";
 
 const ROOT = "/home/proj";
 
@@ -34,7 +34,10 @@ test("device pseudo-files are allowed (safe outside)", () => {
 // the heuristic smarter, update these expectations deliberately.
 test("known gaps: heuristic does not parse the shell", () => {
   // Path built via variable — not detected.
-  assert.equal(bashConfirmReason("X=/etc/passwd; cat $X", ROOT), undefined);
+  // The assignment's value is a glued `name=path` token and IS judged now; the
+  // later `$X` use is not (variables can't be resolved without a shell).
+  assert.match(bashConfirmReason("X=/etc/passwd; cat $X", ROOT) ?? "", /path outside project: X=\/etc\/passwd/);
+  assert.equal(bashConfirmReason("cat $X", ROOT), undefined);
   // Privilege escalation hidden in command substitution token boundary.
   assert.equal(bashConfirmReason("echo $(printf 's'; printf 'udo') ls", ROOT), undefined);
 });
@@ -44,4 +47,29 @@ test("sandbox-writable roots are in-bounds for the heuristic too (parity with th
   assert.match(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT) ?? "", /path outside project/);
   assert.equal(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT, ["/tmp"]), undefined);
   assert.match(bashConfirmReason("cat /etc/passwd", ROOT, ["/tmp"]) ?? "", /path outside project/);
+});
+
+test("normalizeBashToken / pathPartOfToken", () => {
+  const home = os.homedir();
+  assert.equal(normalizeBashToken("$'/etc/x'"), "/etc/x");
+  assert.equal(normalizeBashToken("$'/etc/x"), "/etc/x");
+  assert.equal(normalizeBashToken("\\/etc/x"), "/etc/x");
+  assert.equal(normalizeBashToken('"$HOME"/.bashrc'), `${home}/.bashrc`);
+  assert.equal(normalizeBashToken("${HOME}/x"), `${home}/x`);
+  assert.equal(normalizeBashToken("$HOMEX"), "$HOMEX"); // not the HOME variable
+  assert.equal(normalizeBashToken("$OTHER/x"), "$OTHER/x"); // unknown variables stay
+  assert.equal(pathPartOfToken("--git-dir=/etc/x"), "/etc/x");
+  assert.equal(pathPartOfToken("if=/etc/x"), "/etc/x");
+  assert.equal(pathPartOfToken("-C/etc"), "/etc");
+  assert.equal(pathPartOfToken("-I/usr/include"), "/usr/include");
+  assert.equal(pathPartOfToken("src/app.ts"), "src/app.ts");
+  assert.equal(pathPartOfToken("-n"), "-n");
+});
+
+test("heuristic: escaped, ANSI-C, $HOME, ~user, glued values, bare cd are escapes", () => {
+  for (const cmd of ["cat \\/etc/hostname", "cat $'/etc/hostname'", "cat $HOME/.bashrc", 'cat "$HOME"/.bashrc', "cat ~root/.bashrc", "dd if=/etc/hostname", "tar -C/etc -cf - x", "cd; cat .bashrc", "cd - && ls", "true; pushd"]) {
+    assert.match(bashConfirmReason(cmd, ROOT) ?? "", /path outside project/, cmd);
+  }
+  assert.equal(bashConfirmReason("cd src && ls", ROOT), undefined);
+  assert.equal(bashConfirmReason("echo cd", ROOT), undefined);
 });

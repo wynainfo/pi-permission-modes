@@ -155,3 +155,11 @@ test("decideBashChain: an unmatched command falls back to ask, not allow", () =>
   const star = mode({ path: { "*": "allow" }, bash: { "*": "allow" } });
   assert.equal(decideBashChain(star, [{ name: "ls", args: [] }]), "allow");
 });
+
+test("decideBashCommand: aliases let a deny catch path heads and wrapped commands", () => {
+  const m = mode({ bash: { "*": "allow", "sudo*": "deny", "git push*": "ask" } });
+  assert.equal(decideBashCommand(m, "/usr/bin/sudo", ["id"]), "allow"); // without aliases: dodged
+  assert.equal(decideBashCommand(m, "/usr/bin/sudo", ["id"], ["sudo id"]), "deny");
+  assert.equal(decideBashCommand(m, "time", ["sudo", "id"], ["sudo id"]), "deny");
+  assert.equal(decideBashChain(m, [{ name: "\\git", args: ["push"], aliases: ["git push"] }]), "ask");
+});
