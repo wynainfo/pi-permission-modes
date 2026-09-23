@@ -288,6 +288,7 @@ function parseConfigFile(p: string, onError: OnError): Partial<PermissionModeCon
   try {
     const data = JSON.parse(readFileSync(p, "utf-8")) as Partial<PermissionModeConfig>;
     delete (data as { $schema?: unknown }).$schema;
+    delete (data as { $comment?: unknown }).$comment; // `/perm init` provenance note
     return data;
   } catch (e) {
     onError(`permission-mode: could not parse ${p}: ${e}`);
@@ -318,6 +319,17 @@ export function loadStockDefaults(onError: OnError = noop): PermissionModeConfig
 /** Path to the user's global config (the one `/perm init` and persistence write). */
 export function globalConfigFile(agentDir: string): string {
   return path.join(agentDir, "permission-mode", "permission-mode.json");
+}
+
+/**
+ * The user's global config as written (only `$schema`/`$comment` stripped),
+ * for the defaults audit - or undefined when absent or unparsable (the
+ * loader reports parse errors separately).
+ */
+export function readGlobalConfigRaw(agentDir: string): Record<string, unknown> | undefined {
+  const data = parseConfigFile(globalConfigFile(agentDir), noop) as Record<string, unknown> | undefined;
+  if (data) delete data.$comment;
+  return data;
 }
 
 export function loadModeConfig(cwd: string, agentDir: string, onError: OnError = noop): PermissionModeConfig {

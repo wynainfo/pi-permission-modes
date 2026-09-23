@@ -348,6 +348,33 @@ characters incl. `/`**, `?` matches one, `~`/`$HOME` expand, **the last matching
 pattern wins** (put `"*"` first as the default), and across the `path` /
 `external_directory` / per-surface layers the **most restrictive wins**.
 
+### Keeping your global config current
+
+`/perm init` writes a **full copy** of the stock defaults so you can edit values
+in place. Every value in that file overrides the shipped default, which means a
+later change to the defaults (2.3.0 narrowed `allowWrite` from `/tmp` to
+`/tmp/pi`, for example) does not reach a copy that still carries the old value.
+Two safeguards cover that:
+
+- **Outdated-default warnings, every session start.** Each value in your global
+  file is compared with the current default and with every older default
+  shipped since 2.0.0 (`defaults-history.json`, clear-text copies with their
+  version ranges). A value equal to the current default is fine; one that
+  differs from it but equals an older default is reported by field, with both
+  values and the versions it belonged to; one that equals no default is your
+  customization and stays silent. Custom modes never trigger it.
+- **A one-time notice after an upgrade.** When the extension version changes
+  and the stock defaults changed between the two versions, users with a global
+  config are told which fields changed, so a heavily customized file gets a
+  nudge to compare even when nothing in it matches an old default verbatim.
+  The last version seen is kept in `~/.pi/agent/permission-mode/state.json`.
+
+To keep an outdated value knowingly, set `"acknowledgeDefaults": "<version>"`
+(the version whose defaults you reviewed against; `/perm init` stamps the copy's
+origin in a `$comment` for reference). The warnings stay silent until the
+shipped defaults change again. Deleting values you never meant to change is the
+simpler fix: the file is an overlay, and whatever it omits follows the defaults.
+
 ### Defining your own mode
 
 Add a mode under `modes` in the global config and (optionally) list it in

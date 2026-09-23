@@ -21,6 +21,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   touched on start). YOLO, otherwise silent, now gets a short "scratch
   directory" pointer so temp files stay per-session there too.
 
+- **Outdated-default warnings for the global config.** `/perm init` writes a
+  full copy of the stock defaults, which silently pins users to that version's
+  values: a later default change never reaches a copy that still carries the
+  old value (this release's `/tmp` narrowing being the first case). At every
+  session start, each value in the global file is now compared with the
+  current default and with every older default shipped since 2.0.0
+  (`defaults-history.json`, clear-text with version ranges): a value that
+  differs from the current default but equals an older one is reported by
+  field with both values and its version range; customizations and custom
+  modes stay silent. After an upgrade that changed the defaults, users with a
+  global config get a one-time notice naming the changed fields (last seen
+  version kept in `~/.pi/agent/permission-mode/state.json`). Set
+  `"acknowledgeDefaults": "<version>"` to keep an outdated value knowingly;
+  `/perm init` now stamps the copy's origin in a `$comment`.
+
 ### Changed
 - **Shipped `allowWrite` narrowed from `/tmp` to `/tmp/pi`** in Default, Plan,
   and Build. The sandbox no longer lets bash write anywhere under `/tmp`, only

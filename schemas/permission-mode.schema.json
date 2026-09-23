@@ -7,6 +7,14 @@
   "additionalProperties": false,
   "properties": {
     "$schema": { "type": "string" },
+    "$comment": {
+      "type": "string",
+      "description": "Free-form note, ignored by the loader. /perm init writes the copy's provenance here."
+    },
+    "acknowledgeDefaults": {
+      "type": "string",
+      "description": "Extension version whose stock defaults you reviewed this file against. Silences 'outdated default' warnings until the shipped defaults change again. Global config only."
+    },
     "defaultMode": {
       "type": "string",
       "description": "Name of the mode a new session starts in."

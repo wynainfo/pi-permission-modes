@@ -35,6 +35,7 @@
     "src/",
     "schemas/",
     "permission-mode.defaults.json",
+    "defaults-history.json",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",

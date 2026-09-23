@@ -43,6 +43,7 @@ Node 22, and **typecheck is blocking**.
 | `bash-enforce.ts` | Pure bash gate + exec plan (sandbox composition) |
 | `bash-parse.ts` | tree-sitter command extraction (pure core) + lazy WASM parser + heuristic fallback |
 | `config-load.ts` | Layered `permission-mode.json` loader (global full-authority, project tighten-only) |
+| `config-audit.ts` | Outdated-default detection against `defaults-history.json` + the once-per-upgrade notice |
 | `approvals.ts` | Session-scoped "Allow for session" store + prompt |
 | `paths.ts` | Pure path predicates (containment, protected, markdown, `.git` helpers) |
 | `heuristics.ts` | Regex bash scan - the tree-sitter fallback |
@@ -51,6 +52,21 @@ Node 22, and **typecheck is blocking**.
 | `status.ts` | Footer indicator |
 | `modes.ts` | Persisted session state (`PermState`) |
 | `util.ts` | Tiny SDK-free helpers |
+
+## Changing the shipped defaults
+
+`permission-mode.defaults.json` is compared against users' global configs at
+session start (see `config-audit.ts`). Whenever you change a value in it:
+
+1. Append the **previous** content to `defaults-history.json` as a new entry
+   `{ "from": "<first version that shipped it>", "to": "<last version that
+   shipped it>", "defaults": { ... } }` (drop the `$schema` key). The `to`
+   version is the release *before* the one carrying your change.
+2. Mention the change in the CHANGELOG; users with a stale copy will be told
+   the field name and both values automatically.
+
+The `config-audit.test.ts` suite fails if a history entry equals the current
+defaults, which catches a forgotten step 1.
 
 ## Conventions
 

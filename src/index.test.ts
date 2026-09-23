@@ -616,6 +616,53 @@ test("alt+m cycles modes and persists the choice as a session entry", { skip }, 
   }
 });
 
+test("defaults audit: stale /perm-init copy warns per field, acknowledge silences, upgrade notice fires once", { skip }, async () => {
+  const h = await setup();
+  try {
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "permission-mode.json");
+    // A 2.2.x-era full copy: still lists /tmp in all three sandboxed modes.
+    const oldCopy = JSON.parse(readFileSync(path.join(process.cwd(), "defaults-history.json"), "utf-8"))[0].defaults;
+    writeFileSync(file, JSON.stringify(oldCopy));
+    // Pretend the last run was 2.2.1 so the upgrade notice has something to compare.
+    writeFileSync(path.join(dir, "state.json"), JSON.stringify({ lastVersion: "2.0.0" }));
+
+    h.ctx.notices.length = 0;
+    await h.pi.emit("session_start", {}, h.ctx);
+    const stale = h.ctx.notices.find((n) => /still hold an outdated default/.test(n)) ?? "";
+    assert.match(stale, /3 value\(s\)/);
+    for (const m of ["default", "plan", "build"]) assert.match(stale, new RegExp(`modes\\.${m}\\.sandbox\\.allowWrite still holds the 2\\.0\\.0 to 2\\.2\\.1 default`));
+    assert.match(stale, /acknowledgeDefaults/);
+    const upgrade = h.ctx.notices.find((n) => /updated 2\.0\.0 ->/.test(n)) ?? "";
+    assert.match(upgrade, /stock defaults changed for modes\.default\.sandbox\.allowWrite/);
+    // State recorded: the notice does not repeat on the next start.
+    assert.match(readFileSync(path.join(dir, "state.json"), "utf-8"), /"lastVersion"/);
+    h.ctx.notices.length = 0;
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.ok(!h.ctx.notices.some((n) => /updated .* ->/.test(n)), "upgrade notice fires once");
+    assert.ok(h.ctx.notices.some((n) => /outdated default/.test(n)), "stale warning repeats until fixed");
+
+    // Acknowledging the current version silences the stale warning.
+    const cfg = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+    cfg.acknowledgeDefaults = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf-8")).version;
+    writeFileSync(file, JSON.stringify(cfg));
+    h.ctx.notices.length = 0;
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.ok(!h.ctx.notices.some((n) => /outdated default/.test(n)));
+
+    // No global config at all: silent, state still recorded.
+    rmSync(file);
+    rmSync(path.join(dir, "state.json"));
+    h.ctx.notices.length = 0;
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.ok(!h.ctx.notices.some((n) => /outdated default|updated .* ->/.test(n)));
+    assert.ok(existsSync(path.join(dir, "state.json")));
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("/perm init scaffolds the global config once", { skip }, async () => {
   const h = await setup();
   try {
@@ -623,8 +670,14 @@ test("/perm init scaffolds the global config once", { skip }, async () => {
     const file = path.join(h.agentDir, "permission-mode", "permission-mode.json");
     assert.ok(existsSync(file));
     // The scaffold is the stock defaults, ready to edit.
-    const cfg = JSON.parse(readFileSync(file, "utf-8")) as { modes: Record<string, unknown> };
+    const cfg = JSON.parse(readFileSync(file, "utf-8")) as { modes: Record<string, unknown>; $comment?: string };
     assert.deepEqual(Object.keys(cfg.modes), ["default", "plan", "build", "yolo"]);
+    assert.match(String(cfg.$comment), /Copied from the pi-permission-modes \d+\.\d+\.\d+ stock defaults/);
+    assert.equal(Object.keys(cfg)[1], "$comment"); // right after $schema, where a reader sees it first
+    // A fresh copy never trips the audit.
+    h.ctx.notices.length = 0;
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.ok(!h.ctx.notices.some((n) => /outdated default/.test(n)));
     // Second init refuses to overwrite.
     await h.perm("init");
     assert.match(h.ctx.notices.at(-1) ?? "", /already exists/);

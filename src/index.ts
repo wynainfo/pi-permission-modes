@@ -52,12 +52,24 @@ import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate } from "./bash-enforce.ts";
 import { analyzeBash } from "./bash-parse.ts";
 import {
+  auditStaleDefaults,
+  defaultsChangedSince,
+  describeStale,
+  extensionVersion,
+  hasGlobalConfig,
+  loadDefaultsHistory,
+  readAuditState,
+  writeAuditState,
+} from "./config-audit.ts";
+import {
+  globalConfigFile,
   isUnsafeDomain,
   loadModeConfig,
   loadStockDefaults,
   persistModeDomains,
   persistModeRule,
   profileToConfig,
+  readGlobalConfigRaw,
   stockDefaultsFile,
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
@@ -317,15 +329,30 @@ export default async function (pi: ExtensionAPI) {
         return ctx.ui.notify("permission-mode: cleared session approvals", "info");
       }
       if (arg === "init") {
-        // Scaffold an editable copy of the stock defaults at the global path.
-        const dest = path.join(getAgentDir(), "permission-mode", "permission-mode.json");
+        // Scaffold an editable FULL copy of the stock defaults at the global
+        // path, stamped with its provenance: every value in it overrides the
+        // shipped default, and the audit (config-audit.ts) warns when one of
+        // them falls behind a later version's default.
+        const dest = globalConfigFile(getAgentDir());
         if (existsSync(dest)) {
-          return ctx.ui.notify(`permission-mode: ${dest} already exists — edit it directly`, "warning");
+          return ctx.ui.notify(`permission-mode: ${dest} already exists - edit it directly`, "warning");
         }
         try {
+          const stock = JSON.parse(readFileSync(stockDefaultsFile(), "utf-8")) as Record<string, unknown>;
+          const { $schema, ...rest } = stock;
+          const copy = {
+            $schema,
+            $comment:
+              `Copied from the pi-permission-modes ${extensionVersion()} stock defaults by /perm init. ` +
+              "Every value here overrides the shipped default; delete what you don't intend to change so " +
+              "future default updates reach you. The extension warns at session start when a value here " +
+              "still matches an outdated default; set \"acknowledgeDefaults\" to the version you reviewed " +
+              "against to silence that until the defaults change again.",
+            ...rest,
+          };
           mkdirSync(path.dirname(dest), { recursive: true });
-          writeFileSync(dest, readFileSync(stockDefaultsFile(), "utf-8"));
-          return ctx.ui.notify(`permission-mode: wrote ${dest} — edit it to customize your modes`, "info");
+          writeFileSync(dest, `${JSON.stringify(copy, null, 2)}\n`);
+          return ctx.ui.notify(`permission-mode: wrote ${dest} - edit it to customize your modes`, "info");
         } catch (e) {
           return ctx.ui.notify(`permission-mode: could not write ${dest}: ${e}`, "error");
         }
@@ -521,11 +548,55 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
+  /**
+   * Defaults audit (config-audit.ts): warn about global-config values that
+   * still hold an outdated default, and - once per version change - tell
+   * users with a global config which defaults changed. Never throws.
+   */
+  const auditGlobalConfig = (ctx: ExtensionContext) => {
+    const agentDir = getAgentDir();
+    const warn = (m: string) => (ctx.hasUI ? ctx.ui.notify(m, "warning") : console.error(m));
+    const current = { version: extensionVersion(), defaults: loadStockDefaults() };
+    const history = loadDefaultsHistory();
+    const state = readAuditState(agentDir);
+    try {
+      if (hasGlobalConfig(agentDir)) {
+        const raw = readGlobalConfigRaw(agentDir);
+        if (raw) {
+          const ack = typeof raw.acknowledgeDefaults === "string" ? raw.acknowledgeDefaults : undefined;
+          const stale = auditStaleDefaults(raw, current, history, ack);
+          if (stale.length > 0) {
+            warn(
+              [
+                `permission-mode: ${stale.length} value(s) in ${globalConfigFile(agentDir)} still hold an outdated default:`,
+                ...stale.map((f) => `  - ${describeStale(f)}`),
+                `Update them, or set "acknowledgeDefaults": "${current.version}" to keep them knowingly.`,
+              ].join("\n"),
+            );
+          }
+        }
+        if (state.lastVersion && state.lastVersion !== current.version) {
+          const changed = defaultsChangedSince(state.lastVersion, current, history);
+          if (changed.length > 0) {
+            warn(
+              `permission-mode: updated ${state.lastVersion} -> ${current.version}; the stock defaults changed for ` +
+                `${changed.join(", ")}. Compare your global config with ${stockDefaultsFile()} so you don't miss ` +
+                "security or behavior improvements.",
+            );
+          }
+        }
+      }
+    } finally {
+      if (state.lastVersion !== current.version) writeAuditState(agentDir, { lastVersion: current.version });
+    }
+  };
+
   pi.on("session_start", async (_event, ctx) => {
     uiCtx = ctx;
     config = loadModeConfig(ctx.cwd, getAgentDir(), (m) =>
       ctx.hasUI ? ctx.ui.notify(m, "warning") : console.error(m),
     );
+    auditGlobalConfig(ctx);
     if (!config.modes[modeName]) modeName = config.defaultMode;
     // Resolve the start mode BEFORE init so the sandbox initializes with the
     // right profile, then setMode reconciles status (applyProfile is a no-op).
