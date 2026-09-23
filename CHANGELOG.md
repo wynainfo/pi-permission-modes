@@ -31,6 +31,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   if you depend on one. Existing global configs that list `/tmp` keep it.
 - The awareness section's writable-paths bullet no longer suggests `/tmp/...`
   for temp files; the scratch-directory bullet does.
+- **`hideTools` may now hide `show_plan`.** It was hard-exempted, so an
+  explicit entry was silently swallowed; setups that never use Plan mode had
+  no way to drop the tool from the model's list. The list is now honored
+  literally. Stock modes are unchanged; a mode with the `"@plan"` system
+  prompt that hides `show_plan` gets a loader warning, since that prompt
+  instructs the model to call it. Proposed and first implemented by
+  [@trtyr](https://github.com/trtyr) in
+  [#8](https://github.com/wynainfo/pi-permission-modes/pull/8).
 - SECURITY.md documents the temp-dir caveats: in-bounds dirs are shared and
   world-readable, the runtime's own unconditional write paths (`/tmp/claude`,
   `~/.npm/_logs`, `~/.claude/debug`, macOS `$TMPDIR`), and that narrowing is

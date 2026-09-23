@@ -256,7 +256,10 @@ with `"injectSandboxInfo": false`; unsandboxed modes (YOLO) never inject.
 *before* it reasons (via the active-tools allowlist), so it never attempts them.
 It only ever *removes*: tools you have off yourself (`defaultTools` in
 `settings.json`, `--exclude-tools`) stay off, and switching modes restores
-exactly what the previous mode hid. `show_plan` is never hidden.
+exactly what the previous mode hid. The list is honored literally, including
+this extension's own `show_plan` — a setup that never plans can drop it; a
+mode with the `"@plan"` prompt that hides it gets a warning at load, since
+that prompt tells the model to call it.
 
 **Skills & extension tools.** Skills are gated by name at `/skill:<name>` (the
 `skill` surface); any non-builtin/extension tool (including MCP-as-tool in a host

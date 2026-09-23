@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import {
   type Action,
   type ModeDef,
+  PLAN_PROMPT_SENTINEL,
   type PermissionModeConfig,
   type SandboxProfile,
   type SurfaceValue,
@@ -180,6 +181,21 @@ function mergeMode(base: ModeDef, over: Partial<ModeDef>): ModeDef {
   };
 }
 
+/**
+ * Post-merge sanity warnings for one mode. Currently: a mode whose system
+ * prompt is the Plan prompt (which instructs the model to call `show_plan`)
+ * but whose `hideTools` removes that tool — honored as written, since
+ * `hideTools` is intent, but the contradiction is worth a warning.
+ */
+function warnModeContradictions(name: string, mode: ModeDef, onError: OnError): void {
+  if (mode.systemPrompt === PLAN_PROMPT_SENTINEL && mode.hideTools?.includes("show_plan")) {
+    onError(
+      `permission-mode: mode "${name}" hides show_plan but its "@plan" system prompt tells the model to call it; ` +
+        "drop show_plan from hideTools or use a different systemPrompt",
+    );
+  }
+}
+
 function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeConfig>, onError: OnError): PermissionModeConfig {
   const modes: Record<string, ModeDef> = { ...base.modes };
   for (const [name, raw] of Object.entries(over.modes ?? {})) {
@@ -192,7 +208,9 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
       modes[name] = m as ModeDef; // a complete new mode
     } else {
       onError(`permission-mode: ignoring incomplete new global mode "${name}" (needs label, color, sandbox)`);
+      continue;
     }
+    warnModeContradictions(name, modes[name], onError);
   }
   const cycleOrder = (over.cycleOrder ?? base.cycleOrder).filter((n) => modes[n]);
   let defaultMode = over.defaultMode ?? base.defaultMode;

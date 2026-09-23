@@ -103,6 +103,23 @@ test("global: full authority — add a mode, redefine a built-in, change default
   s.cleanup();
 });
 
+test("warns when a Plan-prompt mode hides show_plan; hiding it elsewhere is silent", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        plan: { hideTools: ["show_plan"] }, // contradiction: the @plan prompt calls show_plan
+        build: { hideTools: ["show_plan"] }, // fine: no planning prompt here
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.plan.hideTools, ["show_plan"]); // honored as written
+  assert.deepEqual(c.modes.build.hideTools, ["show_plan"]);
+  assert.equal(s.errors.length, 1, s.errors.join("; "));
+  assert.match(s.errors[0], /mode "plan" hides show_plan/);
+  s.cleanup();
+});
+
 test("warns on array-index-like pattern keys (JS front-loads their order)", () => {
   const s = sandbox({
     global: {

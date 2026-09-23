@@ -102,9 +102,6 @@ const BUILTIN_HANDLED = new Set([
   "request_network_access", // prompts on its own — gating it would double-prompt
 ]);
 
-/** Our own tools that must never be hidden (show_plan is needed in Plan mode). */
-const NEVER_HIDE = new Set(["show_plan"]);
-
 export default async function (pi: ExtensionAPI) {
   // The engine starts on the shipped stock defaults (permission-mode.defaults.json);
   // session_start reloads the merged config (stock + global full-authority +
@@ -232,9 +229,14 @@ export default async function (pi: ExtensionAPI) {
   // subset of what was active at the time) so a mode switch restores exactly
   // that and nothing else, and we only call setActiveTools when the set
   // actually changes (this runs every turn).
+  //
+  // `hideTools` is honored literally — including our own `show_plan`, which
+  // used to be exempt: a setup that never plans has no use for it, and a
+  // config entry that is silently ignored is worse than one that works. The
+  // loader warns when a mode with the Plan prompt hides it (see config-load).
   let hiddenByUs = new Set<string>();
   const applyToolVisibility = () => {
-    const hide = new Set((currentMode().hideTools ?? []).filter((n) => !NEVER_HIDE.has(n)));
+    const hide = new Set(currentMode().hideTools ?? []);
     const current = pi.getActiveTools();
     const base = [...new Set([...current, ...hiddenByUs])]; // active as it would be without our hiding
     const next = base.filter((n) => !hide.has(n));

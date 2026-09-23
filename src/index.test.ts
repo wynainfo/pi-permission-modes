@@ -398,8 +398,9 @@ test("tool visibility: respects the user's active set, hides/restores only hideT
     await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx); // runs every turn: idempotent
     assert.deepEqual(h.pi.activeTools, initial);
 
-    // A mode hiding edit/write/grep/show_plan: edit+write go, grep was never on
-    // (so nothing to remember), show_plan is never hidden.
+    // A mode hiding edit/write/grep/show_plan: edit+write+show_plan go (an
+    // explicit show_plan entry is honored, #8), grep was never on (so nothing
+    // to remember).
     const dir = path.join(h.agentDir, "permission-mode");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
@@ -418,14 +419,15 @@ test("tool visibility: respects the user's active set, hides/restores only hideT
     );
     await h.pi.emit("session_start", {}, h.ctx);
     await h.perm("review");
-    assert.deepEqual(h.pi.activeTools, ["read", "bash", "show_plan", "request_network_access"]);
+    assert.deepEqual(h.pi.activeTools, ["read", "bash", "request_network_access"]);
     await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx);
-    assert.deepEqual(h.pi.activeTools, ["read", "bash", "show_plan", "request_network_access"]);
+    assert.deepEqual(h.pi.activeTools, ["read", "bash", "request_network_access"]);
 
-    // Switching back restores exactly what we hid — grep stays off.
+    // Switching back restores exactly what we hid (incl. show_plan) — grep stays off.
     await h.perm("default");
     assert.deepEqual([...h.pi.activeTools].sort(), [...initial].sort());
     assert.ok(!h.pi.activeTools.includes("grep"));
+    assert.ok(h.pi.activeTools.includes("show_plan"));
   } finally {
     h.cleanup();
   }
