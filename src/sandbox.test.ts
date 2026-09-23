@@ -9,11 +9,11 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { bashCustomConfig, commandLauncher, createSandboxedBashOps, networkFiltered, withDeniedReads, writeCommandFile } from "./sandbox.ts";
+import { bashCustomConfig, commandLauncher, createSandboxedBashOps, networkFiltered, runtimeExtrasFor, runtimeInstallDir, withDeniedReads, withRuntimeExtras, writeCommandFile } from "./sandbox.ts";
 
 const quote: ((xs: readonly string[]) => string) | undefined = await import("@anthropic-ai/sandbox-runtime/dist/utils/shell-quote.js")
   .then((m) => (m as { quote: (xs: readonly string[]) => string }).quote)
@@ -274,4 +274,42 @@ test("exec: a bubblewrap namespace failure gets the AppArmor hint, other failure
   out = "";
   await ops.exec("echo 'Operation not permitted' >&2; exit 0", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
   assert.doesNotMatch(out, /apparmor/, "a successful run never gets the hint");
+});
+
+test("runtime extras: the runtime's own dir is re-opened under any deny, a worktree's git dirs become writable with hooks/config denied", () => {
+  const dir = runtimeInstallDir();
+  if (dir) assert.ok(existsSync(path.join(dir, "package.json")), dir);
+  const base = mkdtempSync(path.join(tmpdir(), "perm-extras-"));
+  try {
+    const plain = runtimeExtrasFor(base, "/opt/rt");
+    assert.deepEqual(plain, { allowRead: ["/opt/rt"], allowWrite: [], denyWrite: [] });
+    const main = path.join(base, "main");
+    mkdirSync(path.join(main, ".git", "worktrees", "wt"), { recursive: true });
+    writeFileSync(path.join(main, ".git", "worktrees", "wt", "commondir"), "../..\n");
+    const wt = path.join(base, "wt");
+    mkdirSync(wt);
+    writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "wt")}\n`);
+    const ex = runtimeExtrasFor(wt, ""); // "" = no runtime dir (undefined would pick the default)
+    const gitdir = path.join(main, ".git", "worktrees", "wt");
+    const common = path.join(main, ".git");
+    assert.deepEqual(ex.allowRead, []);
+    assert.deepEqual(ex.allowWrite.map((p) => path.relative(base, p)), [gitdir, common].map((p) => path.relative(base, p)));
+    assert.deepEqual(ex.denyWrite.map((p) => path.relative(base, p)), [path.join(gitdir, "hooks"), path.join(gitdir, "config"), path.join(common, "hooks"), path.join(common, "config")].map((p) => path.relative(base, p)));
+
+    // Folded into the runtime config, on top of the profile; the profile itself is untouched.
+    const profile = { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~"], allowRead: ["."] };
+    const cfg = withRuntimeExtras({ enabled: true, network: { deniedDomains: [] }, filesystem: { denyRead: ["~"], allowRead: ["."], allowWrite: ["."], denyWrite: [] } }, { ...ex, allowRead: ["/opt/rt"] });
+    assert.deepEqual(cfg.filesystem.allowRead, [".", "/opt/rt"]);
+    assert.deepEqual(cfg.filesystem.allowWrite.slice(0, 1), ["."]);
+    assert.equal(cfg.filesystem.allowWrite.length, 3);
+    assert.equal(cfg.filesystem.denyWrite.length, 4);
+    // Per-command configs carry them too, and a read-only run keeps the git dirs writable.
+    const ro = bashCustomConfig(profile, { readOnly: true, keepWritable: ["/tmp/pi/s1"] }, { ...ex, allowRead: ["/opt/rt"] })!;
+    assert.deepEqual(ro.filesystem.allowWrite.map((p) => (p.startsWith(base) ? path.relative(base, p) : p)), ["/tmp/pi/s1", path.relative(base, gitdir), path.relative(base, common)]);
+    assert.deepEqual(ro.filesystem.allowRead, [".", "/opt/rt"]);
+    const none = withRuntimeExtras({ enabled: true, network: { deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: ["."], denyWrite: [] } }, { allowRead: [], allowWrite: [], denyWrite: [] });
+    assert.ok(!("allowRead" in none.filesystem), "no extras, no allowRead key");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
-import { removeSandboxPlaceholders } from "./paths.ts";
+import { gitDirsOf, removeSandboxPlaceholders } from "./paths.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
 
@@ -306,18 +306,66 @@ export interface BashOpsOptions {
 }
 
 /**
- * The per-command runtime config for `opts`, or undefined when the init-time
- * profile applies unchanged. The runtime takes each `filesystem` list
- * WHOLESALE from the per-wrap config when present, so the profile's own
- * lists are carried along, never replaced by the extras alone.
+ * Paths the runtime layer adds to every config on top of the mode profile.
+ * They are NOT part of the profile (the bounds, the awareness prompt, and
+ * the audit never see them): they exist so the sandbox can run at all.
  */
-export function bashCustomConfig(profile: SandboxProfile, opts: BashOpsOptions): SandboxConfig | undefined {
+export interface RuntimeExtras {
+  /** Re-opened inside any denyRead: the runtime's own package (its seccomp helper must be executable under a strict-home deny). */
+  allowRead: string[];
+  /** A worktree's/submodule's git dir and common dir: git must write there (index, refs, objects). */
+  allowWrite: string[];
+  /** `hooks` and `config` of those git dirs, denied like the runtime denies them for an in-project `.git`. */
+  denyWrite: string[];
+}
+
+/** The directory the sandbox runtime is installed in, or undefined when it cannot be resolved. */
+export function runtimeInstallDir(): string | undefined {
+  try {
+    return path.dirname(fileURLToPath(import.meta.resolve("@anthropic-ai/sandbox-runtime/package.json")));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The extras for a project at `cwd` (see RuntimeExtras). */
+export function runtimeExtrasFor(cwd: string, runtimeDir: string | undefined = runtimeInstallDir()): RuntimeExtras {
+  const extras: RuntimeExtras = { allowRead: runtimeDir ? [runtimeDir] : [], allowWrite: [], denyWrite: [] };
+  const git = gitDirsOf(cwd);
+  if (git) {
+    for (const d of new Set([git.gitdir, git.commondir])) {
+      extras.allowWrite.push(d);
+      extras.denyWrite.push(path.join(d, "hooks"), path.join(d, "config"));
+    }
+  }
+  return extras;
+}
+
+/** `cfg` with the runtime extras folded into its filesystem lists (deduplicated, profile entries first). */
+export function withRuntimeExtras(cfg: SandboxConfig, extras: RuntimeExtras | undefined): SandboxConfig {
+  if (!extras) return cfg;
+  const merge = (a: readonly string[] | undefined, b: readonly string[]): string[] => [...new Set([...(a ?? []), ...b])];
+  const fs = { ...cfg.filesystem, allowWrite: merge(cfg.filesystem.allowWrite, extras.allowWrite), denyWrite: merge(cfg.filesystem.denyWrite, extras.denyWrite) };
+  const allowRead = merge(cfg.filesystem.allowRead, extras.allowRead);
+  return { ...cfg, filesystem: allowRead.length > 0 ? { ...fs, allowRead } : fs };
+}
+
+/**
+ * The per-command runtime config for `opts`, or undefined when the init-time
+ * config applies unchanged. The runtime takes each `filesystem` list
+ * WHOLESALE from the per-wrap config when present, so the profile's own
+ * lists and the runtime extras are carried along, never replaced by the
+ * per-command additions alone.
+ */
+export function bashCustomConfig(profile: SandboxProfile, opts: BashOpsOptions, extras?: RuntimeExtras): SandboxConfig | undefined {
   const extra = opts.extraDenyRead ?? [];
   if (!opts.readOnly && extra.length === 0) return undefined;
   // Read-only keeps the session scratch dir writable: TMPDIR points there,
-  // and a Plan-mode `mktemp` or Python `tempfile` must still work.
-  const base = profileToConfig(withDeniedReads(profile, extra));
-  return opts.readOnly ? readOnlyOverride(base, opts.keepWritable ?? []) : base;
+  // and a Plan-mode `mktemp` or Python `tempfile` must still work. The git
+  // dirs of a worktree stay writable too: a read-only run of `git status`
+  // refreshes the index.
+  const base = withRuntimeExtras(profileToConfig(withDeniedReads(profile, extra)), extras);
+  return opts.readOnly ? readOnlyOverride(base, [...(opts.keepWritable ?? []), ...(extras?.allowWrite ?? [])]) : base;
 }
 
 /** How the caller surfaces warnings (e.g. a TUI notify), only used when there's a UI. */
@@ -365,6 +413,8 @@ export class SandboxController {
   warn: string | undefined;
   /** Non-fatal findings of the runtime's dependency check (shown once, listed by /sandbox). */
   dependencyWarnings: string[] = [];
+  /** Runtime-level additions for the current project (see RuntimeExtras), set by init. */
+  extras: RuntimeExtras | undefined;
 
   /** The active runtime, or null when unavailable. */
   get sandboxManager(): SandboxManagerType | null {
@@ -380,7 +430,7 @@ export class SandboxController {
    */
   bashOps(opts: BashOpsOptions = {}): BashOperations | null {
     if (!this.manager || !this.profile) return null;
-    return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts), this.drainBlockedHosts);
+    return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts, this.extras), this.drainBlockedHosts);
   }
 
   /** Install instructions shown when the runtime is missing or fails to init. */
@@ -408,6 +458,7 @@ export class SandboxController {
     this.manager = null;
     this.appliedKey = undefined;
     this.dependencyWarnings = [];
+    this.extras = runtimeExtrasFor(cwd);
     this.hasUI = hasUI;
     this.notifyFn = notify;
     this.askHost = askHost;
@@ -508,7 +559,7 @@ export class SandboxController {
     if (this.degraded || !this.manager) return;
     if (!profile.enabled) return; // non-sandboxing mode (e.g. YOLO): keep prior init
 
-    const cfg = profileToConfig(profile);
+    const cfg = withRuntimeExtras(profileToConfig(profile), this.extras);
     const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem });
     if (this.ready && key === this.appliedKey) return;
 

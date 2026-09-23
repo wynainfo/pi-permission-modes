@@ -42,7 +42,9 @@ you can rely on it appropriately.
   the same file through a script it writes into the project. **Deny and
   block** (offered on every out-of-project path prompt) turns that Deny into
   containment for the session: every later sandboxed command carries the
-  path as extra `denyRead`, and the file tools refuse it directly. A mode
+  path as extra `denyRead`, and the file tools refuse it directly. A block
+  is by path, like every `denyRead`: a second name for the same file that
+  already exists elsewhere (a hardlink, an earlier copy) is not covered. A mode
   can invert the default with `allowRead`: deny `~` and re-open only the
   toolchain directories (README, "Strict home"); a more specific `denyRead`
   or a session block inside a carve-out still wins, and a project config can

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ import {
   blockablePath,
   canonicalPath,
   displayPath,
+  gitDirsOf,
   normalizeToolPath,
   sandboxAllowedRoots,
 } from "./paths.ts";
@@ -362,4 +363,34 @@ test("blockablePath: exact files and leaf dirs yes; roots, home, ancestors, deni
   assert.equal(displayPath(path.join(home, "a", "b")), "~/a/b");
   assert.equal(displayPath("/etc/x"), "/etc/x");
   assert.equal(canonicalPath(root, "../x"), path.join(home, "temp", "x"));
+});
+
+test("gitDirsOf: worktree and submodule gitfiles resolve to their git dir and common dir; plain repos give nothing", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "perm-gitdirs-"));
+  try {
+    const main = path.join(base, "main");
+    mkdirSync(path.join(main, ".git", "worktrees", "wt"), { recursive: true });
+    writeFileSync(path.join(main, ".git", "worktrees", "wt", "commondir"), "../..\n");
+    const wt = path.join(base, "wt");
+    mkdirSync(wt);
+    writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "wt")}\n`);
+    const real = (p: string) => realpathSync(p);
+    assert.deepEqual(gitDirsOf(wt), { gitdir: real(path.join(main, ".git", "worktrees", "wt")), commondir: real(path.join(main, ".git")) });
+    // Submodule: relative gitdir, no commondir file.
+    const sub = path.join(main, "sub");
+    mkdirSync(path.join(main, ".git", "modules", "sub"), { recursive: true });
+    mkdirSync(sub);
+    writeFileSync(path.join(sub, ".git"), "gitdir: ../.git/modules/sub\n");
+    const subDirs = gitDirsOf(sub)!;
+    assert.equal(subDirs.gitdir, real(path.join(main, ".git", "modules", "sub")));
+    assert.equal(subDirs.commondir, subDirs.gitdir);
+    assert.equal(gitDirsOf(main), undefined); // .git is a directory
+    assert.equal(gitDirsOf(base), undefined); // no .git
+    writeFileSync(path.join(wt, ".git"), ""); // a 0-byte placeholder is not a gitfile
+    assert.equal(gitDirsOf(wt), undefined);
+    writeFileSync(path.join(wt, ".git"), "gitdir: /nowhere/at/all\n"); // dangling: nothing to make writable
+    assert.equal(gitDirsOf(wt), undefined);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

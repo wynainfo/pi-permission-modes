@@ -154,8 +154,11 @@ outside directories or non-executable files stay escapes.
 >
 > **Git worktrees and submodules** (`.git` is a file pointing at the real git
 > dir) sandbox normally on every platform: the runtime protects `.git/hooks`
-> only when `.git` is a directory, and the real git dir lies outside the
-> project, where the sandbox does not allow writes anyway.
+> only when `.git` is a directory. Because the real git dir lies outside the
+> project, the extension makes it and the shared common dir writable inside
+> the sandbox (git needs them for the index, refs, and objects) with their
+> `hooks` and `config` write-denied, the same protection a normal repository
+> gets. `/sandbox` lists them.
 
 ### Scratch directory
 
@@ -449,7 +452,11 @@ Add a mode under `modes` in the global config and (optionally) list it in
 >
 > Keep `.` in the list: a read-only mode (Plan) does not re-expose the
 > project through `allowWrite`, and without it the project itself reads as
-> empty. Everything under `~` that is not listed reads as **absent** inside
+> empty. The extension re-opens its own runtime directory automatically (the
+> sandbox's seccomp helper lives there, under `~/.pi/agent/...`); the
+> interpreter that runs pi does not need to be listed either, only what the
+> agent's commands execute (`~/.nvm`, `~/.cargo`, a venv outside the
+> project). Everything under `~` that is not listed reads as **absent** inside
 > bash (Linux mounts an empty directory over it; no error, no prompt), so a
 > tool that needs a home path you left out fails silently; `/sandbox` shows
 > the lists, and the awareness section tells the model what is masked.

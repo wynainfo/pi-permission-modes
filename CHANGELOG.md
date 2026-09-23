@@ -47,7 +47,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **Git worktrees and submodules sandbox normally on Linux.** The runtime
     protects `.git/hooks` only when `.git` is a directory, so a gitfile no
     longer breaks bubblewrap and the extension no longer degrades those
-    projects to prompting.
+    projects to prompting. Their git dir and common dir (outside the
+    project) are made writable inside the sandbox so `git add`/`commit`
+    work, with `hooks` and `config` write-denied as in a normal repository.
+  - The extension re-opens the runtime's own package directory inside the
+    sandbox: under a `denyRead` that covers it (a strict-home `~`), the
+    runtime's seccomp helper would otherwise be unreadable and every command
+    would fail with exit 127.
   - An empty network allowlist starts the filtering proxy itself now, so the
     reserved placeholder domain the extension used to inject is gone.
   - The runtime removes the 0-byte mount points bubblewrap leaves for absent

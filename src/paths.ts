@@ -11,7 +11,7 @@
  * only containment guard.
  */
 
-import { lstatSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -304,6 +304,36 @@ export function removeSandboxPlaceholders(root: string): number {
     }
   }
   return removed;
+}
+
+/**
+ * The git directories of a project whose `.git` is a gitfile (a worktree or
+ * a submodule): the worktree's own git dir (`gitdir:` line, holds HEAD, the
+ * index, logs) and the common dir it shares with the main repository
+ * (`<gitdir>/commondir`, holds objects, refs, hooks, config). Both lie
+ * outside the project, where the sandbox allows no writes, so `git add` and
+ * `git commit` would fail inside it; the controller makes them writable with
+ * `hooks` and `config` denied. Empty for a normal repository (its `.git` is
+ * in-project) and for a non-git project; canonical paths.
+ */
+export function gitDirsOf(root: string): { gitdir: string; commondir: string } | undefined {
+  const gitfile = path.join(root, ".git");
+  try {
+    if (!statSync(gitfile).isFile()) return undefined;
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitfile, "utf8"));
+    if (!m) return undefined;
+    const gitdir = realpathSync(path.resolve(root, m[1]));
+    let commondir = gitdir;
+    try {
+      const rel = readFileSync(path.join(gitdir, "commondir"), "utf8").trim();
+      if (rel) commondir = realpathSync(path.resolve(gitdir, rel));
+    } catch {
+      // no commondir file: a submodule's gitdir is its own common dir
+    }
+    return { gitdir, commondir };
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -525,6 +525,7 @@ export default async function (pi: ExtensionAPI) {
           `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,
           `Allow write: ${c.filesystem?.allowWrite?.join(", ") || "(none)"}`,
           `Deny write:  ${c.filesystem?.denyWrite?.join(", ") || "(none)"}`,
+          ...(sandbox.extras?.allowWrite.length ? [`Git dirs (worktree/submodule): writable ${sandbox.extras.allowWrite.join(", ")}; hooks and config denied`] : []),
           ...(sandbox.dependencyWarnings.length > 0 ? ["", `Runtime warnings: ${sandbox.dependencyWarnings.join("; ")}`] : []),
         ].join("\n"),
         "info",
