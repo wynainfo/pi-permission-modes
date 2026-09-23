@@ -445,14 +445,16 @@ Add a mode under `modes` in the global config and (optionally) list it in
 >
 > ```jsonc
 > "denyRead": ["~"],
-> "allowRead": [".", "/tmp/pi",
+> "allowRead": [".", "/tmp/pi", "~/.gitconfig",
 >               "~/.cache", "~/.config", "~/.local", "~/.npm", "~/.nvm",
 >               "~/.cargo", "~/.rustup", "~/go", "~/.pyenv", "~/.gem"]
 > ```
 >
 > Keep `.` in the list: a read-only mode (Plan) does not re-expose the
 > project through `allowWrite`, and without it the project itself reads as
-> empty. The extension re-opens its own runtime directory automatically (the
+> empty. Keep `~/.gitconfig` too, or every `git commit` inside the sandbox
+> fails with "Author identity unknown" (the sandbox reports the file as
+> absent, not as denied, so nothing else tells you why). The extension re-opens its own runtime directory automatically (the
 > sandbox's seccomp helper lives there, under `~/.pi/agent/...`); the
 > interpreter that runs pi does not need to be listed either, only what the
 > agent's commands execute (`~/.nvm`, `~/.cargo`, a venv outside the
