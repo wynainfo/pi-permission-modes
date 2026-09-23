@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { commandLauncher, createSandboxedBashOps, networkFiltered, withDeniedReads, writeCommandFile } from "./sandbox.ts";
+import { bashCustomConfig, commandLauncher, createSandboxedBashOps, networkFiltered, withDeniedReads, writeCommandFile } from "./sandbox.ts";
 
 const quote: ((xs: readonly string[]) => string) | undefined = await import("@anthropic-ai/sandbox-runtime/dist/utils/shell-quote.js")
   .then((m) => (m as { quote: (xs: readonly string[]) => string }).quote)
@@ -173,6 +173,18 @@ test("exec: an aborted signal never spawns; an abort during the wrap kills befor
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("bashCustomConfig: blocks and read-only ride along per command, on top of the profile's own lists", () => {
+  const profile = { enabled: true, writable: true, allowWrite: [".", "/tmp/pi"], denyRead: ["~/.ssh"], network: { allowedDomains: ["a"] } };
+  assert.equal(bashCustomConfig(profile, {}), undefined, "nothing to override: the init-time profile applies");
+  assert.equal(bashCustomConfig(profile, { extraDenyRead: [] }), undefined);
+  const blocked = bashCustomConfig(profile, { extraDenyRead: ["/home/u/secret.txt"] })!;
+  assert.deepEqual(blocked.filesystem, { denyRead: ["~/.ssh", "/home/u/secret.txt"], allowWrite: [".", "/tmp/pi"], denyWrite: [] });
+  assert.deepEqual(blocked.network, { allowedDomains: ["a"], deniedDomains: [] });
+  const ro = bashCustomConfig(profile, { readOnly: true, keepWritable: ["/tmp/pi/s1"], extraDenyRead: ["/home/u/secret.txt"] })!;
+  assert.deepEqual(ro.filesystem, { denyRead: ["~/.ssh", "/home/u/secret.txt"], allowWrite: ["/tmp/pi/s1"], denyWrite: [] });
+  assert.deepEqual(bashCustomConfig(profile, { readOnly: true })!.filesystem.allowWrite, []);
 });
 
 test("withDeniedReads: appends session blocks to denyRead of a sandboxed profile only", () => {

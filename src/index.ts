@@ -143,7 +143,13 @@ export default async function (pi: ExtensionAPI) {
   // effective profile's denyRead so the OS sandbox masks them for bash, and
   // checked directly for the (unsandboxed) file tools.
   const blocked = new BlockedPaths();
-  const effectiveSandbox = (m: ModeDef): SandboxProfile => withDeniedReads(withScratchDir(m.sandbox, scratchDir), blocked.list());
+  // What the runtime is initialized with: the mode's profile plus the scratch
+  // dir. The session's "Deny and block" paths are NOT part of it - they ride
+  // along per command (sandbox.bashOps extraDenyRead), so a block never
+  // restarts the runtime or its network proxy.
+  const runtimeProfile = (m: ModeDef): SandboxProfile => withScratchDir(m.sandbox, scratchDir);
+  // What bash effectively runs under, for the bounds, the awareness prompt, and /sandbox.
+  const effectiveSandbox = (m: ModeDef): SandboxProfile => withDeniedReads(runtimeProfile(m), blocked.list());
 
   const sandbox = new SandboxController();
   // toolCallIds the user explicitly approved to run OUTSIDE the sandbox.
@@ -227,7 +233,6 @@ export default async function (pi: ExtensionAPI) {
       label: `Deny and block ${shown} for this session`,
       run: async () => {
         for (const t of eligible) blocked.add(t);
-        await sandbox.applyProfile(effectiveSandbox(currentMode()));
         updateStatus(ctx, currentMode(), sandbox, net.open);
         ctx.ui.notify(
           `permission-mode: ${shown} ${eligible.length === 1 ? "is" : "are"} now unreadable inside the sandbox for this session (/perm blocks to list, /perm unblock <path> to lift)`,
@@ -307,7 +312,7 @@ export default async function (pi: ExtensionAPI) {
     // derives the same safe fallback itself (and skips the systemPrompt too).
     if (!viaFallback) process.env.PI_PERMISSION_MODE = modeName;
     const m = currentMode();
-    await sandbox.applyProfile(effectiveSandbox(m)); // re-init runtime if the profile changed
+    await sandbox.applyProfile(runtimeProfile(m)); // re-init runtime if the profile changed
     applyToolVisibility();
     updateStatus(ctx, m, sandbox, net.open);
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
@@ -375,7 +380,6 @@ export default async function (pi: ExtensionAPI) {
         approvals.clearAll();
         const hadBlocks = blocked.list().length > 0;
         blocked.clear();
-        if (hadBlocks) await sandbox.applyProfile(effectiveSandbox(currentMode()));
         return ctx.ui.notify(`permission-mode: cleared session approvals${hadBlocks ? " and blocked paths" : ""}`, "info");
       }
       if (arg === "blocks") {
@@ -390,7 +394,6 @@ export default async function (pi: ExtensionAPI) {
         if (!raw) return ctx.ui.notify("permission-mode: usage: /perm unblock <path>", "warning");
         const target = canonicalPath(root, normalizeToolPath(raw));
         if (!blocked.remove(target)) return ctx.ui.notify(`permission-mode: ${displayPath(target)} is not blocked (see /perm blocks)`, "warning");
-        await sandbox.applyProfile(effectiveSandbox(currentMode()));
         return ctx.ui.notify(`permission-mode: ${displayPath(target)} is readable again for this session`, "info");
       }
       if (arg === "init") {
@@ -543,7 +546,9 @@ export default async function (pi: ExtensionAPI) {
         // degrade silently to an unsandboxed run: fail the call instead.
         throw new Error("permission-mode: the sandbox became unavailable after this command was approved; run it again");
       }
-      const ops = plan.sandboxed ? sandbox.bashOps({ readOnly: plan.readOnly, keepWritable: scratchDir ? [scratchDir] : [] }) : null;
+      const ops = plan.sandboxed
+        ? sandbox.bashOps({ readOnly: plan.readOnly, keepWritable: scratchDir ? [scratchDir] : [], extraDenyRead: blocked.list() })
+        : null;
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
       return sandboxed.execute(id, params, signal, onUpdate);
@@ -703,7 +708,7 @@ export default async function (pi: ExtensionAPI) {
       noSandbox: pi.getFlag("no-sandbox") === true,
       hasUI: ctx.hasUI,
       notify: (m) => ctx.ui.notify(m, "warning"),
-      profile: effectiveSandbox(currentMode()),
+      profile: runtimeProfile(currentMode()),
       // Live network gate: the proxy consults session state for every host
       // outside the allowlist; unknown hosts prompt via askNetHost.
       askHost: (host, port) => net.decide(host, port, askNetHost),

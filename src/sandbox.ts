@@ -296,6 +296,30 @@ export function withDeniedReads(profile: SandboxProfile, paths: readonly string[
   return { ...profile, denyRead: [...new Set([...(profile.denyRead ?? []), ...paths])] };
 }
 
+export interface BashOpsOptions {
+  /** Plan mode: no project writes for this command. */
+  readOnly?: boolean;
+  /** Directories that stay writable in a read-only run (the session scratch dir). */
+  keepWritable?: string[];
+  /** Paths masked for this command on top of the profile's `denyRead` (the session's "Deny and block" list). */
+  extraDenyRead?: readonly string[];
+}
+
+/**
+ * The per-command runtime config for `opts`, or undefined when the init-time
+ * profile applies unchanged. The runtime takes each `filesystem` list
+ * WHOLESALE from the per-wrap config when present, so the profile's own
+ * lists are carried along, never replaced by the extras alone.
+ */
+export function bashCustomConfig(profile: SandboxProfile, opts: BashOpsOptions): SandboxConfig | undefined {
+  const extra = opts.extraDenyRead ?? [];
+  if (!opts.readOnly && extra.length === 0) return undefined;
+  // Read-only keeps the session scratch dir writable: TMPDIR points there,
+  // and a Plan-mode `mktemp` or Python `tempfile` must still work.
+  const base = profileToConfig(withDeniedReads(profile, extra));
+  return opts.readOnly ? readOnlyOverride(base, opts.keepWritable ?? []) : base;
+}
+
 /** How the caller surfaces warnings (e.g. a TUI notify), only used when there's a UI. */
 type Notify = (message: string) => void;
 
@@ -349,15 +373,14 @@ export class SandboxController {
 
   /**
    * Wrap a fresh BashOperations around the active runtime, or null when
-   * unavailable. With `readOnly`, the command runs with project writes disabled
-   * (Plan mode) — the library still allows its own default scratch paths.
+   * unavailable. With `readOnly`, the command runs with project writes
+   * disabled (Plan mode); `extraDenyRead` masks the session's blocked paths
+   * for this command. Both ride along as the per-wrap config (the runtime
+   * compiles filesystem rules at wrap time), so neither restarts the runtime.
    */
-  bashOps(opts: { readOnly?: boolean; keepWritable?: string[] } = {}): BashOperations | null {
+  bashOps(opts: BashOpsOptions = {}): BashOperations | null {
     if (!this.manager || !this.profile) return null;
-    // Read-only keeps the session scratch dir writable: TMPDIR points there,
-    // and a Plan-mode `mktemp` or Python `tempfile` must still work.
-    const customConfig = opts.readOnly ? readOnlyOverride(profileToConfig(this.profile), opts.keepWritable ?? []) : undefined;
-    return createSandboxedBashOps(this.manager, customConfig, this.drainBlockedHosts);
+    return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts), this.drainBlockedHosts);
   }
 
   /** Install instructions shown when the runtime is missing or fails to init. */

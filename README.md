@@ -227,10 +227,11 @@ tool) offers a fourth option, **Deny and block `<path>` for this session**.
 Plain Deny refuses that one command; the agent is free to try again another
 way, and reads outside the project are not contained by the sandbox (see
 [SECURITY.md](SECURITY.md)), so a script that opens the file would succeed.
-Deny and block adds the path to the session's `denyRead`: the sandbox is
-re-applied at once, so any indirect read from bash gets nothing (Linux masks
-a file with `/dev/null`, macOS returns a permission error), and the file
-tools refuse it without a prompt. The awareness section lists the block, so
+Deny and block adds the path to the session's block list, and every
+sandboxed command from then on carries it as extra `denyRead`, so any
+indirect read from bash gets nothing (Linux masks a file with `/dev/null`,
+macOS returns a permission error), and the file tools refuse it without a
+prompt. The awareness section lists the block, so
 the model stops probing. Only the exact file or directory named is blocked,
 never the home directory, a system root, or an ancestor of the project or of
 a writable root; when a path can't be blocked safely the option is simply not

@@ -13,8 +13,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that one command, and reads outside the project are not contained by the
   sandbox, so an agent that was denied `cat ~/secret.txt` could write a
   Python script into the project and read the file anyway. Deny and block
-  adds the path to the session's `denyRead` and re-applies the sandbox at
-  once: bash reads of it get nothing (Linux masks the file with `/dev/null`,
+  adds the path to the session's block list, which every sandboxed command
+  from then on carries as extra `denyRead` (the runtime compiles filesystem
+  rules per command, so no restart): bash reads of it get nothing (Linux
+  masks the file with `/dev/null`,
   macOS returns EPERM), the file tools refuse it without a prompt, a later
   bash command naming it is blocked outright, and the awareness section
   lists it so the model stops probing. Only the exact file or directory is
