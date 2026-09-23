@@ -11,7 +11,7 @@ npm install            # installs @anthropic-ai/sandbox-runtime + dev tooling
 ```
 
 The pi SDK packages (`@earendil-works/pi-coding-agent`, `…/pi-ai`, `…/pi-tui`)
-are **host-bundled** — declared as `peerDependencies` and provided by pi at load
+are **host-bundled** - declared as `peerDependencies` and provided by pi at load
 time. You need pi installed to run the extension.
 
 Try it without installing into your config:
@@ -28,7 +28,7 @@ npm run typecheck # tsc --noEmit
 ```
 
 The pure-module tests run without any install. The dispatcher harness
-(`index.test.ts`) and the typecheck need the pi SDK — it resolves from the npm
+(`index.test.ts`) and the typecheck need the pi SDK - it resolves from the npm
 registry via `npm install`; without it the harness self-skips. CI runs both on
 Node 22, and **typecheck is blocking**.
 
@@ -45,8 +45,8 @@ Node 22, and **typecheck is blocking**.
 | `config-load.ts` | Layered `permission-mode.json` loader (global full-authority, project tighten-only) |
 | `approvals.ts` | Session-scoped "Allow for session" store + prompt |
 | `paths.ts` | Pure path predicates (containment, protected, markdown, `.git` helpers) |
-| `heuristics.ts` | Regex bash scan — the tree-sitter fallback |
-| `sandbox.ts` | `SandboxController` — runtime lifecycle, per-mode profile, placeholder cleanup |
+| `heuristics.ts` | Regex bash scan - the tree-sitter fallback |
+| `sandbox.ts` | `SandboxController` - runtime lifecycle, per-mode profile, placeholder cleanup |
 | `show-plan.ts` / `plan-render.ts` | `show_plan` tool + its (testable) renderer |
 | `status.ts` | Footer indicator |
 | `modes.ts` | Persisted session state (`PermState`) |
@@ -58,7 +58,7 @@ Node 22, and **typecheck is blocking**.
   `bash-enforce`, `heuristics`, `approvals`, `util`, `plan-render`) so it's
   unit-testable with plain `node --test`. SDK imports in those modules must be
   **type-only**.
-- The extension loads via jiti — relative imports use explicit `.ts` extensions.
+- The extension loads via jiti - relative imports use explicit `.ts` extensions.
 - Node runs TypeScript in **strip-only** mode: no `enum`s and no constructor
   parameter properties (use plain fields).
 - Add tests for any new pure helper; dispatcher-level behavior (prompt flows,

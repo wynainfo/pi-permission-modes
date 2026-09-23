@@ -6,7 +6,7 @@ you can rely on it appropriately.
 
 ## Two layers
 
-1. **Policy engine** (`allow` / `ask` / `deny`) — per-mode, per-surface decisions
+1. **Policy engine** (`allow` / `ask` / `deny`) - per-mode, per-surface decisions
    that drive the prompt/block UX. For bash, commands are parsed with
    **tree-sitter** (a real AST), so privilege escalation and out-of-project paths
    are detected even nested in `$(...)`, backticks, and subshells; `sh|bash|… -c
@@ -15,10 +15,10 @@ you can rely on it appropriately.
    `nohup`, `timeout`, `xargs`, …). Still foolable by variable-built commands
    (`$CMD rm …`) and scripts read from files. If the tree-sitter grammar can't
    load, it falls back to the original token-scan heuristic
-   (`bashConfirmReason`) — **not** a shell parser, foolable by variable-built
+   (`bashConfirmReason`) - **not** a shell parser, foolable by variable-built
    paths etc. Either way this is the *prompting* layer, **not** the containment
    boundary.
-2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`) — the real enforcement for
+2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`) - the real enforcement for
    in-project `bash` in the sandboxed modes: `bubblewrap` (Linux) / `sandbox-exec`
    (macOS) confine **writes** to the profile's `allowWrite` (project + `/tmp/pi`
    + the session's scratch directory by default) and deny reads of the profile's
@@ -30,7 +30,7 @@ you can rely on it appropriately.
 - **Reads are deny-listed, not allow-listed.** The sandbox blocks out-of-project
   *writes* at the kernel, but reads stay broad (so build tools work) except for
   the configured `denyRead` secrets. An out-of-project **read** in bash is gated
-  only by the AST/heuristic prompt layer — if detection misses it (e.g. a
+  only by the AST/heuristic prompt layer - if detection misses it (e.g. a
   variable-built path), the sandbox allows the read. Treat the project boundary
   for reads as best-effort, and the `denyRead` list (`~/.ssh`, `~/.aws`,
   `~/.gnupg` by default) as the hard guard.
@@ -54,62 +54,64 @@ you can rely on it appropriately.
   still honors its explicit bash policy. `bash:ask` prompts before an
   unsandboxed command and `bash:deny` blocks it. YOLO runs silently because its
   policy explicitly says `bash:allow`, not merely because containment is off.
-- **Network is a domain allowlist**, not traffic inspection — allowing a broad
+- **Network is a domain allowlist**, not traffic inspection - allowing a broad
   domain permits exfiltration to it. Keep the allowlist tight. Hosts outside
   the allowlist trigger a **live permission prompt** (deny-by-default: headless
   sessions, dismissed prompts, and `askOnBlockedHost:false` all deny). Session
   grants, `/net allow`, `/net open`/`alt+n`, and the model's
   `request_network_access` tool widen the reachable set **only through an
-  explicit user action in the UI** — the model cannot grant itself access, but
+  explicit user action in the UI** - the model cannot grant itself access, but
   everything you allow is exfiltration surface, and `/net open` disables the
   allowlist entirely for the session (shown orange in the footer). Interactive
   grants are user authority: they can reach past a project config's tightened
   allowlist, exactly like approving an out-of-project command. "Allow forever"
-  persists to the global config against the stock+global base — a project's
+  persists to the global config against the stock+global base - a project's
   tighten-only intersection is never baked in.
 - **Subagent forwarding is best-effort.** The active mode is exported as
   `PI_PERMISSION_MODE` and inherited by child `pi` processes (e.g. subagents),
   which adopt it on start. A spawner that overrides the child's environment breaks
   this; as a backstop, a **headless child with no forwarded mode starts in the
-  most restrictive mode, never YOLO** — with that mode's full policy but
+  most restrictive mode, never YOLO** - with that mode's full policy but
   *without* its system-prompt injection (a planning prompt would misdirect a
   headless worker), and without re-exporting the fallback to its own children
   (they derive the same fallback themselves). Don't rely on forwarding as a
-  security boundary — the child enforces its own modes regardless.
+  security boundary - the child enforces its own modes regardless.
 - **Sandbox-writable directories are in-bounds, and shared.** A path under the
   active profile's `allowWrite` (`/tmp/pi` by default), the session's scratch
   directory, or the runtime's own `/tmp/claude` is *not* treated as an escape:
   no prompt, and the command stays sandboxed. Everything the agent writes
-  there is plain user-owned data on a world-readable `/tmp` — the `/tmp/pi`
+  there is plain user-owned data on a world-readable `/tmp` - the `/tmp/pi`
   base is sticky/world-writable like `/tmp` itself and each session folder is
   `0700`, but files an agent puts directly under the shared base are visible
   to every pi session (and every process of your user) on the host. Don't
   route secrets through temp files. A global/project config that drops
   `/tmp/pi` from `allowWrite` narrows the shared part; the session folder
   itself is **always** writable and in-bounds (the extension appends it to
-  the profile — a project config cannot remove it).
+  the profile - a project config cannot remove it).
 - **The runtime has write paths of its own.** `@anthropic-ai/sandbox-runtime`
   unconditionally allows writes to `/tmp/claude` (and points `TMPDIR` there
-  unless `CLAUDE_TMPDIR` is set — this extension sets it to the scratch
-  directory), `~/.npm/_logs`, `~/.claude/debug`, and — on macOS — the user's
+  unless `CLAUDE_TMPDIR` is set - this extension sets it to the scratch
+  directory), `~/.npm/_logs`, `~/.claude/debug`, and - on macOS - the user's
   `$TMPDIR` under `/var/folders/…`. These are not in your config and cannot be
   removed from it; only `/tmp/claude` is treated as in-bounds by the prompt
   layer, the others still prompt.
 - **Temp-dir narrowing is enforced on Linux, partial on macOS, policy-only on
   Windows.** On Linux only `allowWrite` (plus the runtime's built-ins) is
-  writable — a tool that hardcodes `/tmp` and ignores `TMPDIR` fails silently
+  writable - a tool that hardcodes `/tmp` and ignores `TMPDIR` fails silently
   (the kernel denies it; the awareness prompt tells the model to ask you). On
   macOS the per-user `/var/folders/…` temp dir stays writable regardless. On
   Windows there is no OS sandbox at all: `allowWrite` only feeds the prompt
   bounds, and the scratch directory lives under `os.tmpdir()`.
 - **Scratch sweep is hygiene, not a guarantee.** At session start, sibling
   folders under the scratch base untouched for 7 days are deleted (directories
-  only — files and symlinks are skipped, never followed; another user's
+  only - files and symlinks are skipped, never followed; another user's
   folder can't be deleted and is skipped). It keys on directory mtime. Treat
   the scratch base as ephemeral and don't rely on the sweep to remove
   anything sensitive.
 - **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`) and macOS only.
-  Windows is unsupported; the sandboxed modes degrade to prompting there.
+  **Native Windows has no sandbox**: the sandboxed modes degrade to prompting
+  only, the network allowlist is not enforced, and `allowWrite` only feeds the
+  prompt bounds. Run pi under WSL2 for OS-level enforcement.
 - **Git worktrees/submodules on Linux** can't be OS-sandboxed (bubblewrap can't
   bind `.git/hooks` under a `.git` file); those projects degrade to prompting.
   On macOS the `sandbox-exec` profile denies the `.git/hooks`/`.git/config`
@@ -118,16 +120,16 @@ you can rely on it appropriately.
 ## Reporting a vulnerability
 
 Please report security issues **by email to the maintainer** (address in
-[`package.json`](package.json)) — GitHub issues are public, so don't open one
+[`package.json`](package.json)) - GitHub issues are public, so don't open one
 with exploit details. Include the mode, platform, and a minimal reproduction.
 Non-sensitive hardening ideas are welcome as regular
 [issues](https://github.com/wynainfo/pi-permission-modes/issues).
 
 ## Acknowledgements
 
-- **Sandbox/policy downgrade via project config** (fixed in 2.1.2) — reported
+- **Sandbox/policy downgrade via project config** (fixed in 2.1.2) - reported
   by Magnus Gille (https://gille.ai/).
 - **Bash `ask`/`deny` policy bypass via a newline in a command argument**
-  (fixed in 2.2.1) — reported by dyoon98-creator (https://github.com/dyoon98-creator);
+  (fixed in 2.2.1) - reported by dyoon98-creator (https://github.com/dyoon98-creator);
   independently found and fixed in PR #5 by BeLeap (https://github.com/BeLeap)
   and in PR #6 by hsiangron (https://github.com/hsiangron).
