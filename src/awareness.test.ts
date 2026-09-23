@@ -66,8 +66,13 @@ test("empty network allowlist: says nothing is allowlisted, still offers the ask
   assert.ok(out);
   assert.match(out, /No domains are allowlisted/);
   assert.match(out, /request_network_access/);
+  // No allowlist at all: the runtime does not filter, and the model is told so.
   const noNet = sandboxAwarenessPrompt(mode({}, { network: undefined }), { active: true });
-  assert.match(noNet ?? "", /No domains are allowlisted/);
+  assert.match(noNet ?? "", /Network is unrestricted in this mode/);
+  assert.doesNotMatch(noNet ?? "", /No domains are allowlisted|request_network_access/);
+  // Open for the session, with denied domains: those stay unreachable.
+  const open = sandboxAwarenessPrompt(mode({}, { network: { allowedDomains: ["a.com"], deniedDomains: ["evil.com"] } }), { active: true, networkOpen: true });
+  assert.match(open ?? "", /all hosts are reachable from bash except the mode's denied domains \(evil\.com\)/);
 });
 
 test("network bullet: live-ask flow and the request tool are explained", () => {

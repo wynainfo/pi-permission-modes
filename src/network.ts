@@ -70,7 +70,8 @@ export class NetworkSession {
 
   /** Grant patterns for the session (also lifts a remembered deny). */
   grant(patterns: string[]): void {
-    for (const p of patterns) {
+    for (const raw of patterns) {
+      const p = raw.toLowerCase(); // hostnames are case-insensitive; the memory must be too
       this.allow.add(p);
       this.deny.delete(p);
     }
@@ -108,7 +109,8 @@ export class NetworkSession {
    * Concurrent requests for the same host share one prompt; the answer is
    * applied per NetAskResult (see module doc for the memory rules).
    */
-  async decide(host: string, port: number | undefined, ask: NetAsk | undefined): Promise<boolean> {
+  async decide(rawHost: string, port: number | undefined, ask: NetAsk | undefined): Promise<boolean> {
+    const host = rawHost.toLowerCase();
     if (this.open) return true;
     if (this.isGranted(host)) return true;
     if (this.deny.has(host)) {

@@ -8,6 +8,7 @@ import {
   SCRATCH_MAX_AGE_MS,
   ensureScratchDir,
   scratchBase,
+  scratchBaseOverridden,
   scratchDirName,
   sweepScratchDirs,
   withScratchDir,
@@ -101,4 +102,33 @@ test("withScratchDir: appends the folder to a sandboxed profile's allowWrite onl
   assert.equal(withScratchDir(yolo, "/tmp/pi/s1"), yolo); // unsandboxed: allowWrite is meaningless
   const already = { enabled: true, writable: true, allowWrite: ["/tmp/pi/s1"] };
   assert.equal(withScratchDir(already, "/tmp/pi/s1"), already);
+});
+
+test("ensureScratchDir: refuses a planted symlink in place of the session dir or the base", () => {
+  if (process.platform === "win32") return;
+  const root = mkdtempSync(path.join(tmpdir(), "perm-scratch-link-"));
+  try {
+    const base = path.join(root, "pi");
+    const victim = path.join(root, "victim");
+    mkdirSync(base, { mode: 0o1777 });
+    mkdirSync(victim, { mode: 0o755 });
+    // Session dir replaced by a link to the victim: must be refused, victim untouched.
+    symlinkSync(victim, path.join(base, "sess-a"));
+    assert.equal(ensureScratchDir(path.join(base, "sess-a"), { sharedBase: true }), false);
+    assert.equal(statSync(victim).mode & 0o777, 0o755);
+    // Base itself replaced by a link: refused too.
+    const base2 = path.join(root, "pi2");
+    symlinkSync(victim, base2);
+    assert.equal(ensureScratchDir(path.join(base2, "sess-b"), { sharedBase: true }), false);
+    // A real directory still works.
+    assert.equal(ensureScratchDir(path.join(base, "sess-c"), { sharedBase: true }), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scratchBaseOverridden: blank counts as unset (consistent with scratchBase)", () => {
+  assert.equal(scratchBaseOverridden({}), false);
+  assert.equal(scratchBaseOverridden({ [SCRATCH_BASE_ENV]: "  " }), false);
+  assert.equal(scratchBaseOverridden({ [SCRATCH_BASE_ENV]: "/x" }), true);
 });

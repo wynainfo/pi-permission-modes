@@ -8,7 +8,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,16 +56,37 @@ const LAUNCHER_UNSAFE = /['!"$`\\]/;
 /**
  * The launcher line for a command file, or undefined when the path itself
  * contains characters the launcher can't carry (then the caller falls back
- * to passing the raw command, i.e. the historic behavior).
+ * to passing the raw command, i.e. the historic behavior). With `tmpdir`,
+ * the launcher sets TMPDIR itself: the runtime only injects its own TMPDIR
+ * inside the network-proxy env block, so a mode without a proxy would leave
+ * bash with pi's TMPDIR instead of the session scratch dir.
  */
-export function commandLauncher(file: string): string | undefined {
+export function commandLauncher(file: string, tmpdir?: string): string | undefined {
   if (LAUNCHER_UNSAFE.test(file) || /[\r\n]/.test(file)) return undefined;
-  return `bash -c "$(<"${file}")"`;
+  const prefix = tmpdir && !LAUNCHER_UNSAFE.test(tmpdir) && !/[\r\n]/.test(tmpdir) ? `TMPDIR="${tmpdir}" ` : "";
+  return `${prefix}bash -c "$(<"${file}")"`;
 }
 
-/** Host-side directory for command files; outside every allowWrite, so a sandboxed command can't tamper with the next one. */
-function commandFileDir(): string {
-  return path.join(os.tmpdir(), "pi-permission-mode");
+let commandDir: string | undefined;
+/**
+ * Host-side directory for command files, created once per process with
+ * mkdtemp (unique, 0700). Deliberately under /tmp itself rather than
+ * os.tmpdir(): a child pi inherits TMPDIR pointing at the parent's scratch
+ * dir, which the shipped profiles make sandbox-writable, and a sandboxed
+ * command must not be able to rewrite the next command's file.
+ */
+function commandFileDir(): string | undefined {
+  if (commandDir) return commandDir;
+  const base = process.platform === "win32" ? os.tmpdir() : "/tmp";
+  for (const b of [base, os.tmpdir()]) {
+    try {
+      commandDir = mkdtempSync(path.join(b, "pi-permission-mode-"));
+      return commandDir;
+    } catch {
+      // try the next base
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -73,7 +94,8 @@ function commandFileDir(): string {
  * when the file can't be written (read-only temp dir): the caller then passes
  * the raw command instead of failing the run.
  */
-export function writeCommandFile(command: string, dir: string = commandFileDir()): string | undefined {
+export function writeCommandFile(command: string, dir: string | undefined = commandFileDir()): string | undefined {
+  if (!dir) return undefined;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = path.join(dir, `cmd-${randomBytes(8).toString("hex")}.sh`);
@@ -95,7 +117,7 @@ export function createSandboxedBashOps(
   drainBlockedHosts?: () => string[],
 ): BashOperations {
   return {
-    async exec(command, cwd, { onData, signal, timeout }) {
+    async exec(command, cwd, { onData, signal, timeout, env }) {
       // Any network denial during this run (allowlist miss the user didn't
       // approve) is recorded by the ask callback; surface it to the model
       // after the run so a refused connection is diagnosable, not mystery.
@@ -111,6 +133,7 @@ export function createSandboxedBashOps(
         }
       };
       if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
+      if (signal?.aborted) throw new Error("aborted"); // never spawn for a call that is already cancelled
       drainBlockedHosts?.(); // discard denials that belong to earlier runs
       // Clear any leftover 0-byte placeholders the sandbox plants for its
       // mandatory-deny paths (a stale .git would also break this run).
@@ -118,9 +141,13 @@ export function createSandboxedBashOps(
       // Command transport (see above): the runtime quotes what we hand it, so
       // hand it a launcher and keep the real command in a file.
       const commandFile = writeCommandFile(command);
-      const launcher = commandFile ? commandLauncher(commandFile) : undefined;
+      const tmpdir = typeof env?.TMPDIR === "string" ? env.TMPDIR : undefined;
+      const launcher = commandFile ? commandLauncher(commandFile, tmpdir) : undefined;
       try {
-        const wrapped = await SandboxManager.wrapWithSandbox(launcher ?? command, undefined, customConfig as never);
+        // The signal rides into the runtime too (its project scan can take a
+        // while on big trees); an abort during the wrap must not start the run.
+        const wrapped = await SandboxManager.wrapWithSandbox(launcher ?? command, undefined, customConfig as never, signal as never);
+        if (signal?.aborted) throw new Error("aborted");
         // `await` so the finally runs after the child exits, not after the
         // Promise is constructed — otherwise cleanup would race the run.
         return await new Promise((resolve, reject) => {
@@ -144,12 +171,14 @@ export function createSandboxedBashOps(
           }
           child.stdout?.on("data", onData);
           child.stderr?.on("data", onData);
+          const onAbort = () => kill();
           child.on("error", (err) => {
             if (timer) clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
             reject(err);
           });
-          const onAbort = () => kill();
           signal?.addEventListener("abort", onAbort, { once: true });
+          if (signal?.aborted) kill(); // aborted between the wrap and the listener
           child.on("close", (code) => {
             if (timer) clearTimeout(timer);
             signal?.removeEventListener("abort", onAbort);
@@ -168,6 +197,32 @@ export function createSandboxedBashOps(
       }
     },
   };
+}
+
+/**
+ * The runtime starts its filtering proxy (and consults the ask callback)
+ * ONLY when the allowlist is non-empty; an empty `allowedDomains` gets a bare
+ * `--unshare-net` with no proxy, so the live prompts, `/net allow`, `/net
+ * open`, and `request_network_access` would all be inert while the UI claims
+ * otherwise. A reserved `.invalid` name (RFC 2606, never resolvable) stands in
+ * so the proxy path always exists; it matches no real host.
+ */
+export const EMPTY_ALLOWLIST_SENTINEL = "allowlist-empty.invalid";
+
+function runtimeNetwork(network: SandboxConfig["network"]): SandboxConfig["network"] {
+  if (network?.allowedDomains && network.allowedDomains.length === 0) {
+    return { ...network, allowedDomains: [EMPTY_ALLOWLIST_SENTINEL] };
+  }
+  return network;
+}
+
+/**
+ * True when a profile filters network traffic at all: the runtime restricts
+ * the network only when `allowedDomains` is DEFINED (an empty list blocks
+ * everything but the prompt flow; an absent list means unrestricted).
+ */
+export function networkFiltered(profile: SandboxProfile): boolean {
+  return profile.enabled && profile.network?.allowedDomains !== undefined;
 }
 
 /** How the caller surfaces warnings (e.g. a TUI notify), only used when there's a UI. */
@@ -200,6 +255,10 @@ export class SandboxController {
   private profile: SandboxProfile | undefined;
   /** Key of the profile the runtime is currently initialized with. */
   private appliedKey: string | undefined;
+  /** True once the runtime's initialize() succeeded and reset() hasn't run since (independent of `ready`). */
+  private runtimeInitialized = false;
+  /** applyProfile calls are serialized: the runtime ignores a second initialize while one is in flight. */
+  private applying: Promise<void> = Promise.resolve();
   /** Platform/dependency/git issue — never (re)initialize the runtime. */
   private degraded = false;
   private hasUI = false;
@@ -220,9 +279,11 @@ export class SandboxController {
    * unavailable. With `readOnly`, the command runs with project writes disabled
    * (Plan mode) — the library still allows its own default scratch paths.
    */
-  bashOps(opts: { readOnly?: boolean } = {}): BashOperations | null {
+  bashOps(opts: { readOnly?: boolean; keepWritable?: string[] } = {}): BashOperations | null {
     if (!this.manager || !this.profile) return null;
-    const customConfig = opts.readOnly ? readOnlyOverride(profileToConfig(this.profile)) : undefined;
+    // Read-only keeps the session scratch dir writable: TMPDIR points there,
+    // and a Plan-mode `mktemp` or Python `tempfile` must still work.
+    const customConfig = opts.readOnly ? readOnlyOverride(profileToConfig(this.profile), opts.keepWritable ?? []) : undefined;
     return createSandboxedBashOps(this.manager, customConfig, this.drainBlockedHosts);
   }
 
@@ -233,6 +294,17 @@ export class SandboxController {
   }
 
   async init({ cwd, noSandbox, hasUI, notify, profile, askHost, drainBlockedHosts }: InitOptions): Promise<void> {
+    await this.applying.catch(() => {}); // let an in-flight profile switch settle first
+    // A re-run (resume, /reload) must start from a clean runtime: initialize()
+    // is a no-op while the runtime still holds its previous initialization.
+    if (this.runtimeInitialized && this.manager) {
+      try {
+        await this.manager.reset();
+      } catch {
+        // ignore cleanup errors
+      }
+      this.runtimeInitialized = false;
+    }
     this.ready = false;
     this.disabled = false;
     this.degraded = false;
@@ -310,6 +382,12 @@ export class SandboxController {
    */
   async applyProfile(profile: SandboxProfile): Promise<void> {
     this.profile = profile;
+    const run = this.applying.then(() => this.applyProfileNow(profile));
+    this.applying = run.catch(() => {});
+    return run;
+  }
+
+  private async applyProfileNow(profile: SandboxProfile): Promise<void> {
     if (this.degraded || !this.manager) return;
     if (!profile.enabled) return; // non-sandboxing mode (e.g. YOLO): keep prior init
 
@@ -318,24 +396,34 @@ export class SandboxController {
     if (this.ready && key === this.appliedKey) return;
 
     try {
-      if (this.ready) await this.manager.reset();
+      if (this.runtimeInitialized) {
+        await this.manager.reset();
+        this.runtimeInitialized = false;
+      }
       // The ask callback rides along so unmatched hosts prompt instead of
       // silently failing; it reads live session state, so grants/`/net open`
       // apply instantly without re-initializing.
       const ask = this.askHost;
       await this.manager.initialize(
-        { network: cfg.network, filesystem: cfg.filesystem } as never,
+        { network: runtimeNetwork(cfg.network), filesystem: cfg.filesystem } as never,
         ask ? (p: { host: string; port?: number }) => ask(p.host, p.port) : undefined,
       );
+      this.runtimeInitialized = true;
       this.ready = true;
       this.appliedKey = key;
       this.warn = undefined;
     } catch (err) {
       this.ready = false;
+      try {
+        await this.manager.reset(); // a half-initialized runtime would ignore the next initialize()
+      } catch {
+        // ignore
+      }
+      this.runtimeInitialized = false;
       this.warn = `sandbox init failed: ${err instanceof Error ? err.message : String(err)}`;
       if (this.hasUI) {
         this.notifyFn(
-          `permission-mode: sandbox failed to initialize — protection is heuristic-only.\n${this.warn}` +
+          `permission-mode: sandbox failed to initialize - protection is heuristic-only.\n${this.warn}` +
             `${process.platform === "linux" ? "\nLinux requires: bubblewrap, socat, ripgrep" : ""}`,
         );
       }
@@ -343,12 +431,15 @@ export class SandboxController {
   }
 
   async reset(): Promise<void> {
-    if (this.ready && this.manager) {
+    await this.applying.catch(() => {});
+    if (this.runtimeInitialized && this.manager) {
       try {
         await this.manager.reset();
       } catch {
         // ignore cleanup errors
       }
     }
+    this.runtimeInitialized = false;
+    this.ready = false;
   }
 }

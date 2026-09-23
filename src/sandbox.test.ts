@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { commandLauncher, writeCommandFile } from "./sandbox.ts";
+import { commandLauncher, createSandboxedBashOps, EMPTY_ALLOWLIST_SENTINEL, networkFiltered, writeCommandFile } from "./sandbox.ts";
 
 const quote: ((xs: string[]) => string) | undefined = (() => {
   try {
@@ -122,6 +122,64 @@ test("through the runtime's nested shell-quote passes: raw command is mangled, l
     }
     assert.equal(out, EXPECTED);
     assert.equal(status, 7);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("commandLauncher: TMPDIR prefix when given, dropped when unsafe", () => {
+  assert.equal(commandLauncher("/tmp/x/cmd.sh", "/tmp/pi/sess"), 'TMPDIR="/tmp/pi/sess" bash -c "$(<"/tmp/x/cmd.sh")"');
+  assert.equal(commandLauncher("/tmp/x/cmd.sh", "/tmp/it's"), 'bash -c "$(<"/tmp/x/cmd.sh")"');
+  assert.equal(commandLauncher("/tmp/x/cmd.sh", undefined), 'bash -c "$(<"/tmp/x/cmd.sh")"');
+  assert.ok(!/['!]/.test(commandLauncher("/tmp/x/cmd.sh", "/tmp/with space") ?? "!"));
+});
+
+test("writeCommandFile default dir lives under /tmp (not under an inherited TMPDIR) and is private", () => {
+  if (process.platform === "win32") return;
+  const file = writeCommandFile("true")!;
+  try {
+    // /tmp first; a locked-down /tmp (some CI/sandboxes) falls back to os.tmpdir().
+    const dir = path.dirname(file);
+    assert.ok(dir.startsWith("/tmp/pi-permission-mode-") || dir.startsWith(path.join(tmpdir(), "pi-permission-mode-")), dir);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+  } finally {
+    rmSync(file, { force: true });
+  }
+});
+
+test("networkFiltered / sentinel: an absent allowlist is unrestricted, an empty one is filtered", () => {
+  assert.equal(networkFiltered({ enabled: true, writable: true }), false);
+  assert.equal(networkFiltered({ enabled: true, writable: true, network: {} }), false);
+  assert.equal(networkFiltered({ enabled: true, writable: true, network: { allowedDomains: [] } }), true);
+  assert.equal(networkFiltered({ enabled: false, writable: true, network: { allowedDomains: ["a"] } }), false);
+  assert.match(EMPTY_ALLOWLIST_SENTINEL, /\.invalid$/); // RFC 2606: never resolvable
+});
+
+test("exec: an aborted signal never spawns; an abort during the wrap kills before the command completes", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "perm-abort-"));
+  const marker = path.join(dir, "marker");
+  // Fake runtime: the wrap takes 200 ms and returns the command unchanged.
+  const fakeManager = {
+    wrapWithSandbox: (cmd: string) => new Promise<string>((r) => setTimeout(() => r(cmd), 200)),
+  } as unknown as Parameters<typeof createSandboxedBashOps>[0];
+  const ops = createSandboxedBashOps(fakeManager);
+  const run = (signal: AbortSignal) =>
+    ops.exec(`sleep 0.5; touch "${marker}"`, dir, { onData: () => {}, signal, timeout: 10 });
+  try {
+    // Already aborted: rejects immediately, nothing spawned.
+    const pre = new AbortController();
+    pre.abort();
+    const t0 = Date.now();
+    await assert.rejects(run(pre.signal), /aborted/);
+    assert.ok(Date.now() - t0 < 150, "no wrap, no spawn");
+    // Abort lands while the wrap is in flight: the command must not run to completion.
+    const mid = new AbortController();
+    setTimeout(() => mid.abort(), 50);
+    const t1 = Date.now();
+    await assert.rejects(run(mid.signal), /aborted/);
+    assert.ok(Date.now() - t1 < 450, `killed promptly (took ${Date.now() - t1} ms)`);
+    await new Promise((r) => setTimeout(r, 700));
+    assert.ok(!existsSync(marker), "the command did not complete after the abort");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

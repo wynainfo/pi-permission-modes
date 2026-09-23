@@ -4,7 +4,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ModeDef } from "./schema.ts";
-import type { SandboxController } from "./sandbox.ts";
+import { networkFiltered, type SandboxController } from "./sandbox.ts";
 
 /**
  * Render the `perm` status chip:
@@ -18,15 +18,22 @@ import type { SandboxController } from "./sandbox.ts";
  * `/net open`, or because nothing sandboxes in this mode). A degraded sandbox
  * additionally shows a `(!)` warning.
  */
-export function updateStatus(ctx: ExtensionContext, mode: ModeDef, sandbox: SandboxController, networkOpen: boolean): void {
+export function updateStatus(
+  ctx: Pick<ExtensionContext, "ui">,
+  mode: ModeDef,
+  sandbox: Pick<SandboxController, "ready" | "warn" | "disabled">,
+  networkOpen: boolean,
+): void {
   const t = ctx.ui.theme;
   const enforcing = mode.sandbox.enabled && sandbox.ready;
   let status = t.fg(mode.color, mode.label);
   status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");
   if (mode.sandbox.enabled && sandbox.warn && !sandbox.disabled) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
-  if (enforcing) {
+  if (enforcing && networkFiltered(mode.sandbox)) {
     status +=
       "  " + (networkOpen ? t.fg("warning", "Network: open (alt+n)") : t.fg("success", "Network: filtered (alt+n)"));
+  } else if (enforcing) {
+    status += "  " + t.fg("dim", "Network: unrestricted"); // no allowlist configured: the runtime does not filter
   } else {
     status += "  " + t.fg("dim", "Network: open");
   }

@@ -94,8 +94,13 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   if (sb.denyRead?.length) {
     lines.push(`- Reads are broadly allowed EXCEPT: ${sb.denyRead.join(", ")}.`);
   }
-  if (opts.networkOpen) {
-    lines.push("- Network filtering is disabled for this session: all hosts are reachable from bash.");
+  if (sb.network?.allowedDomains === undefined) {
+    lines.push("- Network is unrestricted in this mode (no allowlist configured).");
+  } else if (opts.networkOpen) {
+    const denied = sb.network?.deniedDomains ?? [];
+    lines.push(
+      `- Network filtering is disabled for this session: all hosts are reachable from bash${denied.length ? ` except the mode's denied domains (${denied.join(", ")})` : ""}.`,
+    );
   } else {
     const domains = [...new Set([...(sb.network?.allowedDomains ?? []), ...(opts.sessionDomains ?? [])])];
     const scope = domains.length

@@ -427,3 +427,11 @@ test("persistModeRule seeds the map from the effective stock+global surface, nev
   assert.deepEqual(again.modes.build.permission.tool, { "*": "deny", other: "allow" });
   s.cleanup();
 });
+
+test("readOnlyOverride keeps the listed dirs writable (the session scratch dir)", () => {
+  const cfg = { filesystem: { allowWrite: [".", "/tmp/pi", "/tmp/pi/s1"], denyRead: ["~/.ssh"] }, network: { allowedDomains: ["a"] } };
+  assert.deepEqual(readOnlyOverride(cfg).filesystem?.allowWrite, []);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem?.allowWrite, ["/tmp/pi/s1"]);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem?.denyRead, ["~/.ssh"]);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).network, { allowedDomains: ["a"] });
+});

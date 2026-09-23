@@ -130,3 +130,18 @@ test("clear() resets grants, denies, and the open toggle", async () => {
   assert.deepEqual(s.denies(), []);
   assert.equal(await s.decide("a.io", 443, undefined), false);
 });
+
+test("NetworkSession: hostnames are case-insensitive in grants and remembered denies", async () => {
+  const n = new NetworkSession();
+  let asks = 0;
+  const ask = async () => {
+    asks++;
+    return "deny" as const;
+  };
+  assert.equal(await n.decide("Api.Example.com", 443, ask), false);
+  assert.equal(await n.decide("api.example.com", 443, ask), false);
+  assert.equal(asks, 1, "the deny is remembered regardless of case");
+  n.grant(["API.example.com"]);
+  assert.equal(await n.decide("api.EXAMPLE.com", 443, ask), true);
+  assert.deepEqual(n.grants(), ["api.example.com"]);
+});

@@ -28,7 +28,7 @@
  * ensure/sweep touch the filesystem, and both are best-effort (never throw).
  */
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { SandboxProfile } from "./schema.ts";
@@ -38,6 +38,11 @@ export const SCRATCH_BASE_ENV = "PI_PERMISSION_TMPDIR";
 
 /** Sibling session folders untouched this long are removed at session start. */
 export const SCRATCH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** True when PI_PERMISSION_TMPDIR is set to a non-blank value (the base is then the user's, not the shared default). */
+export function scratchBaseOverridden(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env[SCRATCH_BASE_ENV]?.trim());
+}
 
 /** The shared scratch base for this platform (or the env override). */
 export function scratchBase(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
@@ -64,9 +69,22 @@ export function scratchDirName(sessionId: string | undefined, fallback: () => st
  * the folder can't be created; nothing throws.
  */
 export function ensureScratchDir(dir: string, opts: { sharedBase?: boolean } = {}): boolean {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const ownRealDir = (p: string): boolean => {
+    // lstat: a planted symlink must never pass as our directory, whatever it points at.
+    const st = lstatSync(p);
+    if (!st.isDirectory()) return false;
+    return uid === undefined || st.uid === uid;
+  };
   try {
     const base = path.dirname(dir);
-    if (!existsSync(base)) {
+    let baseExisted = true;
+    try {
+      lstatSync(base);
+    } catch {
+      baseExisted = false;
+    }
+    if (!baseExisted) {
       mkdirSync(base, { recursive: true });
       if (opts.sharedBase) {
         try {
@@ -75,8 +93,11 @@ export function ensureScratchDir(dir: string, opts: { sharedBase?: boolean } = {
           // Windows / unsupported: ignore
         }
       }
+    } else if (lstatSync(base).isSymbolicLink()) {
+      return false; // the base itself was replaced by a link: refuse, don't follow
     }
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (!ownRealDir(dir)) return false; // a symlink or another user's directory under our name
     try {
       chmodSync(dir, 0o700); // umask-proof
     } catch {

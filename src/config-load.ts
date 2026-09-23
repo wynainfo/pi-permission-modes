@@ -181,9 +181,13 @@ export function profileToConfig(p: SandboxProfile): SandboxConfig {
   };
 }
 
-/** Drop all project write access (Plan Mode runs bash read-only); reads/network stay. */
-export function readOnlyOverride(config: SandboxConfig | undefined): Partial<SandboxConfig> {
-  return { ...config, filesystem: { ...config?.filesystem, allowWrite: [] } };
+/**
+ * Drop project write access (Plan Mode runs bash read-only); reads/network
+ * stay. `keepWritable` survives (the session scratch dir, so temp files and
+ * TMPDIR keep working in read-only modes).
+ */
+export function readOnlyOverride(config: SandboxConfig | undefined, keepWritable: string[] = []): Partial<SandboxConfig> {
+  return { ...config, filesystem: { ...config?.filesystem, allowWrite: [...keepWritable] } };
 }
 
 /**

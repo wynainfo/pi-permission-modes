@@ -62,6 +62,42 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   links are now followed to where they point (bounded against cycles).
 
 ### Fixed
+- **Sandbox lifecycle hardening.** An abort that landed while the runtime was
+  still wrapping a command (or a call that was already cancelled) did not
+  stop it; the command ran to completion. The wrapper now refuses to spawn a
+  cancelled call, hands the signal to the runtime, and kills a run whose
+  abort arrived during the wrap. Profile switches are serialized and the
+  controller tracks whether the runtime is initialized separately from
+  `ready`, so overlapping `alt+m` presses or a re-run of session start can
+  no longer leave the runtime enforcing an older profile than the footer
+  shows. If the sandbox becomes unavailable between a command's approval and
+  its execution, the call fails with a message instead of running
+  unsandboxed. The command-file directory is a private `mkdtemp` under `/tmp`
+  rather than under an inherited `TMPDIR`.
+- **Network prompts work with an empty allowlist, and an absent one is called
+  what it is.** The runtime starts its filtering proxy only for a non-empty
+  `allowedDomains`, so a mode with `[]` got no proxy: the live prompts, `/net
+  allow`, `/net open`, and `request_network_access` were inert while the
+  footer said "filtered". A reserved `.invalid` placeholder now keeps the
+  proxy path alive for that case. A mode with no `allowedDomains` at all is
+  not filtered by the runtime; the footer, the awareness section, and the
+  request tool now say "unrestricted" instead of claiming filtering. The
+  "network open" wording mentions denied domains, which `/net open` cannot
+  lift. Session grants and remembered denies compare hostnames
+  case-insensitively.
+- **`TMPDIR` points at the scratch directory in every sandboxed run**, set by
+  the launcher itself rather than relying on the runtime's proxy env block;
+  read-only modes (Plan) keep the scratch directory writable so `mktemp` and
+  Python's `tempfile` work there as they did before 2.3.0.
+- **The scratch directory refuses a planted symlink.** A link at
+  `/tmp/pi/<session-id>` (the base is shared and world-writable by design)
+  was followed: its target would have been made mode 0700, added to
+  `allowWrite`, and used as `TMPDIR`. The session folder must now be a real
+  directory owned by the current user, and a base that has become a symlink
+  is refused. A blank `PI_PERMISSION_TMPDIR` no longer suppresses the sticky
+  bit on the shared base.
+- An explicit `--perm` flag now wins over the persisted session mode on
+  resume, as documented.
 - **Bash escape detection sees what it used to miss.** Redirect targets
   (`echo x > /etc/evil`, `cat < /etc/hostname`, `$(< /etc/hostname)`), the
   words of `[[ -f /etc/shadow ]]`, heredocs fed to a shell (`bash <<EOF`),

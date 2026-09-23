@@ -78,8 +78,8 @@ import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
 import { isOutside, isProtectedWrite, normalizeToolPath, sandboxAllowedRoots } from "./paths.ts";
 import { decide, decideBashChain } from "./resolve.ts";
-import { SandboxController } from "./sandbox.ts";
-import { SCRATCH_BASE_ENV, ensureScratchDir, scratchBase, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
+import { SandboxController, networkFiltered } from "./sandbox.ts";
+import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
   type Action,
   type ModeDef,
@@ -308,10 +308,13 @@ export default async function (pi: ExtensionAPI) {
       const flag = String(pi.getFlag("perm") ?? "").toLowerCase();
       if (hasMode(config.modes, flag)) resolved = flag;
     }
-    for (const entry of ctx.sessionManager.getEntries()) {
-      if (entry.type === "custom" && entry.customType === "perm-mode") {
-        const data = entry.data as PermState | undefined;
-        if (hasMode(config.modes, data?.mode)) resolved = data.mode;
+    if (!resolved) {
+      // An explicit --perm flag wins over the persisted entry (resume with a flag).
+      for (const entry of ctx.sessionManager.getEntries()) {
+        if (entry.type === "custom" && entry.customType === "perm-mode") {
+          const data = entry.data as PermState | undefined;
+          if (hasMode(config.modes, data?.mode)) resolved = data.mode;
+        }
       }
     }
     if (!resolved) {
@@ -367,7 +370,7 @@ export default async function (pi: ExtensionAPI) {
       else await cycle(ctx);
     },
   });
-  const networkEnforcing = () => currentMode().sandbox.enabled && sandbox.ready;
+  const networkEnforcing = () => sandbox.ready && networkFiltered(currentMode().sandbox);
 
   const toggleNetwork = async (ctx: ExtensionContext) => {
     uiCtx = ctx;
@@ -476,7 +479,13 @@ export default async function (pi: ExtensionAPI) {
       const approved = approvedUnsandboxed.delete(id); // user granted an escape
       const m = currentMode();
       const plan = bashExecPlan(m.sandbox.enabled, m.sandbox.writable, sandbox.ready, approved);
-      const ops = plan.sandboxed ? sandbox.bashOps({ readOnly: plan.readOnly }) : null;
+      if (m.sandbox.enabled && !approved && !plan.sandboxed) {
+        // The gate allowed this call because the sandbox was ready; it isn't
+        // any more (a failed profile switch, a re-init in flight). Never
+        // degrade silently to an unsandboxed run: fail the call instead.
+        throw new Error("permission-mode: the sandbox became unavailable after this command was approved; run it again");
+      }
+      const ops = plan.sandboxed ? sandbox.bashOps({ readOnly: plan.readOnly, keepWritable: scratchDir ? [scratchDir] : [] }) : null;
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
       return sandboxed.execute(id, params, signal, onUpdate);
@@ -510,8 +519,8 @@ export default async function (pi: ExtensionAPI) {
       const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
       const { domains = [], reason = "" } = params as { domains?: string[]; reason?: string };
       const m = currentMode();
-      if (!m.sandbox.enabled || !sandbox.ready || net.open) {
-        return text("Network is not filtered right now — no grant needed, just run the command.");
+      if (!sandbox.ready || !networkFiltered(m.sandbox) || net.open) {
+        return text("Network is not filtered right now - no grant needed, just run the command.");
       }
       const normalized = [...new Set(domains.map(normalizeDomain).filter((d): d is string => d !== undefined))];
       const rejected = normalized.filter(isUnsafeDomain);
@@ -618,7 +627,7 @@ export default async function (pi: ExtensionAPI) {
     // session id (a resumed session finds its files); stale siblings swept.
     const base = scratchBase();
     const dir = path.join(base, scratchDirName(ctx.sessionManager.getSessionId?.()));
-    if (ensureScratchDir(dir, { sharedBase: !process.env[SCRATCH_BASE_ENV] })) {
+    if (ensureScratchDir(dir, { sharedBase: !scratchBaseOverridden() })) {
       scratchDir = dir;
       process.env.CLAUDE_TMPDIR = dir; // the runtime points TMPDIR here inside sandboxed commands
       sweepScratchDirs(base, dir);

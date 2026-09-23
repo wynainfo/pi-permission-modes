@@ -645,6 +645,15 @@ test("headless child with an explicitly forwarded mode keeps its system prompt",
   }
 });
 
+test("startup: an explicit --perm flag beats a persisted session entry", { skip }, async () => {
+  const h = await setup({ permFlag: "yolo", entries: [{ type: "custom", customType: "perm-mode", data: { mode: "plan" } }] });
+  try {
+    assert.match(h.ctx.status, /^YOLO /);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("startup: --perm flag wins; a persisted session entry restores the mode", { skip }, async () => {
   const flagged = await setup({ permFlag: "yolo" });
   try {
