@@ -142,6 +142,13 @@ you can rely on it appropriately.
   of a nested repository leaves its `.git/hooks` and the pinned directories
   behind. This is how bubblewrap works, not a containment gap; run the
   removal outside the sandbox (it prompts) if you really mean it.
+- **Masked dotfiles are devices inside the sandbox.** The runtime hides the
+  absent protected dotfiles at the project root (`.bashrc`, `.gitconfig`,
+  ...) by binding `/dev/null` over them, so inside a sandboxed command they
+  exist as character devices: `git add -A` at the root refuses them (add by
+  name instead, or list them in the repository's `.git/info/exclude`), and a
+  tool that stats them sees a device, not a missing file. Harmless for
+  containment; noted so nobody files it as a leak.
 - **Violation reports are best effort.** The `<sandbox_violations>` block is
   diagnostic output for the model, gathered by observers that run beside the
   sandbox (a seccomp write observer on Linux, the system sandbox log on

@@ -151,6 +151,13 @@ outside directories or non-executable files stay escapes.
 > files at startup and around each run, for the case where a pi died
 > mid-command. Only 0-byte *files* are removed - real directories (`.vscode/`,
 > `.git/`, …) and non-empty files (`.gitmodules`, …) are never touched.
+> **Known limitation:** inside the sandbox those masks appear as character
+> devices at the project root, so `git status` lists them as untracked and
+> `git add -A` / `git add .` at the root fails with "can only add regular
+> files". Adding files by name works, which is what agents usually do; if a
+> project needs `git add -A`, list the names (`.bashrc`, `.bash_profile`,
+> `.zshrc`, `.zprofile`, `.profile`, `.gitconfig`, `.gitmodules`,
+> `.ripgreprc`, `.mcp.json`) in its `.git/info/exclude`.
 >
 > **Git worktrees and submodules** (`.git` is a file pointing at the real git
 > dir) sandbox normally on every platform: the runtime protects `.git/hooks`
