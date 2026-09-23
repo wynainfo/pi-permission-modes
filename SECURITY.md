@@ -33,7 +33,12 @@ you can rely on it appropriately.
   only by the AST/heuristic prompt layer - if detection misses it (e.g. a
   variable-built path), the sandbox allows the read. Treat the project boundary
   for reads as best-effort, and the `denyRead` list (`~/.ssh`, `~/.aws`,
-  `~/.gnupg` by default) as the hard guard.
+  `~/.gnupg` by default) as the hard guard. One deliberate exemption in the
+  bash prompt layer: an in-project symlink whose target is an *executable
+  file* outside the project (a venv's `bin/python`) is not treated as an
+  escape - executing it is the project's intent and the sandbox still confines
+  the run. Symlinks to outside directories or non-executable files remain
+  escapes, and the file tools always follow symlinks.
 - **File tools aren't OS-sandboxed.** `read`/`edit`/`write`/… are governed by the
   policy engine and path checks (out-of-project prompt, protected-path backstop,
   per-surface allow/ask/deny), not bubblewrap.

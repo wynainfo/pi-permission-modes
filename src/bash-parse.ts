@@ -21,7 +21,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { bashConfirmReason, PRIVILEGE_RE } from "./heuristics.ts";
-import { isOutside, SAFE_OUTSIDE_RE } from "./paths.ts";
+import { bashPathEscapes, SAFE_OUTSIDE_RE } from "./paths.ts";
 
 /** One command extracted from a bash line. */
 export interface BashCommand {
@@ -199,7 +199,7 @@ export function outsideReasonFromCommands(
       else if (tok.includes("/") || tok === "..") target = path.resolve(root, tok);
       else continue;
       if (SAFE_OUTSIDE_RE.test(target)) continue;
-      if (isOutside(root, target, alsoInside)) return `path outside project: ${tok}`;
+      if (bashPathEscapes(root, target, alsoInside)) return `path outside project: ${tok}`;
     }
   }
   return undefined;

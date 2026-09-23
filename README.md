@@ -112,7 +112,10 @@ and runs **unsandboxed** once you approve it; and `edit`/`write` to
 directories** (`allowWrite` - `/tmp/pi` by default - plus the session's
 [scratch directory](#scratch-directory) and the runtime's own `/tmp/claude`)
 count as *in-bounds*: a temp file there is not an escape, so it neither prompts
-nor runs unsandboxed.
+nor runs unsandboxed. Neither is an in-project **symlink to an outside
+executable** (a venv's `bin/python`, a tool shim): running it is what the
+project intends, and the sandbox still governs what it may touch. Symlinks to
+outside directories or non-executable files stay escapes.
 
 > **When the sandbox is unavailable** (missing dependency, init failure,
 > `--no-sandbox`, or - on Linux - the project is a **git worktree/submodule**, see below):

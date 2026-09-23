@@ -6,7 +6,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **A dangling in-project symlink pointing outside the project was judged
+  inside.** The containment check resolves symlinks on the longest existing
+  prefix of a path; a link whose target does not exist yet failed that
+  resolution and fell back to its lexical, in-project location. The file
+  tools are not OS-sandboxed, so a `write` through such a link would have
+  created the target file outside the project without a prompt. Dangling
+  links are now followed to where they point (bounded against cycles).
+
 ### Fixed
+- **A venv's `bin/python` no longer prompts (and no longer runs unsandboxed
+  once approved).** The bash escape detector follows symlinks, so an
+  in-project interpreter that links to the system Python - which is what
+  `python -m venv` creates - resolved outside the project and prompted on
+  every run; approving it lifted the sandbox for a command that was entirely
+  in-project by intent. An in-project path whose symlink target is an
+  executable file outside the project is now not an escape, in both the
+  tree-sitter and the heuristic path. Symlinks to outside directories or
+  non-executable files, dangling links, and paths named by their outside
+  location still prompt as before; the file tools still follow symlinks.
 - **Exclamation marks no longer arrive as `\!` in sandboxed bash.** The
   sandbox runtime embeds the command in a `bash -c` string that it quotes with
   the shell-quote package, up to three times over on Linux. Whenever the

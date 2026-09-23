@@ -11,7 +11,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { isOutside, SAFE_OUTSIDE_RE } from "./paths.ts";
+import { bashPathEscapes, SAFE_OUTSIDE_RE } from "./paths.ts";
 
 /** Privilege escalation / run-as-other-user. */
 export const PRIVILEGE_RE = /\b(sudo|su|doas|pkexec|runuser|setpriv|chroot)\b/i;
@@ -33,7 +33,7 @@ export function bashConfirmReason(command: string, root: string, alsoInside: rea
     else if (tok.includes("/") || tok === "..") target = path.resolve(root, tok);
     else continue;
     if (SAFE_OUTSIDE_RE.test(target)) continue;
-    if (isOutside(root, target, alsoInside)) return `path outside project: ${tok}`;
+    if (bashPathEscapes(root, target, alsoInside)) return `path outside project: ${tok}`;
   }
   return undefined;
 }

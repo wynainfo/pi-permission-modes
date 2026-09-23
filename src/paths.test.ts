@@ -16,6 +16,7 @@ import {
   SAFE_OUTSIDE_RE,
   SANDBOX_PLACEHOLDER_PATHS,
   SANDBOX_RUNTIME_TMP_PATHS,
+  bashPathEscapes,
   sandboxAllowedRoots,
 } from "./paths.ts";
 
@@ -296,5 +297,56 @@ test("gitFileDegradesSandbox: a worktree/submodule gitfile degrades on Linux onl
     assert.equal(gitFileDegradesSandbox(root, "linux"), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bashPathEscapes: an in-project symlink to an outside EXECUTABLE is not an escape (venv python)", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "perm-venv-"));
+  try {
+    const root = path.join(base, "proj");
+    const outside = path.join(base, "elsewhere");
+    mkdirSync(path.join(root, "tools", "venv", "bin"), { recursive: true });
+    mkdirSync(outside);
+    const exe = path.join(outside, "python3");
+    writeFileSync(exe, "#!/bin/sh\n", { mode: 0o755 });
+    const data = path.join(outside, "secrets.txt");
+    writeFileSync(data, "x", { mode: 0o644 });
+    symlinkSync(exe, path.join(root, "tools", "venv", "bin", "python")); // what `python -m venv` does
+    symlinkSync(data, path.join(root, "link-to-data"));
+    symlinkSync(outside, path.join(root, "link-to-dir"));
+    symlinkSync(path.join(outside, "missing"), path.join(root, "dangling"));
+    writeFileSync(path.join(root, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+
+    assert.equal(bashPathEscapes(root, "tools/venv/bin/python"), false); // the whole point
+    assert.equal(bashPathEscapes(root, "run.sh"), false); // ordinary in-project file
+    assert.equal(bashPathEscapes(root, "link-to-data"), true); // symlink to an outside non-executable
+    assert.equal(bashPathEscapes(root, "link-to-dir/secrets.txt"), true); // through a symlinked outside dir
+    assert.equal(bashPathEscapes(root, "dangling"), true); // dangling: judged by where it points
+    assert.equal(bashPathEscapes(root, exe), true); // the same executable named by its outside path
+    assert.equal(bashPathEscapes(root, "../elsewhere/python3"), true); // lexically outside
+    assert.equal(bashPathEscapes(root, exe, [outside]), false); // in-bounds roots still apply
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("isOutside: a dangling in-project symlink is judged by where it points (write-through guard)", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "perm-dangling-"));
+  try {
+    const root = path.join(base, "proj");
+    mkdirSync(root);
+    symlinkSync(path.join(base, "not-yet", "created.txt"), path.join(root, "dangling-out")); // target outside, missing
+    symlinkSync(path.join(root, "later.txt"), path.join(root, "dangling-in")); // target inside, missing
+    assert.equal(isOutside(root, "dangling-out"), true); // a write would land outside the project
+    assert.equal(isOutside(root, "dangling-in"), false);
+    // A chain: in-project link -> in-project link -> outside missing target.
+    symlinkSync(path.join(root, "dangling-out"), path.join(root, "hop"));
+    assert.equal(isOutside(root, "hop"), true);
+    // A cycle never hangs and resolves lexically (inside).
+    symlinkSync(path.join(root, "b"), path.join(root, "a"));
+    symlinkSync(path.join(root, "a"), path.join(root, "b"));
+    assert.equal(isOutside(root, "a"), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });

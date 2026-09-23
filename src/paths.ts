@@ -11,7 +11,7 @@
  * only containment guard.
  */
 
-import { realpathSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { expandHome } from "./resolve.ts";
 import type { SandboxProfile } from "./schema.ts";
@@ -36,23 +36,37 @@ const PROTECTED_FILES = new Set([
 
 /**
  * Canonicalize a path by resolving symlinks on its longest existing prefix and
- * appending the remaining (not-yet-created) tail verbatim. Never throws for
- * missing paths — falls back to the lexical resolution.
+ * appending the remaining (not-yet-created) tail verbatim. A DANGLING symlink
+ * on the way is followed to where it points (readlink) rather than treated as
+ * a plain missing name: otherwise an in-project link to a not-yet-existing
+ * outside path would be judged inside, and a write through it would create
+ * the target outside the project. Never throws for missing paths - falls
+ * back to the lexical resolution; symlink chains are bounded.
  */
 function canonicalize(p: string): string {
   let current = path.resolve(p);
   const tail: string[] = [];
-  for (;;) {
+  for (let hops = 0; hops < 40; hops++) {
     try {
       const real = realpathSync(current);
       return tail.length ? path.join(real, ...tail) : real;
     } catch {
+      try {
+        if (lstatSync(current).isSymbolicLink()) {
+          // The name exists but its target doesn't: continue from the target.
+          current = path.resolve(path.dirname(current), readlinkSync(current));
+          continue;
+        }
+      } catch {
+        // not a symlink (or unreadable): treat as a missing name below
+      }
       const parent = path.dirname(current);
       if (parent === current) return tail.length ? path.join(current, ...tail) : current;
       tail.unshift(path.basename(current));
       current = parent;
     }
   }
+  return tail.length ? path.join(current, ...tail) : current;
 }
 
 /** True when canonical `target` is `dir` itself or nested under it. */
@@ -74,6 +88,35 @@ export function isOutside(root: string, p?: string, alsoInside: readonly string[
   const target = canonicalize(path.resolve(root, p));
   if (isWithin(root, target)) return false;
   return !alsoInside.some((dir) => isWithin(dir, target));
+}
+
+/** True when `p` resolved against `root` is inside it WITHOUT following symlinks. */
+function isLexicallyInside(root: string, p: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(root, p));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * The bash-token variant of `isOutside`: an in-project path whose symlink
+ * target is an EXECUTABLE FILE outside the project - a venv's `bin/python`
+ * (a symlink to the system interpreter), a tool shim - is not an escape.
+ * Running it is exactly what the project intends, and the OS sandbox still
+ * governs what it may touch; treating it as an escape prompted on every
+ * in-project Python run and, once approved, ran it UNSANDBOXED. Symlinks to
+ * directories or to non-executable files (a link to /etc, to ~/.bashrc)
+ * still count as escapes, as do dangling links and every path that is
+ * outside lexically.
+ */
+export function bashPathEscapes(root: string, p: string, alsoInside: readonly string[] = []): boolean {
+  if (!isOutside(root, p, alsoInside)) return false;
+  if (!isLexicallyInside(root, p)) return true;
+  try {
+    const st = statSync(path.resolve(root, p)); // follows the link
+    if (st.isFile() && (st.mode & 0o111) !== 0) return false;
+  } catch {
+    // dangling or unreadable link: judge it by where it points
+  }
+  return true;
 }
 
 /**

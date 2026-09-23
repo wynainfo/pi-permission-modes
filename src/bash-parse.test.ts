@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   analyzeBash,
@@ -77,6 +80,27 @@ test("outsideReasonFromCommands: sandbox-writable roots are in-bounds, not escap
   assert.match(outsideReasonFromCommands([c("cat", "/etc/passwd")], root, ["/tmp"]) ?? "", /path outside project/);
   // Privilege escalation is unaffected by bounds.
   assert.equal(outsideReasonFromCommands([c("sudo", "ls", "/tmp")], root, ["/tmp"]), "privilege escalation");
+});
+
+test("outsideReasonFromCommands: a venv interpreter symlinked outside the project does not prompt", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "perm-venv-ast-"));
+  try {
+    const root = path.join(base, "proj");
+    mkdirSync(path.join(root, ".venv", "bin"), { recursive: true });
+    const exe = path.join(base, "python3.12");
+    writeFileSync(exe, "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync(exe, path.join(root, ".venv", "bin", "python"));
+    symlinkSync(path.join(base, "not-a-program"), path.join(root, "dangling"));
+    const c = (...a: string[]): BashCommand => ({ name: a[0], args: a.slice(1), isNested: false });
+    assert.equal(outsideReasonFromCommands([c(".venv/bin/python", "-m", "pytest")], root), undefined);
+    assert.equal(outsideReasonFromCommands([c("cd", root), c(".venv/bin/python", "-u", "-")], root), undefined);
+    // Bare names are never path tokens (by design); a slash makes it one.
+    assert.equal(outsideReasonFromCommands([c("cat", "dangling")], root), undefined);
+    assert.match(outsideReasonFromCommands([c("cat", "./dangling")], root) ?? "", /path outside project: \.\/dangling/);
+    assert.match(outsideReasonFromCommands([c(exe, "-V")], root) ?? "", /path outside project/); // named directly: still outside
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("outsideReasonFromCommands: /dev/null is allowed", () => {
