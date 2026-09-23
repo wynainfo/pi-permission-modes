@@ -7,7 +7,10 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
@@ -21,6 +24,65 @@ type SandboxManagerType = typeof import("@anthropic-ai/sandbox-runtime").Sandbox
 
 /** This extension's own directory (works wherever it's installed). */
 const EXTENSION_DIR = fileURLToPath(new URL("..", import.meta.url));
+
+// ---------------------------------------------------------------------------
+// Command transport: keep the command text out of the runtime's shell quoting
+// ---------------------------------------------------------------------------
+//
+// wrapWithSandbox embeds the command in a `bash -c` string that it quotes with
+// the shell-quote package - up to three times over on Linux (eval line, inner
+// script, outer bwrap line). Whenever the command contains a single quote,
+// shell-quote picks its double-quoted form and escapes `!` as `\!`, which bash
+// keeps LITERALLY inside double quotes (only $ ` " \ are unescaped there). So
+// every heredoc, `python3 -c '...'`, or `printf` with an exclamation mark
+// reached the sandboxed shell as `\!`: no error, just corrupted bytes.
+//
+// The fix never lets the command text near that quoting: the command goes into
+// a private file on the host side (a directory the sandbox cannot write to,
+// mode 0700/0600) and the runtime gets a LAUNCHER that contains neither a
+// single quote nor an exclamation mark, so every quoting pass leaves it alone:
+//
+//   bash -c "$(<"/path/to/cmd")"
+//
+// The innermost bash reads the file with the `$(<file)` builtin and runs the
+// content as an ordinary `bash -c` script: same $0, same "bash: line N" error
+// prefixes, same exit status. No `exec`, on purpose - the runtime's network
+// bridge runs the command from a shell whose EXIT trap stops its socat
+// helpers, and that shell has to stay alive to fire it.
+
+/** Characters that must not appear in a launcher (they'd re-enter the quoting problem). */
+const LAUNCHER_UNSAFE = /['!"$`\\]/;
+
+/**
+ * The launcher line for a command file, or undefined when the path itself
+ * contains characters the launcher can't carry (then the caller falls back
+ * to passing the raw command, i.e. the historic behavior).
+ */
+export function commandLauncher(file: string): string | undefined {
+  if (LAUNCHER_UNSAFE.test(file) || /[\r\n]/.test(file)) return undefined;
+  return `bash -c "$(<"${file}")"`;
+}
+
+/** Host-side directory for command files; outside every allowWrite, so a sandboxed command can't tamper with the next one. */
+function commandFileDir(): string {
+  return path.join(os.tmpdir(), "pi-permission-mode");
+}
+
+/**
+ * Write `command` to a fresh private file and return its path, or undefined
+ * when the file can't be written (read-only temp dir): the caller then passes
+ * the raw command instead of failing the run.
+ */
+export function writeCommandFile(command: string, dir: string = commandFileDir()): string | undefined {
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = path.join(dir, `cmd-${randomBytes(8).toString("hex")}.sh`);
+    writeFileSync(file, command, { mode: 0o600 });
+    return file;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * BashOperations backed by `SandboxManager.wrapWithSandbox`. An optional
@@ -53,8 +115,12 @@ export function createSandboxedBashOps(
       // Clear any leftover 0-byte placeholders the sandbox plants for its
       // mandatory-deny paths (a stale .git would also break this run).
       removeSandboxPlaceholders(cwd);
+      // Command transport (see above): the runtime quotes what we hand it, so
+      // hand it a launcher and keep the real command in a file.
+      const commandFile = writeCommandFile(command);
+      const launcher = commandFile ? commandLauncher(commandFile) : undefined;
       try {
-        const wrapped = await SandboxManager.wrapWithSandbox(command, undefined, customConfig as never);
+        const wrapped = await SandboxManager.wrapWithSandbox(launcher ?? command, undefined, customConfig as never);
         // `await` so the finally runs after the child exits, not after the
         // Promise is constructed — otherwise cleanup would race the run.
         return await new Promise((resolve, reject) => {
@@ -98,6 +164,7 @@ export function createSandboxedBashOps(
         // we leave: normal close, abort/timeout rejection, a throw from
         // wrapWithSandbox, or a synchronous spawn failure.
         removeSandboxPlaceholders(cwd);
+        if (commandFile) rmSync(commandFile, { force: true });
       }
     },
   };

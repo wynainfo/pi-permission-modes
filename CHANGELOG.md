@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Exclamation marks no longer arrive as `\!` in sandboxed bash.** The
+  sandbox runtime embeds the command in a `bash -c` string that it quotes with
+  the shell-quote package, up to three times over on Linux. Whenever the
+  command contains a single quote, shell-quote uses its double-quoted form
+  and escapes `!` as `\!`, which bash keeps literally inside double quotes.
+  So every heredoc, `python3 -c '...'`, or `printf` with a `!` ran with
+  corrupted bytes: no error, just `\!` in the output or on disk (the write
+  tool, which bypasses bash, was unaffected). The command text is now kept
+  out of that quoting entirely: it is written to a private host-side file
+  (outside every `allowWrite`, mode 0600) and the runtime receives a launcher
+  without single quotes or exclamation marks, `bash -c "$(<"file")"`, which
+  survives the quoting unchanged; the innermost bash runs the file content
+  as an ordinary `bash -c` script with the same `$0`, error prefixes, and
+  exit status. Tests run the launcher through a real bash and through the
+  runtime's nested shell-quote passes, with a control proving the raw path
+  is mangled.
+
 ## [2.3.0]
 
 ### Added
