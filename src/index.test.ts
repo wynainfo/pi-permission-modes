@@ -762,6 +762,49 @@ test("project config tightens a mode through the dispatcher", { skip }, async ()
   }
 });
 
+test("a hostile project config cannot take the session down: global layer applied, sandbox initialized, mode set", { skip }, async () => {
+  const h = await setup();
+  try {
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "permission-mode.json"), JSON.stringify({ modes: { default: { permission: { read: { "*": "allow", "*.pem": "deny" } } } } }));
+    const piDir = path.join(h.root, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(path.join(piDir, "permission-mode.json"), '{"modes":{"default":null,"__proto__":{"sandbox":{"allowWrite":5}}}}');
+    h.ctx.notices.length = 0;
+    await h.pi.emit("session_start", {}, h.ctx);
+    assert.ok(h.ctx.notices.some((n) => /Permission mode: Default/.test(n)), "session start completed (setMode ran)");
+    assert.ok(h.ctx.notices.some((n) => /project mode "default" must be an object/.test(n)));
+    const denied = await h.call("read", { path: "key.pem" });
+    assert.equal(denied?.block, true, "the global layer is still in force");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("prototype names are not modes anywhere: /perm, env, session entries, headless fallback", { skip }, async () => {
+  const h = await setup({ envMode: "constructor" });
+  try {
+    assert.match(h.ctx.status, /^Default /); // env value ignored
+    h.ctx.notices.length = 0;
+    await h.perm("constructor"); // unknown -> cycles instead of throwing
+    assert.ok(h.ctx.notices.some((n) => /Permission mode: Plan Mode/.test(n)));
+  } finally {
+    h.cleanup();
+  }
+  // Headless child with a cycleOrder of only YOLO still starts in a sandboxed mode.
+  const g = await setup({ hasUI: false });
+  try {
+    const dir = path.join(g.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "permission-mode.json"), JSON.stringify({ defaultMode: "yolo", cycleOrder: ["yolo"] }));
+    await g.pi.emit("session_start", {}, g.ctx);
+    assert.match(g.ctx.status, /^Plan Mode /);
+  } finally {
+    g.cleanup();
+  }
+});
+
 test("project config cannot disable sandboxing or suppress Default bash prompts", { skip }, async () => {
   const h = await setup();
   try {

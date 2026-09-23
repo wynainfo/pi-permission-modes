@@ -64,8 +64,7 @@
             "deniedDomains": { "type": "array", "items": { "type": "string" } }
           }
         }
-      },
-      "required": ["enabled", "writable"]
+      }
     },
     "permission": {
       "type": "object",

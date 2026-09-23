@@ -25,6 +25,34 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   case-insensitive filesystems `.GIT` and `.ENV` are `.git` and `.env`; the
   backstop compared exact case. `.envrc` (executed by direnv on `cd`) joins
   the protected files.
+- **A malformed project config could take the loader down and with it the
+  sandbox.** A repository's `.pi/permission-mode.json` with a wrong-typed
+  value (`"modes": {"default": null}`, `"allowWrite": 5`, a `"__proto__"`
+  mode) threw inside the loader; pi swallowed the exception, so the session
+  continued on the STOCK defaults with the user's global config ignored and
+  the OS sandbox never initialized, and every in-project command then ran
+  unsandboxed after a "sandbox unavailable" prompt. Every field of both
+  layers is now type-checked and dropped with a warning instead of thrown
+  on, prototype names (`__proto__`, `constructor`, `prototype`) are never
+  treated as modes anywhere, a project file that is not a regular file or
+  exceeds 1 MiB is ignored, and the session start keeps the previous
+  configuration if loading fails for any other reason.
+- **"Allow forever" no longer replaces an unparsable global config.** A
+  stray comma in `permission-mode.json` made the persist step start from an
+  empty object and overwrite the file, losing custom modes and settings.
+  It now refuses with an error naming the file; the session grant still
+  applies. The seeded `"*"` entry comes from the effective stock+global
+  surface value rather than a blanket `ask`, so a project's tightened
+  overlay is never baked into the global file and other tools keep their
+  mode's default.
+- **An invalid action inside a pattern map now coerces to `deny`** like the
+  string form did; it was dropped, so a typo in a deny rule became allow.
+- **A new global mode is validated:** missing `sandbox.enabled`/`writable`
+  default to `true` with a warning instead of silently running bash
+  unsandboxed, and a missing `permission` block defaults to `{}` (every
+  surface asks) instead of crashing every tool call.
+- **A headless child never starts in YOLO** even when the global
+  `cycleOrder` lists only YOLO: the fallback now searches every mode.
 - **A dangling in-project symlink pointing outside the project was judged
   inside.** The containment check resolves symlinks on the longest existing
   prefix of a path; a link whose target does not exist yet failed that
@@ -34,6 +62,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   links are now followed to where they point (bounded against cycles).
 
 ### Fixed
+- `/perm init` and "Allow forever" write the public `$schema` URL; the stock
+  file's relative path did not resolve from the agent directory. The schema
+  no longer requires `enabled`/`writable` on every `sandbox` block, since
+  partial overrides are what the loader supports and the extension writes.
 - A directory named `..foo` inside the project was treated as outside it
   (the containment check tested for a `..` prefix rather than a `..`
   segment), prompting on every access.

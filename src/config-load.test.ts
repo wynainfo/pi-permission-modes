@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   FALLBACK_CONFIG,
+  globalConfigFile,
   isUnsafeDomain,
   loadModeConfig,
   loadStockDefaults,
@@ -321,5 +322,108 @@ test("persistModeRule: converts a string surface to a map and preserves other co
   assert.equal(written.$schema, "./x.json"); // preserved
   assert.equal(written.modes.default.permission.bash, "deny"); // preserved
   assert.deepEqual(written.modes.default.permission.tool, { "*": "allow", fooTool: "allow" }); // string→map
+  s.cleanup();
+});
+
+test("hostile project config never throws: malformed values are ignored with warnings, the global layer stays", () => {
+  const cases: unknown[] = [
+    { modes: { default: null } },
+    { modes: { default: { sandbox: { allowWrite: 5 } } } },
+    { modes: { default: { sandbox: { denyRead: "~/.ssh", denyWrite: { a: 1 }, network: { allowedDomains: "x" } } } } },
+    { modes: { default: { sandbox: 7, permission: "allow" } } },
+    // As JSON text: an object LITERAL with a __proto__ key sets the prototype,
+    // JSON.parse (like a file on disk) creates an own "__proto__" property.
+    '{"modes":{"__proto__":{"sandbox":{"allowWrite":[]},"permission":{"bash":"deny"}}}}',
+    { modes: { constructor: { permission: { bash: "deny" } } } },
+    { modes: [] },
+    [],
+    "just a string",
+  ];
+  for (const project of cases) {
+    const s = sandbox({
+      global: { modes: { default: { permission: { read: { "*": "allow", "*.pem": "deny" } } } } },
+      project: typeof project === "string" ? project : JSON.stringify(project),
+    });
+    const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+    assert.equal(decide(c.modes.default, "read", "key.pem"), "deny", `global layer applied for ${JSON.stringify(project)}`);
+    assert.equal(c.modes.default.sandbox.enabled, true);
+    assert.ok(s.errors.length > 0, `warned for ${JSON.stringify(project)}`);
+    s.cleanup();
+  }
+  // No prototype pollution from a "__proto__" mode.
+  assert.equal(({} as { projectOverlay?: unknown }).projectOverlay, undefined);
+  assert.equal(Object.hasOwn(Object.prototype, "projectOverlay"), false);
+});
+
+test("project config that is not a regular file, or oversized, is ignored", () => {
+  const s = sandbox();
+  const dir = path.join(s.cwd, ".pi");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(path.join(dir, "permission-mode.json")); // a directory in place of the file
+  let c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.ok(c.modes.default);
+  assert.match(s.errors.join("\n"), /not a regular file/);
+  rmSync(path.join(dir, "permission-mode.json"), { recursive: true });
+  writeFileSync(path.join(dir, "permission-mode.json"), `{"modes":{},"pad":"${"x".repeat(1 << 20)}"}`);
+  s.errors.length = 0;
+  c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.ok(c.modes.default);
+  assert.match(s.errors.join("\n"), /larger than/);
+  s.cleanup();
+});
+
+test("global: invalid action inside a pattern map is coerced to deny, not dropped", () => {
+  const s = sandbox({ global: { modes: { build: { permission: { bash: { "*": "allow", "sudo*": "denny" } } } } } });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(decide(c.modes.build, "bash", "sudo rm -rf /"), "deny");
+  assert.match(s.errors.join("\n"), /treating as deny/);
+  s.cleanup();
+});
+
+test("global: a new mode without permission/sandbox booleans gets safe defaults and warnings; prototype names are not modes", () => {
+  const s = sandbox({
+    global:
+      '{"cycleOrder":["default","review","constructor","toString"],"modes":{' +
+      '"review":{"label":"Review","color":"mdLink","sandbox":{}},' +
+      '"__proto__":{"label":"X","color":"muted","sandbox":{"enabled":true,"writable":true},"permission":{}}}}',
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.cycleOrder, ["default", "review"]);
+  assert.equal(c.modes.review.sandbox.enabled, true);
+  assert.equal(c.modes.review.sandbox.writable, true);
+  assert.deepEqual(c.modes.review.permission, {});
+  assert.equal(decide(c.modes.review, "write", "x.ts"), "ask"); // no throw, least privilege
+  assert.ok(!Object.hasOwn(c.modes, "__proto__"));
+  assert.match(s.errors.join("\n"), /sandbox.enabled missing/);
+  assert.match(s.errors.join("\n"), /no permission block/);
+  s.cleanup();
+});
+
+test("persistModeRule/persistModeDomains refuse to clobber an unparsable or malformed global file", () => {
+  const s = sandbox({ global: '{"defaultMode":"default","modes":{"review":{"label":"R","color":"muted","sandbox":{"enabled":true,"writable":true},"permission":{}}},}' });
+  const file = globalConfigFile(s.agentDir);
+  const before = readFileSync(file, "utf-8");
+  assert.throws(() => persistModeRule(s.agentDir, "default", "tool", "myTool", "allow"), /not valid JSON/);
+  assert.throws(() => persistModeDomains(s.agentDir, "default", ["example.com"]), /not valid JSON/);
+  assert.equal(readFileSync(file, "utf-8"), before, "file untouched");
+  writeFileSync(file, '{"modes":[]}');
+  assert.throws(() => persistModeRule(s.agentDir, "default", "tool", "myTool", "allow"), /"modes" must be an object/);
+  assert.throws(() => persistModeRule(s.agentDir, "__proto__", "tool", "x", "allow"), /invalid mode name/);
+  s.cleanup();
+});
+
+test("persistModeRule seeds the map from the effective stock+global surface, never from a project overlay", () => {
+  // Build's stock `tool` is "allow"; the project tightens it to "ask" - the
+  // seed must still be allow so other tools in other projects stay silent.
+  const s = sandbox({ project: { modes: { build: { permission: { tool: "ask" } } } } });
+  const file = persistModeRule(s.agentDir, "build", "tool", "myTool", "allow");
+  const written = JSON.parse(readFileSync(file, "utf-8")) as { $schema?: string; modes: { build: { permission: { tool: Record<string, string> } } } };
+  assert.deepEqual(written.modes.build.permission.tool, { "*": "allow", myTool: "allow" });
+  assert.match(written.$schema ?? "", /^https:\/\//); // a fresh file gets the URL schema
+  // A global string shorthand seeds from the file's own value.
+  writeFileSync(file, JSON.stringify({ modes: { build: { permission: { tool: "deny" } } } }));
+  persistModeRule(s.agentDir, "build", "tool", "other", "allow");
+  const again = JSON.parse(readFileSync(file, "utf-8")) as { modes: { build: { permission: { tool: Record<string, string> } } } };
+  assert.deepEqual(again.modes.build.permission.tool, { "*": "deny", other: "allow" });
   s.cleanup();
 });

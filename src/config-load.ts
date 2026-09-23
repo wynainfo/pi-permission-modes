@@ -20,7 +20,7 @@
  * domain-safety check ported from the former config.ts.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -36,6 +36,92 @@ import {
 
 type OnError = (message: string) => void;
 const noop: OnError = () => {};
+
+/** `$schema` URL written into files this extension creates (/perm init, "Allow forever"). */
+export const SCHEMA_URL = "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json";
+
+/** A project config larger than this is ignored (a FIFO or a giant file must not stall the loader). */
+const MAX_CONFIG_BYTES = 1 << 20;
+
+/** Keys that must never be used as mode names or looked up on plain objects. */
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v) && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+
+/** Own, non-prototype entries of a plain object (empty for anything else). */
+function safeEntries(v: unknown): [string, unknown][] {
+  if (!isPlainObject(v)) return [];
+  return Object.entries(v).filter(([k]) => !UNSAFE_KEYS.has(k));
+}
+
+/** Like safeEntries, but reports each skipped prototype-named key (a user should know their file has one). */
+function modeEntries(v: unknown, where: string, onError: OnError): [string, unknown][] {
+  if (!isPlainObject(v)) return [];
+  for (const k of Object.keys(v)) {
+    if (UNSAFE_KEYS.has(k)) onError(`permission-mode: ignoring mode "${k}" in ${where}: not a valid mode name`);
+  }
+  return safeEntries(v);
+}
+
+/** True when `name` is a real mode in `modes` (own property, never a prototype name). */
+export function hasMode(modes: Record<string, unknown>, name: unknown): name is string {
+  return typeof name === "string" && !UNSAFE_KEYS.has(name) && Object.hasOwn(modes, name);
+}
+
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+const MODE_COLORS = new Set(["muted", "mdLink", "accent", "error"]);
+
+/**
+ * Keep only well-typed sandbox fields from a raw override, warning about the
+ * rest. Applies to both layers: a malformed value must never throw in the
+ * loader (a throwing project file would skip the global layer AND the
+ * sandbox init), and a malformed global value is better dropped than crashed on.
+ */
+function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial<SandboxProfile> {
+  if (!isPlainObject(raw)) {
+    if (raw !== undefined) onError(`permission-mode: sandbox in ${where} must be an object; ignoring`);
+    return {};
+  }
+  const out: Partial<SandboxProfile> = {};
+  const drop = (k: string) => onError(`permission-mode: ignoring sandbox.${k} in ${where}: wrong type`);
+  for (const [k, v] of safeEntries(raw)) {
+    switch (k) {
+      case "enabled":
+      case "writable":
+      case "askOnBlockedHost":
+        if (typeof v === "boolean") out[k] = v;
+        else drop(k);
+        break;
+      case "allowWrite":
+      case "denyWrite":
+      case "denyRead":
+        if (isStringArray(v)) out[k] = v;
+        else drop(k);
+        break;
+      case "network": {
+        if (!isPlainObject(v)) {
+          drop(k);
+          break;
+        }
+        const net: NonNullable<SandboxProfile["network"]> = {};
+        if (v.allowedDomains !== undefined) {
+          if (isStringArray(v.allowedDomains)) net.allowedDomains = v.allowedDomains;
+          else drop("network.allowedDomains");
+        }
+        if (v.deniedDomains !== undefined) {
+          if (isStringArray(v.deniedDomains)) net.deniedDomains = v.deniedDomains;
+          else drop("network.deniedDomains");
+        }
+        out.network = net;
+        break;
+      }
+      default:
+        onError(`permission-mode: ignoring unknown sandbox field "${k}" in ${where}`);
+    }
+  }
+  return out;
+}
 
 /**
  * Emergency in-code fallback — a single safe, sandboxed, ask-everything mode used
@@ -135,8 +221,11 @@ const isIndexLikeKey = (k: string): boolean => /^(0|[1-9]\d*)$/.test(k);
  */
 function cleanPermission(raw: unknown, where: string, onError: OnError): Partial<Record<Surface, unknown>> {
   const out: Partial<Record<Surface, unknown>> = {};
-  if (!raw || typeof raw !== "object") return out;
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+  if (!isPlainObject(raw)) {
+    if (raw !== undefined) onError(`permission-mode: permission in ${where} must be an object; ignoring`);
+    return out;
+  }
+  for (const [key, value] of safeEntries(raw)) {
     if (!SURFACES.includes(key as Surface)) {
       onError(`permission-mode: ignoring unknown surface "${key}" in ${where}`);
       continue;
@@ -149,18 +238,25 @@ function cleanPermission(raw: unknown, where: string, onError: OnError): Partial
         onError(`permission-mode: invalid action "${value}" for ${key} in ${where}; treating as deny`);
         out[surface] = "deny";
       }
-    } else if (value && typeof value === "object") {
+    } else if (isPlainObject(value)) {
       const map: Record<string, Action> = {};
-      for (const [pat, act] of Object.entries(value as Record<string, unknown>)) {
+      for (const [pat, act] of safeEntries(value)) {
         if (isIndexLikeKey(pat)) {
           onError(
-            `permission-mode: pattern "${pat}" for ${key} in ${where} is a bare number — JS reorders such keys to the FRONT of the map, so last-match-wins may not follow file order; prefix or quote it differently (e.g. "./${pat}")`,
+            `permission-mode: pattern "${pat}" for ${key} in ${where} is a bare number - JS reorders such keys to the FRONT of the map, so last-match-wins may not follow file order; prefix or quote it differently (e.g. "./${pat}")`,
           );
         }
-        if (isAction(act)) map[pat] = act;
-        else onError(`permission-mode: invalid action "${act}" for ${key}.${pat} in ${where}; dropping`);
+        if (isAction(act)) {
+          map[pat] = act;
+        } else {
+          // Fail-safe like the string form: a typo in a deny rule must not become allow.
+          onError(`permission-mode: invalid action "${act}" for ${key}.${pat} in ${where}; treating as deny`);
+          map[pat] = "deny";
+        }
       }
       out[surface] = map;
+    } else {
+      onError(`permission-mode: ignoring ${key} in ${where}: must be an action or a pattern map`);
     }
   }
   return out;
@@ -198,23 +294,49 @@ function warnModeContradictions(name: string, mode: ModeDef, onError: OnError): 
 
 function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeConfig>, onError: OnError): PermissionModeConfig {
   const modes: Record<string, ModeDef> = { ...base.modes };
-  for (const [name, raw] of Object.entries(over.modes ?? {})) {
-    const m = raw as Partial<ModeDef>;
-    if (m.permission) m.permission = cleanPermission(m.permission, `global mode "${name}"`, onError) as ModeDef["permission"];
-    const existing = modes[name];
-    if (existing) {
-      modes[name] = mergeMode(existing, m);
-    } else if (m.sandbox && m.label && m.color) {
-      modes[name] = m as ModeDef; // a complete new mode
-    } else {
-      onError(`permission-mode: ignoring incomplete new global mode "${name}" (needs label, color, sandbox)`);
+  for (const [name, raw] of modeEntries(over.modes, "global config", onError)) {
+    const where = `global mode "${name}"`;
+    if (!isPlainObject(raw)) {
+      onError(`permission-mode: ${where} must be an object; ignoring`);
       continue;
+    }
+    const m: Partial<ModeDef> = { ...(raw as Partial<ModeDef>) };
+    if (raw.permission !== undefined) m.permission = cleanPermission(raw.permission, where, onError) as ModeDef["permission"];
+    if (raw.sandbox !== undefined) m.sandbox = sanitizeSandbox(raw.sandbox, where, onError) as SandboxProfile;
+    if (raw.hideTools !== undefined && !isStringArray(raw.hideTools)) {
+      onError(`permission-mode: ignoring hideTools in ${where}: must be a string array`);
+      delete m.hideTools;
+    }
+    if (hasMode(modes, name)) {
+      modes[name] = mergeMode(modes[name], m);
+    } else {
+      // A new mode: label, color, and a sandbox object are required; the
+      // sandbox booleans default to the safe side and permission to {}
+      // (which resolves to "ask" everywhere), each with a warning.
+      if (typeof m.label !== "string" || !MODE_COLORS.has(String(m.color)) || !isPlainObject(raw.sandbox)) {
+        onError(`permission-mode: ignoring incomplete new global mode "${name}" (needs label, color, sandbox)`);
+        continue;
+      }
+      const sandbox = m.sandbox as Partial<SandboxProfile>;
+      if (typeof sandbox.enabled !== "boolean") {
+        onError(`permission-mode: ${where}: sandbox.enabled missing; defaulting to true`);
+        sandbox.enabled = true;
+      }
+      if (typeof sandbox.writable !== "boolean") {
+        onError(`permission-mode: ${where}: sandbox.writable missing; defaulting to true`);
+        sandbox.writable = true;
+      }
+      if (m.permission === undefined) {
+        onError(`permission-mode: ${where}: no permission block; every surface will ask`);
+        m.permission = {};
+      }
+      modes[name] = { ...m, label: m.label, color: m.color as ModeDef["color"], sandbox: sandbox as SandboxProfile, permission: m.permission };
     }
     warnModeContradictions(name, modes[name], onError);
   }
-  const cycleOrder = (over.cycleOrder ?? base.cycleOrder).filter((n) => modes[n]);
-  let defaultMode = over.defaultMode ?? base.defaultMode;
-  if (!modes[defaultMode]) defaultMode = cycleOrder[0] ?? base.defaultMode;
+  const cycleOrder = (isStringArray(over.cycleOrder) ? over.cycleOrder : base.cycleOrder).filter((n) => hasMode(modes, n));
+  let defaultMode = typeof over.defaultMode === "string" ? over.defaultMode : base.defaultMode;
+  if (!hasMode(modes, defaultMode)) defaultMode = cycleOrder[0] ?? base.defaultMode;
   return { defaultMode, cycleOrder, modes };
 }
 
@@ -222,7 +344,8 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
 // Project (tighten-only) merge
 // ---------------------------------------------------------------------------
 
-function tightenSandbox(base: SandboxProfile, over: Partial<SandboxProfile>, onError: OnError): SandboxProfile {
+function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, onError: OnError): SandboxProfile {
+  const over = sanitizeSandbox(rawOver, where, onError);
   const result: SandboxProfile = { ...base, network: { ...base.network } };
   // Project overlays cannot change whether a mode is sandboxed. In particular,
   // they must never disable containment, and allowing them to enable a sparse
@@ -255,24 +378,41 @@ function tightenSandbox(base: SandboxProfile, over: Partial<SandboxProfile>, onE
   return result;
 }
 
-function applyProject(config: PermissionModeConfig, project: Partial<PermissionModeConfig>, onError: OnError): void {
-  if (project.defaultMode || project.cycleOrder) {
+function applyProject(config: PermissionModeConfig, project: unknown, onError: OnError): void {
+  if (!isPlainObject(project)) {
+    onError("permission-mode: project config must be a JSON object; ignoring");
+    return;
+  }
+  if (project.defaultMode !== undefined || project.cycleOrder !== undefined) {
     onError("permission-mode: project config cannot change defaultMode/cycleOrder; ignoring");
   }
-  for (const [name, raw] of Object.entries(project.modes ?? {})) {
-    const base = config.modes[name];
-    if (!base) {
+  if (project.modes !== undefined && !isPlainObject(project.modes)) {
+    onError("permission-mode: project config modes must be an object; ignoring");
+    return;
+  }
+  for (const [name, raw] of modeEntries(project.modes, "project config", onError)) {
+    if (!hasMode(config.modes, name)) {
       onError(`permission-mode: project config cannot add new mode "${name}"; ignoring`);
       continue;
     }
-    const pm = raw as Partial<ModeDef>;
-    if (pm.sandbox) base.sandbox = tightenSandbox(base.sandbox, pm.sandbox, onError);
-    if (pm.permission) {
-      // Attach as a most-restrictive overlay — provably tighten-only.
-      base.projectOverlay = cleanPermission(pm.permission, `project mode "${name}"`, onError) as ModeDef["permission"];
+    const where = `project mode "${name}"`;
+    try {
+      const base = config.modes[name];
+      if (!isPlainObject(raw)) {
+        onError(`permission-mode: ${where} must be an object; ignoring`);
+        continue;
+      }
+      if (raw.sandbox !== undefined) base.sandbox = tightenSandbox(base.sandbox, raw.sandbox, where, onError);
+      if (raw.permission !== undefined) {
+        // Attach as a most-restrictive overlay - provably tighten-only.
+        base.projectOverlay = cleanPermission(raw.permission, where, onError) as ModeDef["permission"];
+      }
+      // label/color/systemPrompt/hideTools/bypassProtectedPaths from a project are
+      // ignored: they're cosmetic or could loosen, neither of which a project may do.
+    } catch (e) {
+      // Defense in depth: a project file must never take the loader down.
+      onError(`permission-mode: ignoring ${where}: ${e instanceof Error ? e.message : String(e)}`);
     }
-    // label/color/systemPrompt/hideTools/bypassProtectedPaths from a project are
-    // ignored: they're cosmetic or could loosen, neither of which a project may do.
   }
 }
 
@@ -284,12 +424,30 @@ const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 /** Strip `$schema` and parse a config file, or undefined (reporting parse errors). */
 function parseConfigFile(p: string, onError: OnError): Partial<PermissionModeConfig> | undefined {
-  if (!existsSync(p)) return undefined;
+  let size: number;
   try {
-    const data = JSON.parse(readFileSync(p, "utf-8")) as Partial<PermissionModeConfig>;
-    delete (data as { $schema?: unknown }).$schema;
-    delete (data as { $comment?: unknown }).$comment; // `/perm init` provenance note
-    return data;
+    const st = statSync(p); // follows symlinks: a link to a FIFO or /dev/stdin is not a regular file
+    if (!st.isFile()) {
+      onError(`permission-mode: ${p} is not a regular file; ignoring`);
+      return undefined;
+    }
+    size = st.size;
+  } catch {
+    return undefined; // absent
+  }
+  if (size > MAX_CONFIG_BYTES) {
+    onError(`permission-mode: ${p} is larger than ${MAX_CONFIG_BYTES} bytes; ignoring`);
+    return undefined;
+  }
+  try {
+    const data = JSON.parse(readFileSync(p, "utf-8")) as unknown;
+    if (!isPlainObject(data)) {
+      onError(`permission-mode: ${p} must contain a JSON object; ignoring`);
+      return undefined;
+    }
+    delete data.$schema;
+    delete data.$comment; // `/perm init` provenance note
+    return data as Partial<PermissionModeConfig>;
   } catch (e) {
     onError(`permission-mode: could not parse ${p}: ${e}`);
     return undefined;
@@ -335,11 +493,23 @@ export function readGlobalConfigRaw(agentDir: string): Record<string, unknown> |
 export function loadModeConfig(cwd: string, agentDir: string, onError: OnError = noop): PermissionModeConfig {
   const projectPath = path.join(cwd, ".pi", "permission-mode.json");
 
+  const config = loadGlobalModeConfig(agentDir, onError);
+  const project = parseConfigFile(projectPath, onError);
+  if (project) {
+    try {
+      applyProject(config, project, onError);
+    } catch (e) {
+      onError(`permission-mode: ignoring project config ${projectPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return config;
+}
+
+/** Stock defaults + the global layer, without the project overlay. */
+export function loadGlobalModeConfig(agentDir: string, onError: OnError = noop): PermissionModeConfig {
   let config = loadStockDefaults(onError);
   const global = parseConfigFile(globalConfigFile(agentDir), onError);
   if (global) config = mergeGlobal(config, global, onError);
-  const project = parseConfigFile(projectPath, onError);
-  if (project) applyProject(config, project, onError);
   return config;
 }
 
@@ -352,21 +522,33 @@ export function loadModeConfig(cwd: string, agentDir: string, onError: OnError =
  * intersection must never be baked into the user's global config. Returns the
  * path written.
  */
+/**
+ * Read the global config file for a read-modify-write. A file that exists but
+ * is not valid JSON (or not an object with an object `modes`) makes this
+ * THROW: "Allow forever" must never replace the user's file wholesale because
+ * of a stray comma. The callers surface the error; the session grant still
+ * applies for this session.
+ */
+function readGlobalForWrite(file: string): Record<string, unknown> {
+  if (!existsSync(file)) return { $schema: SCHEMA_URL };
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(file, "utf-8"));
+  } catch (e) {
+    throw new Error(`${file} is not valid JSON (${e instanceof Error ? e.message : String(e)}); fix it before saving a rule`);
+  }
+  if (!isPlainObject(data)) throw new Error(`${file} must contain a JSON object; fix it before saving a rule`);
+  if (data.modes !== undefined && !isPlainObject(data.modes)) throw new Error(`${file}: "modes" must be an object; fix it before saving a rule`);
+  return data;
+}
+
 export function persistModeDomains(agentDir: string, modeName: string, domains: string[]): string {
   const file = globalConfigFile(agentDir);
-  let base = loadStockDefaults();
-  const global = parseConfigFile(file, noop);
-  if (global) base = mergeGlobal(base, structuredClone(global), noop);
-  const baseNetwork = base.modes[modeName]?.sandbox.network;
+  if (UNSAFE_KEYS.has(modeName)) throw new Error(`invalid mode name "${modeName}"`);
+  const base = loadGlobalModeConfig(agentDir);
+  const baseNetwork = hasMode(base.modes, modeName) ? base.modes[modeName].sandbox.network : undefined;
 
-  let data: Record<string, unknown> = {};
-  if (existsSync(file)) {
-    try {
-      data = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
-    } catch {
-      data = {}; // unreadable/corrupt → start fresh rather than lose the grant
-    }
-  }
+  const data = readGlobalForWrite(file);
   const modes = (data.modes ??= {}) as Record<string, { sandbox?: { network?: Record<string, unknown> } }>;
   const mode = (modes[modeName] ??= {});
   const sandbox = (mode.sandbox ??= {});
@@ -398,20 +580,25 @@ export function persistModeRule(
   action: Action,
 ): string {
   const file = globalConfigFile(agentDir);
-  let data: Record<string, unknown> = {};
-  if (existsSync(file)) {
-    try {
-      data = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
-    } catch {
-      data = {}; // unreadable/corrupt → start fresh rather than lose the grant
-    }
-  }
+  if (UNSAFE_KEYS.has(modeName)) throw new Error(`invalid mode name "${modeName}"`);
+  const data = readGlobalForWrite(file);
   const modes = (data.modes ??= {}) as Record<string, { permission?: Record<string, SurfaceValue> }>;
   const mode = (modes[modeName] ??= {});
   const permission = (mode.permission ??= {});
   const current = permission[surface];
-  const map: Record<string, Action> =
-    typeof current === "string" ? { "*": current } : { ...(current as Record<string, Action> | undefined) };
+  // Seed the map from what is in the FILE, else from the effective stock+global
+  // surface value (the project overlay is never consulted: a project tighten
+  // must not be baked into the user's global config), else "ask".
+  let map: Record<string, Action>;
+  if (isPlainObject(current)) {
+    map = { ...(current as Record<string, Action>) };
+  } else if (typeof current === "string") {
+    map = { "*": current as Action };
+  } else {
+    const base = loadGlobalModeConfig(agentDir);
+    const baseValue = hasMode(base.modes, modeName) ? base.modes[modeName].permission[surface] : undefined;
+    map = typeof baseValue === "string" ? { "*": baseValue } : isPlainObject(baseValue) ? { ...(baseValue as Record<string, Action>) } : {};
+  }
   if (!("*" in map)) map["*"] = "ask"; // keep prompting for other names
   map[key] = action;
   permission[surface] = map;

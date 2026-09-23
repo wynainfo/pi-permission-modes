@@ -62,7 +62,9 @@ import {
   writeAuditState,
 } from "./config-audit.ts";
 import {
+  SCHEMA_URL,
   globalConfigFile,
+  hasMode,
   isUnsafeDomain,
   loadModeConfig,
   loadStockDefaults,
@@ -129,7 +131,7 @@ export default async function (pi: ExtensionAPI) {
   let fallbackMode = false;
   const root = process.cwd();
 
-  const currentMode = (): ModeDef => config.modes[modeName] ?? config.modes[config.defaultMode];
+  const currentMode = (): ModeDef => (hasMode(config.modes, modeName) ? config.modes[modeName] : config.modes[config.defaultMode]);
 
   // This session's scratch directory (scratch.ts), created at session_start.
   // The EFFECTIVE sandbox profile — what the runtime is initialized with, what
@@ -257,7 +259,7 @@ export default async function (pi: ExtensionAPI) {
   };
 
   const setMode = async (name: string, ctx: ExtensionContext, persist = true, viaFallback = false) => {
-    if (!config.modes[name]) return;
+    if (!hasMode(config.modes, name)) return;
     uiCtx = ctx;
     modeName = name;
     fallbackMode = viaFallback;
@@ -277,8 +279,12 @@ export default async function (pi: ExtensionAPI) {
   /** The most restrictive built-in-style mode for a headless child without a
    * forwarded mode: a read-only sandboxed mode if any, else the default. */
   const safeChildMode = (): string => {
-    const ro = config.cycleOrder.find((n) => config.modes[n]?.sandbox.enabled && !config.modes[n]?.sandbox.writable);
-    const sandboxed = config.cycleOrder.find((n) => config.modes[n]?.sandbox.enabled);
+    // Search the cycle order first (deterministic), then every other mode: a
+    // global config whose cycleOrder lists only YOLO must not make a headless
+    // child start unsandboxed while Plan/Default still exist.
+    const candidates = [...new Set([...config.cycleOrder, ...Object.keys(config.modes)])].filter((n) => hasMode(config.modes, n));
+    const ro = candidates.find((n) => config.modes[n].sandbox.enabled && !config.modes[n].sandbox.writable);
+    const sandboxed = candidates.find((n) => config.modes[n].sandbox.enabled);
     return ro ?? sandboxed ?? config.defaultMode;
   };
 
@@ -300,17 +306,17 @@ export default async function (pi: ExtensionAPI) {
     let resolved: string | undefined;
     if (useFlag) {
       const flag = String(pi.getFlag("perm") ?? "").toLowerCase();
-      if (config.modes[flag]) resolved = flag;
+      if (hasMode(config.modes, flag)) resolved = flag;
     }
     for (const entry of ctx.sessionManager.getEntries()) {
       if (entry.type === "custom" && entry.customType === "perm-mode") {
         const data = entry.data as PermState | undefined;
-        if (data?.mode && config.modes[data.mode]) resolved = data.mode;
+        if (hasMode(config.modes, data?.mode)) resolved = data.mode;
       }
     }
     if (!resolved) {
       const env = process.env.PI_PERMISSION_MODE;
-      if (env && config.modes[env]) resolved = env;
+      if (hasMode(config.modes, env)) resolved = env;
     }
     if (!resolved && !ctx.hasUI) return { name: safeChildMode(), fallback: true }; // headless child, no forwarded mode
     return { name: resolved ?? modeName, fallback: false };
@@ -339,9 +345,9 @@ export default async function (pi: ExtensionAPI) {
         }
         try {
           const stock = JSON.parse(readFileSync(stockDefaultsFile(), "utf-8")) as Record<string, unknown>;
-          const { $schema, ...rest } = stock;
+          const { $schema: _stockSchema, ...rest } = stock;
           const copy = {
-            $schema,
+            $schema: SCHEMA_URL, // the stock file's relative path would not resolve from the agent dir
             $comment:
               `Copied from the pi-permission-modes ${extensionVersion()} stock defaults by /perm init. ` +
               "Every value here overrides the shipped default; delete what you don't intend to change so " +
@@ -357,7 +363,7 @@ export default async function (pi: ExtensionAPI) {
           return ctx.ui.notify(`permission-mode: could not write ${dest}: ${e}`, "error");
         }
       }
-      if (config.modes[arg]) await setMode(arg, ctx);
+      if (hasMode(config.modes, arg)) await setMode(arg, ctx);
       else await cycle(ctx);
     },
   });
@@ -593,11 +599,16 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     uiCtx = ctx;
-    config = loadModeConfig(ctx.cwd, getAgentDir(), (m) =>
-      ctx.hasUI ? ctx.ui.notify(m, "warning") : console.error(m),
-    );
+    const warn = (m: string) => (ctx.hasUI ? ctx.ui.notify(m, "warning") : console.error(m));
+    try {
+      config = loadModeConfig(ctx.cwd, getAgentDir(), warn);
+    } catch (e) {
+      // The loader guards its inputs; this is the last line of defense so a
+      // config problem can never skip the sandbox init below.
+      warn(`permission-mode: could not load configuration, keeping the previous one: ${e instanceof Error ? e.message : String(e)}`);
+    }
     auditGlobalConfig(ctx);
-    if (!config.modes[modeName]) modeName = config.defaultMode;
+    if (!hasMode(config.modes, modeName)) modeName = config.defaultMode;
     // Resolve the start mode BEFORE init so the sandbox initializes with the
     // right profile, then setMode reconciles status (applyProfile is a no-op).
     const picked = pickMode(ctx, true);
