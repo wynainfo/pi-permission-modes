@@ -410,7 +410,9 @@ Add a mode under `modes` in the global config and (optionally) list it in
 > there `allowWrite` only feeds the prompt bounds. A tool that hardcodes `/tmp`
 > and ignores `TMPDIR` fails **silently** inside the sandbox (no prompt - the
 > kernel denies it); add `/tmp` back to the mode's `allowWrite` if you need
-> such a tool, at the cost of sharing `/tmp` with everything else on the host.
+> such a tool, at the cost of sharing `/tmp` with everything else on the host
+> (and set `acknowledgeDefaults` so the outdated-default warning stays quiet,
+> see below).
 
 ---
 
