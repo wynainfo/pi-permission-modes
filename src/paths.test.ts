@@ -17,6 +17,7 @@ import {
   SANDBOX_PLACEHOLDER_PATHS,
   SANDBOX_RUNTIME_TMP_PATHS,
   bashPathEscapes,
+  normalizeToolPath,
   sandboxAllowedRoots,
 } from "./paths.ts";
 
@@ -349,4 +350,37 @@ test("isOutside: a dangling in-project symlink is judged by where it points (wri
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test("normalizeToolPath: mirrors pi's file-tool normalization (~, @, file://, unicode spaces)", () => {
+  const home = os.homedir();
+  assert.equal(normalizeToolPath("~"), home);
+  assert.equal(normalizeToolPath("~/.ssh/id_rsa"), path.join(home, ".ssh/id_rsa"));
+  assert.equal(normalizeToolPath("@.env"), ".env");
+  assert.equal(normalizeToolPath("@/etc/passwd"), "/etc/passwd");
+  assert.equal(normalizeToolPath("@~/x"), path.join(home, "x")); // @ stripped first, then ~ expanded, as in pi
+  assert.equal(normalizeToolPath("file:///etc/passwd"), "/etc/passwd");
+  assert.equal(normalizeToolPath("a\u00A0b.txt"), "a b.txt");
+  assert.equal(normalizeToolPath("src/app.ts"), "src/app.ts"); // plain paths untouched
+  assert.equal(normalizeToolPath("~user/x"), "~user/x"); // pi does not expand ~user either
+  // The guards now judge what pi opens.
+  assert.equal(isOutside("/home/proj", normalizeToolPath("~/.ssh/id_rsa")), true);
+  assert.equal(isProtectedPath(normalizeToolPath("@.git/hooks/pre-commit")), true);
+});
+
+test("isProtectedPath: case-insensitive names, .envrc", () => {
+  assert.ok(isProtectedPath(".GIT/config"));
+  assert.ok(isProtectedPath(".ENV"));
+  assert.ok(isProtectedPath("Node_Modules/x/index.js"));
+  assert.ok(isProtectedPath(".envrc"));
+  assert.ok(isProtectedPath("sub/.Envrc"));
+  assert.ok(!isProtectedPath("environment.md"));
+});
+
+test("isOutside: a directory named ..foo is inside the project", () => {
+  assert.equal(isOutside(ROOT, "..foo/x"), false);
+  assert.equal(isOutside(ROOT, "./..foo"), false);
+  assert.equal(isOutside(ROOT, "../foo"), true);
+  assert.equal(isOutside(ROOT, ".."), true);
+  assert.equal(isPlanFile(ROOT, "plan/..x.md"), true);
 });

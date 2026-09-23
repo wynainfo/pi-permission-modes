@@ -74,7 +74,7 @@ import {
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
-import { isOutside, isProtectedWrite, sandboxAllowedRoots } from "./paths.ts";
+import { isOutside, isProtectedWrite, normalizeToolPath, sandboxAllowedRoots } from "./paths.ts";
 import { decide, decideBashChain } from "./resolve.ts";
 import { SandboxController } from "./sandbox.ts";
 import { SCRATCH_BASE_ENV, ensureScratchDir, scratchBase, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
@@ -699,7 +699,12 @@ export default async function (pi: ExtensionAPI) {
     // `input` is a discriminated union across tools; view it loosely (custom
     // tools surface as Record<string, unknown> anyway) and guard each field.
     const input = event.input as Record<string, unknown>;
-    const inPath = typeof input.path === "string" ? input.path : undefined;
+    // Judge the path pi will actually open: `~`, a leading `@`, and `file://`
+    // are normalized by pi's file tools before the open (see normalizeToolPath).
+    const inPath = typeof input.path === "string" ? normalizeToolPath(input.path) : undefined;
+    if (inPath !== undefined && inPath.includes("\0")) {
+      return { block: true, reason: "Path contains a NUL byte" };
+    }
     // The mode's sandbox-writable dirs (/tmp, …) are in-bounds: a path the
     // sandbox already permits is not an escape, so it must neither prompt as
     // "outside project" nor — worse — run unsandboxed once the user approves.
@@ -745,12 +750,18 @@ export default async function (pi: ExtensionAPI) {
       if (gate.kind === "block") return { block: true, reason: gate.reason };
       if (gate.kind === "prompt") {
         // Session approvals are keyed on the extracted command names, and ALL
-        // names in a chain must be granted for it to pass silently — "allow git
+        // names in a chain must be granted for it to pass silently - "allow git
         // this session" must not cover `git status && curl ... | sh`. Granting
         // remembers every name in the chain. Without a parse (heuristic
         // fallback), the key is the exact command string.
+        //
+        // An ESCAPE (out-of-project path, privilege escalation) is keyed on the
+        // exact command string instead: it runs UNSANDBOXED once approved, so a
+        // name-level grant earned by an in-project `cat README.md` must never
+        // let `cat ~/.ssh/id_rsa` through silently, and an approved escape must
+        // not cover a different one that merely shares its command name.
         const names = [...new Set(analysis.commands.map((c) => c.name).filter(Boolean))];
-        const keys = names.length > 0 ? names : [command];
+        const keys = analysis.outsideReason ? [`escape:${command}`] : names.length > 0 ? names : [command];
         if (!(await promptAllow(ctx, "bash", keys, gate.title))) return { block: true, reason: gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }

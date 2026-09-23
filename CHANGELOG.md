@@ -7,6 +7,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Security
+- **File-tool guards now judge the path pi actually opens.** pi's `read`,
+  `write`, `edit`, `ls`, `grep`, and `find` normalize their `path` before
+  opening it: `~` and `~/…` expand to the home directory, a leading `@` is
+  stripped, and `file://` URLs become paths. The extension's guards judged
+  the raw string, so `read ~/.ssh/id_rsa` resolved lexically to a missing
+  in-project path and was allowed while pi read the real file, and `write
+  @.env` slipped past the protected-path backstop. The dispatcher now applies
+  the same normalization first; paths containing a NUL byte are blocked.
+- **A session grant never covers an escape.** "Allow for session" was keyed
+  on command names, so approving an in-project `cat README.md` let a later
+  `cat ~/.ssh/id_rsa` pass without a prompt, and, being an out-of-project
+  escape, run UNSANDBOXED; likewise `env FOO=1 ls` covered `env sudo …`.
+  Escapes (out-of-project path, privilege escalation) are now keyed on the
+  exact command string: an approved escape covers only that command.
+- **Protected names match case-insensitively, and `.envrc` is protected.** On
+  case-insensitive filesystems `.GIT` and `.ENV` are `.git` and `.env`; the
+  backstop compared exact case. `.envrc` (executed by direnv on `cd`) joins
+  the protected files.
 - **A dangling in-project symlink pointing outside the project was judged
   inside.** The containment check resolves symlinks on the longest existing
   prefix of a path; a link whose target does not exist yet failed that
@@ -16,6 +34,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   links are now followed to where they point (bounded against cycles).
 
 ### Fixed
+- A directory named `..foo` inside the project was treated as outside it
+  (the containment check tested for a `..` prefix rather than a `..`
+  segment), prompting on every access.
 - **A venv's `bin/python` no longer prompts (and no longer runs unsandboxed
   once approved).** The bash escape detector follows symlinks, so an
   in-project interpreter that links to the system Python - which is what

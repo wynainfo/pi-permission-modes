@@ -12,16 +12,24 @@
  */
 
 import { lstatSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expandHome } from "./resolve.ts";
 import type { SandboxProfile } from "./schema.ts";
 
 /** Device pseudo-files that are "outside" the project but harmless to allow. */
 export const SAFE_OUTSIDE_RE = /^\/dev\/(null|zero|stdin|stdout|stderr|tty|urandom|random)$/;
 
-/** Directory names that are protected anywhere in a path. */
+/** Directory names that are protected anywhere in a path (compared case-insensitively). */
 const PROTECTED_DIRS = [".git", "node_modules", ".vscode", ".idea"];
-/** Basenames that are protected (shell rc, VCS/npm config). Mirrors the sandbox-runtime mandatory-deny set. */
+/**
+ * Basenames that are protected (shell rc, VCS/npm config, direnv). Mirrors the
+ * sandbox-runtime mandatory-deny set plus `.envrc`, which direnv executes on
+ * `cd`. Compared case-insensitively: on case-insensitive filesystems (macOS,
+ * Windows) `.GIT` IS `.git`, and blocking a same-named directory on Linux is
+ * harmless.
+ */
 const PROTECTED_FILES = new Set([
   ".gitconfig",
   ".gitmodules",
@@ -32,7 +40,38 @@ const PROTECTED_FILES = new Set([
   ".zprofile",
   ".profile",
   ".ripgreprc",
+  ".envrc",
 ]);
+
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/**
+ * Normalize a model-supplied file-tool path the way pi's own read/write/
+ * edit/ls/grep/find do before opening it (`resolveToCwd` in pi's utils):
+ * unicode spaces to plain spaces, a leading `@` stripped, `~`/`~/…` expanded
+ * to the home directory, `file://` URLs turned into paths. The guards here
+ * must judge the SAME path pi opens: before this, `read ~/.ssh/id_rsa`
+ * resolved lexically to `<project>/~/.ssh/id_rsa` (inside, missing) while pi
+ * read the real file, and `write @.env` slipped past the protected-path
+ * backstop. A NUL byte is kept as is; the dispatcher blocks such paths.
+ */
+export function normalizeToolPath(raw: string): string {
+  let p = raw.replace(UNICODE_SPACES, " ");
+  if (p.startsWith("@")) p = p.slice(1);
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~\\"))) return path.join(os.homedir(), p.slice(2));
+  if (/^file:\/\//.test(p)) {
+    try {
+      return fileURLToPath(p);
+    } catch {
+      return p; // malformed URL: judged as written (pi would fail to open it)
+    }
+  }
+  return p;
+}
+
+/** True when a `path.relative` result denotes the base itself or something under it (`..foo` is a child, not an escape). */
+const relInside = (rel: string): boolean => rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 
 /**
  * Canonicalize a path by resolving symlinks on its longest existing prefix and
@@ -71,8 +110,7 @@ function canonicalize(p: string): string {
 
 /** True when canonical `target` is `dir` itself or nested under it. */
 function isWithin(dir: string, target: string): boolean {
-  const rel = path.relative(canonicalize(dir), target);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return relInside(path.relative(canonicalize(dir), target));
 }
 
 /**
@@ -92,8 +130,7 @@ export function isOutside(root: string, p?: string, alsoInside: readonly string[
 
 /** True when `p` resolved against `root` is inside it WITHOUT following symlinks. */
 function isLexicallyInside(root: string, p: string): boolean {
-  const rel = path.relative(path.resolve(root), path.resolve(root, p));
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return relInside(path.relative(path.resolve(root), path.resolve(root, p)));
 }
 
 /**
@@ -251,7 +288,7 @@ export function gitFileDegradesSandbox(root: string, platform: NodeJS.Platform =
 export function isPlanFile(root: string, p?: string): boolean {
   if (!p || !isMarkdown(p)) return false;
   const rel = path.relative(path.resolve(root, "plan"), path.resolve(root, p));
-  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  return rel !== "" && relInside(rel);
 }
 
 /**
@@ -261,7 +298,10 @@ export function isPlanFile(root: string, p?: string): boolean {
  * Purely lexical — see `isProtectedWrite` for the symlink-resolving backstop.
  */
 export function isProtectedPath(p: string): boolean {
-  const segments = p.split(/[/\\]+/).filter(Boolean);
+  const segments = p
+    .split(/[/\\]+/)
+    .filter(Boolean)
+    .map((s) => s.toLowerCase());
   if (segments.length === 0) return false;
   const base = segments[segments.length - 1];
 
@@ -294,6 +334,5 @@ export function isProtectedWrite(root: string, p: string): boolean {
   const target = canonicalize(path.resolve(root, p));
   const realRoot = canonicalize(root);
   const rel = path.relative(realRoot, target);
-  const inProject = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-  return isProtectedPath(inProject ? rel : target);
+  return isProtectedPath(relInside(rel) ? rel : target);
 }

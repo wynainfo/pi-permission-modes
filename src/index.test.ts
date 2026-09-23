@@ -339,6 +339,64 @@ test("session scratch dir: created per session, TMPDIR, in-bounds, advertised, s
   }
 });
 
+test("file tools judge the path pi opens: ~, @, file:// are normalized before the guards", { skip }, async () => {
+  const h = await setup();
+  try {
+    // Default: reads are free in-project, but `~/...` is the home dir, i.e. outside: external_directory asks.
+    h.ctx.answers.push("Deny");
+    const home = await h.call("read", { path: "~/.ssh/id_rsa" });
+    assert.equal(home?.block, true);
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /Outside project/);
+    // `@` prefix is stripped by pi: the protected-path backstop must see `.env`.
+    const env = await h.call("write", { path: "@.env" });
+    assert.equal(env?.block, true);
+    assert.match(env?.reason ?? "", /protected/);
+    // file:// URLs are paths to pi.
+    h.ctx.answers.push("Deny");
+    const url = await h.call("read", { path: "file:///etc/passwd" });
+    assert.equal(url?.block, true);
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /Outside project/);
+    // NUL bytes never reach the filesystem layer.
+    const nul = await h.call("write", { path: ".git\u0000/config" });
+    assert.equal(nul?.block, true);
+    assert.match(nul?.reason ?? "", /NUL/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("bash: a session grant never covers an escape, and an approved escape covers only itself", { skip }, async () => {
+  const h = await setup();
+  try {
+    // In-project `cat` granted for the session (sandbox unavailable in the harness: prompts, then granted).
+    h.ctx.answers.push("Allow for session");
+    assert.equal(await h.call("bash", { command: "cat README.md" }), undefined);
+    assert.equal(h.ctx.prompts.length, 1);
+    // The same name reaching outside the project is an escape: it must prompt again.
+    h.ctx.answers.push("Deny");
+    const escape = await h.call("bash", { command: "cat ~/.ssh/id_rsa" });
+    assert.equal(escape?.block, true);
+    assert.equal(h.ctx.prompts.length, 2);
+    assert.match(h.ctx.prompts[1].title, /path outside project/);
+    // An approved escape is remembered for that exact command only.
+    h.ctx.answers.push("Allow for session");
+    assert.equal(await h.call("bash", { command: "cat /etc/hostname" }), undefined);
+    assert.equal(await h.call("bash", { command: "cat /etc/hostname" }), undefined); // same: silent
+    assert.equal(h.ctx.prompts.length, 3);
+    h.ctx.answers.push("Deny");
+    assert.equal((await h.call("bash", { command: "cat /etc/shadow" }))?.block, true); // different: prompts
+    assert.equal(h.ctx.prompts.length, 4);
+    // A wrapper grant does not cover privilege escalation through it.
+    h.ctx.answers.push("Allow for session");
+    assert.equal(await h.call("bash", { command: "env FOO=1 ls" }), undefined);
+    h.ctx.answers.push("Deny");
+    assert.equal((await h.call("bash", { command: "env sudo cat /etc/shadow" }))?.block, true);
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /privilege escalation/);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("bash: session grant covers the same command, not a longer chain", { skip }, async () => {
   const h = await setup();
   try {
