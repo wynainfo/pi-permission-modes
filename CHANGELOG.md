@@ -26,6 +26,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   session's blocks, `/perm unblock <path>` lifts one, `/perm clear-approvals`
   clears them together with the grants. Session lifetime only.
 
+- **`sandbox.allowRead`: carve-outs inside `denyRead`.** A mode can now
+  deny a whole region and re-open paths inside it (deny-then-allow, a
+  runtime feature since 0.0.77). The README shows a "strict home" mode
+  built on it: `denyRead: ["~"]` with the project, the scratch base, and the
+  toolchain directories in `allowRead`; everything else under the home
+  directory reads as absent inside bash. A more specific `denyRead` or a
+  session block inside a carve-out still wins. Project configs may only
+  remove carve-outs. The awareness section lists them, `/sandbox` shows
+  them, and Deny and block keeps offering paths that a carve-out re-exposes
+  while skipping paths a deny already masks.
+
 ### Changed
 - **Sandbox runtime upgraded from `@anthropic-ai/sandbox-runtime` 0.0.26 to
   0.0.77.** The runtime moved a long way in between, and several of this

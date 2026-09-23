@@ -223,7 +223,7 @@ export default async function (pi: ExtensionAPI) {
     const eligible = [
       ...new Set(
         targets
-          .map((t) => blockablePath(root, t, { alsoInside: eff.allowWrite ?? [], denyRead: eff.denyRead ?? [] }))
+          .map((t) => blockablePath(root, t, { alsoInside: eff.allowWrite ?? [], denyRead: eff.denyRead ?? [], allowRead: eff.allowRead ?? [] }))
           .filter((t): t is string => t !== undefined && !blocked.covers(t)),
       ),
     ];
@@ -521,6 +521,7 @@ export default async function (pi: ExtensionAPI) {
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
           `Deny read:  ${c.filesystem?.denyRead?.join(", ") || "(none)"}`,
+          ...(c.filesystem.allowRead?.length ? [`Allow read: ${c.filesystem.allowRead.join(", ")} (inside the denied paths)`] : []),
           `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,
           `Allow write: ${c.filesystem?.allowWrite?.join(", ") || "(none)"}`,
           `Deny write:  ${c.filesystem?.denyWrite?.join(", ") || "(none)"}`,

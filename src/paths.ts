@@ -176,7 +176,7 @@ const UNBLOCKABLE = ["/", "/tmp", "/private", "/private/tmp", "/usr", "/etc", "/
 export function blockablePath(
   root: string,
   p: string,
-  opts: { alsoInside?: readonly string[]; denyRead?: readonly string[] } = {},
+  opts: { alsoInside?: readonly string[]; denyRead?: readonly string[]; allowRead?: readonly string[] } = {},
 ): string | undefined {
   const target = canonicalPath(root, p);
   const home = canonicalize(os.homedir());
@@ -188,8 +188,14 @@ export function blockablePath(
   for (const r of opts.alsoInside ?? []) {
     if (relInside(path.relative(target, canonicalize(path.resolve(root, expandHome(r)))))) return undefined; // ancestor of a writable root
   }
+  // An allowRead entry re-exposes what a denyRead above it hides: a path
+  // under one is readable (blockable, a deeper deny wins), an ancestor of one
+  // could not be masked completely (like an ancestor of a writable root).
+  const allowRead = (opts.allowRead ?? []).map((a) => canonicalize(path.resolve(root, expandHome(a))));
+  if (allowRead.some((a) => a !== target && relInside(path.relative(target, a)))) return undefined;
+  const reExposed = allowRead.some((a) => a === target || relInside(path.relative(a, target)));
   for (const d of opts.denyRead ?? []) {
-    if (relInside(path.relative(canonicalize(expandHome(d)), target))) return undefined; // already masked
+    if (!reExposed && relInside(path.relative(canonicalize(expandHome(d)), target))) return undefined; // already masked
   }
   return target;
 }

@@ -41,10 +41,12 @@ you can rely on it appropriately.
   denied prompt is a refusal, not containment: a determined agent can read
   the same file through a script it writes into the project. **Deny and
   block** (offered on every out-of-project path prompt) turns that Deny into
-  containment for the session by adding the path to `denyRead` and
-  re-applying the sandbox; the file tools refuse it directly. A true
-  allow-list for reads needs a runtime feature (`allowRead` carve-outs from
-  `denyRead`) that does not exist yet. One deliberate exemption in the
+  containment for the session: every later sandboxed command carries the
+  path as extra `denyRead`, and the file tools refuse it directly. A mode
+  can invert the default with `allowRead`: deny `~` and re-open only the
+  toolchain directories (README, "Strict home"); a more specific `denyRead`
+  or a session block inside a carve-out still wins, and a project config can
+  only remove carve-outs. One deliberate exemption in the
   bash prompt layer: an in-project symlink whose target is an *executable
   file* outside the project (a venv's `bin/python`) is not treated as an
   escape - executing it is the project's intent and the sandbox still confines

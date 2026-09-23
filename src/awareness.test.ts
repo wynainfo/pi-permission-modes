@@ -42,6 +42,12 @@ test("writable sandboxed mode: renders paths, secrets, domains, and the prompt f
   assert.doesNotMatch(out, /write-denied/); // empty denyWrite → no bullet
 });
 
+test("allowRead: the carve-outs are listed right after the denied paths, with '.' rendered as the project", () => {
+  const out = sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: [".", "~/.cache"] }), { active: true })!;
+  assert.match(out, /Reads are broadly allowed EXCEPT: ~\.\n- Readable again inside those denied paths: the project directory, ~\/\.cache\. Anything else under a denied path reads as absent\./);
+  assert.doesNotMatch(sandboxAwarenessPrompt(mode(), { active: true })!, /Readable again/);
+});
+
 test("background processes: the teardown caveat is stated when the sandbox is active, not when degraded", () => {
   const active = sandboxAwarenessPrompt(mode(), { active: true }) ?? "";
   assert.match(active, /Background processes do not outlive the command/);

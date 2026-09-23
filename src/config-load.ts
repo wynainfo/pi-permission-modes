@@ -96,6 +96,7 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
       case "allowWrite":
       case "denyWrite":
       case "denyRead":
+      case "allowRead":
         if (isStringArray(v)) out[k] = v;
         else drop(k);
         break;
@@ -176,7 +177,7 @@ export const FALLBACK_CONFIG: PermissionModeConfig = {
 export interface SandboxConfig {
   enabled?: boolean;
   network: { allowedDomains?: string[]; deniedDomains: string[] };
-  filesystem: { denyRead: string[]; allowWrite: string[]; denyWrite: string[] };
+  filesystem: { denyRead: string[]; allowRead?: string[]; allowWrite: string[]; denyWrite: string[] };
 }
 
 /** Project a mode's sandbox profile into the runtime's config shape. */
@@ -184,7 +185,12 @@ export function profileToConfig(p: SandboxProfile): SandboxConfig {
   return {
     enabled: p.enabled,
     network: { allowedDomains: p.network?.allowedDomains, deniedDomains: p.network?.deniedDomains ?? [] },
-    filesystem: { denyRead: p.denyRead ?? [], allowWrite: p.allowWrite ?? [], denyWrite: p.denyWrite ?? [] },
+    filesystem: {
+      denyRead: p.denyRead ?? [],
+      ...(p.allowRead ? { allowRead: p.allowRead } : {}),
+      allowWrite: p.allowWrite ?? [],
+      denyWrite: p.denyWrite ?? [],
+    },
   };
 }
 
@@ -370,6 +376,7 @@ function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, o
   if (over.askOnBlockedHost === false) result.askOnBlockedHost = false; // silent-deny is stricter than asking
   if (over.allowWrite !== undefined) result.allowWrite = intersect(base.allowWrite, over.allowWrite);
   if (over.denyRead !== undefined) result.denyRead = union(base.denyRead, over.denyRead);
+  if (over.allowRead !== undefined) result.allowRead = intersect(base.allowRead, over.allowRead); // may only close carve-outs
   if (over.denyWrite !== undefined) result.denyWrite = union(base.denyWrite, over.denyWrite);
   if (over.network) {
     if (over.network.allowedDomains !== undefined) {

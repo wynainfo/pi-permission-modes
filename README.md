@@ -353,6 +353,7 @@ Modes are data, layered in this order:
         "writable": true,               // false = bash runs read-only (Plan-style)
         "allowWrite": [".", "/tmp/pi"],
         "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
+        "allowRead": [],                // readable again inside denyRead (see "Strict home" below)
         "denyWrite": [],
         "network": { "allowedDomains": ["github.com", "*.github.com"], "deniedDomains": [] },
         "askOnBlockedHost": true          // live prompt for hosts outside the allowlist (false = silent deny)
@@ -434,24 +435,30 @@ Add a mode under `modes` in the global config and (optionally) list it in
 > **Strict home (optional).** Reads outside the project are deny-listed, not
 > allow-listed: the sandbox blocks only `denyRead` (credential files and dirs
 > by default, see the defaults file) and lets everything else under `~` be
-> read so toolchains work. A cautious profile can mask private directories
-> too; paste into a mode's `denyRead` and keep what you can live without:
+> read so toolchains work. `allowRead` turns that around for a mode: deny
+> the whole home directory, then re-open only what the toolchain needs
+> (deny-then-allow; a more specific `denyRead` or a session block inside a
+> carve-out still wins). Paste into a mode's `sandbox` and trim the list:
 >
 > ```jsonc
-> "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc", "~/.git-credentials",
->              "~/.pypirc", "~/.gem/credentials", "~/.vault-token", "~/.password-store",
->              "~/.pi/agent/auth.json", "~/.pi/agent/oauth.json",
->              "~/Documents", "~/Desktop", "~/Downloads", "~/Pictures", "~/.config", "~/.local/share"]
+> "denyRead": ["~"],
+> "allowRead": [".", "/tmp/pi",
+>               "~/.cache", "~/.config", "~/.local", "~/.npm", "~/.nvm",
+>               "~/.cargo", "~/.rustup", "~/go", "~/.pyenv", "~/.gem"]
 > ```
 >
-> Tools that read their own config from `~/.config` (gh, many CLIs) or
-> `~/.local/share` will fail inside the sandbox with that list; drop those two
-> entries if the agent needs them. The shipped list deliberately leaves out
-> files tools read (`~/.config/gh/hosts.yml`, `~/.kube`, `~/.docker/config.json`,
-> `~/.npmrc`); add them yourself if the agent never needs those tools. Note
-> that `~/.pi/agent/auth.json` in the default list means a `pi` started from
-> inside sandboxed bash cannot authenticate; remove it if you spawn nested pi
-> sessions that way.
+> Keep `.` in the list: a read-only mode (Plan) does not re-expose the
+> project through `allowWrite`, and without it the project itself reads as
+> empty. Everything under `~` that is not listed reads as **absent** inside
+> bash (Linux mounts an empty directory over it; no error, no prompt), so a
+> tool that needs a home path you left out fails silently; `/sandbox` shows
+> the lists, and the awareness section tells the model what is masked.
+> `~/.config` and `~/.local` are where most CLIs keep both their settings and
+> their tokens (`gh`, many others); leave them out only if the agent never
+> needs those tools. A project config may remove carve-outs, never add them.
+> Note that `~/.pi/agent/auth.json` in the default `denyRead` means a `pi`
+> started from inside sandboxed bash cannot authenticate; remove it if you
+> spawn nested pi sessions that way.
 
 > **Temp directories, per platform.** The runtime *always* allows writes to its
 > own `/tmp/claude` (and, on macOS, to the user's `$TMPDIR` under

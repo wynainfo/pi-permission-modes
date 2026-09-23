@@ -56,6 +56,7 @@
         "allowWrite": { "type": "array", "items": { "type": "string" } },
         "denyWrite": { "type": "array", "items": { "type": "string" } },
         "denyRead": { "type": "array", "items": { "type": "string" } },
+        "allowRead": { "type": "array", "items": { "type": "string" }, "description": "Paths readable again inside a denyRead region (deny-then-allow). Projects may only remove entries." },
         "network": {
           "type": "object",
           "additionalProperties": false,

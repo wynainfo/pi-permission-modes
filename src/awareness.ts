@@ -93,6 +93,9 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   }
   if (sb.denyRead?.length) {
     lines.push(`- Reads are broadly allowed EXCEPT: ${sb.denyRead.join(", ")}.`);
+    if (sb.allowRead?.length) {
+      lines.push(`- Readable again inside those denied paths: ${sb.allowRead.map(renderWritePath).join(", ")}. Anything else under a denied path reads as absent.`);
+    }
   }
   if (sb.network?.allowedDomains === undefined) {
     lines.push("- Network is unrestricted in this mode (no allowlist configured).");

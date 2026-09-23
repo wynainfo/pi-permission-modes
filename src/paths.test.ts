@@ -352,6 +352,13 @@ test("blockablePath: exact files and leaf dirs yes; roots, home, ancestors, deni
   assert.equal(blockablePath(root, "/tmp/pi", { alsoInside: ["/tmp/pi/sess"] }), undefined); // ancestor of a writable root
   assert.equal(blockablePath(root, "/tmp/pi/other", { alsoInside: ["/tmp/pi/sess"] }), "/tmp/pi/other");
   assert.equal(blockablePath(root, path.join(home, ".ssh", "id_rsa"), { denyRead: ["~/.ssh"] }), undefined); // already masked
+  // Strict home: everything under ~ is masked except the allowRead carve-outs, which stay blockable.
+  const strict = { denyRead: ["~"], allowRead: [".", "~/.config"] };
+  assert.equal(blockablePath(root, path.join(home, "secret.txt"), strict), undefined); // masked by "~"
+  assert.equal(blockablePath(root, path.join(home, ".config", "gh", "hosts.yml"), strict), path.join(home, ".config", "gh", "hosts.yml")); // re-exposed: blockable
+  assert.equal(blockablePath(root, path.join(home, ".config"), strict), path.join(home, ".config")); // the carve-out itself
+  assert.equal(blockablePath(root, path.join(home, ".config", "..", "x"), strict), undefined); // normalizes back under "~"
+  assert.equal(blockablePath(root, path.join(home, "Documents"), { denyRead: ["~/.ssh"], allowRead: ["~/Documents/pub"] }), undefined); // ancestor of a carve-out: could not be masked whole
   assert.equal(displayPath(path.join(home, "a", "b")), "~/a/b");
   assert.equal(displayPath("/etc/x"), "/etc/x");
   assert.equal(canonicalPath(root, "../x"), path.join(home, "temp", "x"));

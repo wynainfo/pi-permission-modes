@@ -80,6 +80,12 @@ export interface SandboxProfile {
   allowWrite?: string[];
   denyWrite?: string[];
   denyRead?: string[];
+  /**
+   * Paths readable again inside a `denyRead` region (deny-then-allow). A
+   * more specific `denyRead` inside an `allowRead` entry still wins, and so
+   * does a session block. Project configs may only remove entries.
+   */
+  allowRead?: string[];
   network?: { allowedDomains?: string[]; deniedDomains?: string[] };
   /**
    * Ask the user live when bash tries to reach a host outside the allowlist

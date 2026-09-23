@@ -194,6 +194,7 @@ test("project: sandbox intersect/union + unsafe domains rejected", () => {
           sandbox: {
             allowWrite: ["."], // intersect with ['.','/tmp/pi'] → ['.']
             denyRead: ["~/.config"], // union
+            allowRead: ["~/.cache", "~/.local"], // intersect with the global carve-outs: a project cannot open new ones
             network: { allowedDomains: ["github.com", "*.com"] }, // *.com rejected
           },
         },
@@ -204,6 +205,7 @@ test("project: sandbox intersect/union + unsafe domains rejected", () => {
   const sb = c.modes.build.sandbox;
   assert.deepEqual(sb.allowWrite, ["."]); // intersected
   assert.ok(sb.denyRead?.includes("~/.config") && sb.denyRead?.includes("~/.ssh")); // unioned
+  assert.deepEqual(sb.allowRead, [], "the stock mode has no carve-outs, so the project cannot add any");
   assert.deepEqual(sb.network?.allowedDomains, ["github.com"]); // *.com dropped (intersect of safe)
   assert.ok(s.errors.some((e) => /overly-broad/.test(e)));
   s.cleanup();
@@ -254,6 +256,9 @@ test("profileToConfig: every list is an array, only allowedDomains may be absent
   assert.deepEqual(bare.network, { allowedDomains: undefined, deniedDomains: [] });
   const filtered = profileToConfig({ enabled: true, writable: true, network: { allowedDomains: [] } });
   assert.deepEqual(filtered.network.allowedDomains, []); // an empty list is kept: it filters everything
+  const carved = profileToConfig({ enabled: true, writable: true, denyRead: ["~"], allowRead: [".", "~/.cache"] });
+  assert.deepEqual(carved.filesystem, { denyRead: ["~"], allowRead: [".", "~/.cache"], allowWrite: [], denyWrite: [] });
+  assert.ok(!("allowRead" in bare.filesystem), "absent stays absent (the runtime treats undefined as none)");
   const denied = profileToConfig({ enabled: true, writable: true, network: { deniedDomains: ["evil.example"] } });
   assert.equal(denied.network.allowedDomains, undefined);
   assert.deepEqual(denied.network.deniedDomains, ["evil.example"]);
@@ -277,6 +282,20 @@ test("profileToConfig output validates against the runtime's SandboxRuntimeConfi
     checked.push(name);
   }
   assert.deepEqual(checked, ["default", "plan", "build"]);
+  // The README's strict-home shape (denyRead "~" with allowRead carve-outs) validates as well.
+  const strict = profileToConfig({ ...stock.modes.build.sandbox, denyRead: ["~"], allowRead: [".", "/tmp/pi", "~/.cache"] });
+  assert.doesNotThrow(() => runtimeSchema!.parse({ network: strict.network, filesystem: strict.filesystem }));
+});
+
+test("project: allowRead can only be narrowed, and only where the global mode has carve-outs", () => {
+  const s = sandbox({
+    global: { modes: { build: { sandbox: { denyRead: ["~"], allowRead: [".", "~/.cache", "~/.config"] } } } },
+    project: { modes: { build: { sandbox: { allowRead: ["~/.cache", "~/Secrets"] } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.denyRead, ["~"]);
+  assert.deepEqual(c.modes.build.sandbox.allowRead, ["~/.cache"], "kept what both list; ~/Secrets was never open");
+  s.cleanup();
 });
 
 test("persistModeRule: creates the global file with the learned rule, round-trips", () => {
