@@ -25,6 +25,42 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clears them together with the grants. Session lifetime only.
 
 ### Changed
+- **Sandbox runtime upgraded from `@anthropic-ai/sandbox-runtime` 0.0.26 to
+  0.0.77.** The runtime moved a long way in between, and several of this
+  extension's workarounds became upstream fixes:
+  - The `!` quoting bug is fixed in the runtime's own quoter. The
+    command-file launcher stays: it also sets `TMPDIR` and keeps long
+    heredocs clear of bubblewrap's argument cap.
+  - **Git worktrees and submodules sandbox normally on Linux.** The runtime
+    protects `.git/hooks` only when `.git` is a directory, so a gitfile no
+    longer breaks bubblewrap and the extension no longer degrades those
+    projects to prompting.
+  - An empty network allowlist starts the filtering proxy itself now, so the
+    reserved placeholder domain the extension used to inject is gone.
+  - The runtime removes the 0-byte mount points bubblewrap leaves for absent
+    protected dotfiles after every command; the extension's own sweep
+    remains as the fallback for a session that died mid-command.
+  - **Sandbox violations reach the model.** A run's output now ends with the
+    runtime's `<sandbox_violations>` block when a command tried to write
+    outside the writable roots or to reach a refused host (Linux: refused
+    write attempts via a seccomp observer; macOS: the system sandbox log).
+    Each run is attributed under its own id, with the real command text
+    rather than the launcher.
+  - Dependency problems are reported precisely: missing tools or a root
+    caller without `CAP_SETFCAP` degrade to prompting with the reason in the
+    footer; non-fatal findings (no seccomp helper for the architecture, so
+    unix sockets stay unrestricted) are shown once and listed by `/sandbox`.
+    A wrap-time refusal (`LinuxSandboxProfileError`) fails the command with
+    its code instead of a generic error. When bubblewrap itself cannot create
+    its namespaces the output says so and points at the Ubuntu 24.04
+    `kernel.apparmor_restrict_unprivileged_userns` sysctl (README, Install).
+  - Allowed hosts that resolve to loopback, link-local, this host, or a cloud
+    metadata address are refused by the runtime (see SECURITY.md).
+  - WSL1 is detected and reported as unsupported; native Windows stays
+    unsupported on the extension's side (the runtime's Windows sandbox is an
+    alpha that needs a separate install and integration).
+  - The package grew to about 9 MB on disk: the runtime vendors its seccomp
+    helper, a Java proxy agent, and a Windows binary.
 - **Default `denyRead` covers more credential files:** `~/.netrc`,
   `~/.git-credentials`, `~/.pypirc`, `~/.gem/credentials`, `~/.vault-token`,
   `~/.password-store`, and pi's own `~/.pi/agent/auth.json` and

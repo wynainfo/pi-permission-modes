@@ -77,7 +77,10 @@ you can rely on it appropriately.
   grants, `/net allow`, `/net open`/`alt+n`, and the model's
   `request_network_access` tool widen the reachable set **only through an
   explicit user action in the UI** - the model cannot grant itself access, but
-  everything you allow is exfiltration surface, and `/net open` disables the
+  everything you allow is exfiltration surface. The runtime refuses an allowed
+  name that resolves to loopback, link-local, this host's own addresses, or
+  a cloud metadata endpoint, so a permitted domain cannot be pointed at local
+  services through DNS. `/net open` disables the
   allowlist entirely for the session (shown orange in the footer). Interactive
   grants are user authority: they can reach past a project config's tightened
   allowlist, exactly like approving an out-of-project command. "Allow forever"
@@ -128,10 +131,18 @@ you can rely on it appropriately.
   **Native Windows has no sandbox**: the sandboxed modes degrade to prompting
   only, the network allowlist is not enforced, and `allowWrite` only feeds the
   prompt bounds. Run pi under WSL2 for OS-level enforcement.
-- **Git worktrees/submodules on Linux** can't be OS-sandboxed (bubblewrap can't
-  bind `.git/hooks` under a `.git` file); those projects degrade to prompting.
-  On macOS the `sandbox-exec` profile denies the `.git/hooks`/`.git/config`
-  paths instead of mounting them, so worktrees sandbox normally there.
+- **Pinned directories on Linux.** Every existing ancestor of a path the
+  sandbox protects (a denied read, a mandatory-deny dotfile, the runtime's
+  own binds) is a mount point inside the sandbox. Renaming or removing such a
+  directory from inside a sandboxed command fails with `EBUSY`, and `rm -rf`
+  of a nested repository leaves its `.git/hooks` and the pinned directories
+  behind. This is how bubblewrap works, not a containment gap; run the
+  removal outside the sandbox (it prompts) if you really mean it.
+- **Violation reports are best effort.** The `<sandbox_violations>` block is
+  diagnostic output for the model, gathered by observers that run beside the
+  sandbox (a seccomp write observer on Linux, the system sandbox log on
+  macOS). A refusal that goes unreported is still a refusal; the sandbox
+  never depends on the observers.
 
 ## Reporting a vulnerability
 

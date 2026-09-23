@@ -166,18 +166,25 @@ export const FALLBACK_CONFIG: PermissionModeConfig = {
 // Sandbox config shape (consumed by sandbox.ts / @anthropic-ai/sandbox-runtime)
 // ---------------------------------------------------------------------------
 
+/**
+ * The runtime's config (`SandboxRuntimeConfig`), as far as this extension
+ * fills it. `initialize()` dereferences `network` and `filesystem` and
+ * iterates the lists without validating, so every list is an array here.
+ * Only `allowedDomains` may stay undefined: that is how "unrestricted
+ * network" is expressed (an empty array filters every host).
+ */
 export interface SandboxConfig {
   enabled?: boolean;
-  network?: { allowedDomains?: string[]; deniedDomains?: string[] };
-  filesystem?: { denyRead?: string[]; allowWrite?: string[]; denyWrite?: string[] };
+  network: { allowedDomains?: string[]; deniedDomains: string[] };
+  filesystem: { denyRead: string[]; allowWrite: string[]; denyWrite: string[] };
 }
 
 /** Project a mode's sandbox profile into the runtime's config shape. */
 export function profileToConfig(p: SandboxProfile): SandboxConfig {
   return {
     enabled: p.enabled,
-    network: p.network,
-    filesystem: { denyRead: p.denyRead, allowWrite: p.allowWrite, denyWrite: p.denyWrite },
+    network: { allowedDomains: p.network?.allowedDomains, deniedDomains: p.network?.deniedDomains ?? [] },
+    filesystem: { denyRead: p.denyRead ?? [], allowWrite: p.allowWrite ?? [], denyWrite: p.denyWrite ?? [] },
   };
 }
 
@@ -186,8 +193,8 @@ export function profileToConfig(p: SandboxProfile): SandboxConfig {
  * stay. `keepWritable` survives (the session scratch dir, so temp files and
  * TMPDIR keep working in read-only modes).
  */
-export function readOnlyOverride(config: SandboxConfig | undefined, keepWritable: string[] = []): Partial<SandboxConfig> {
-  return { ...config, filesystem: { ...config?.filesystem, allowWrite: [...keepWritable] } };
+export function readOnlyOverride(config: SandboxConfig, keepWritable: string[] = []): SandboxConfig {
+  return { ...config, filesystem: { ...config.filesystem, allowWrite: [...keepWritable] } };
 }
 
 /**

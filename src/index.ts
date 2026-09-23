@@ -251,7 +251,7 @@ export default async function (pi: ExtensionAPI) {
 
   // Unsandboxed runs (YOLO, approved escapes, degraded) get TMPDIR pointed at
   // the scratch dir via the spawn hook; sandboxed runs get it from the runtime
-  // (CLAUDE_TMPDIR, set at session_start). Windows tools read TEMP/TMP.
+  // (CLAUDE_CODE_TMPDIR, set at session_start). Windows tools read TEMP/TMP.
   const localBash = createBashTool(root, {
     spawnHook: (c) => {
       if (!scratchDir) return c;
@@ -521,6 +521,7 @@ export default async function (pi: ExtensionAPI) {
           `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,
           `Allow write: ${c.filesystem?.allowWrite?.join(", ") || "(none)"}`,
           `Deny write:  ${c.filesystem?.denyWrite?.join(", ") || "(none)"}`,
+          ...(sandbox.dependencyWarnings.length > 0 ? ["", `Runtime warnings: ${sandbox.dependencyWarnings.join("; ")}`] : []),
         ].join("\n"),
         "info",
       );
@@ -686,10 +687,14 @@ export default async function (pi: ExtensionAPI) {
     const dir = path.join(base, scratchDirName(ctx.sessionManager.getSessionId?.()));
     if (ensureScratchDir(dir, { sharedBase: !scratchBaseOverridden() })) {
       scratchDir = dir;
-      process.env.CLAUDE_TMPDIR = dir; // the runtime points TMPDIR here inside sandboxed commands
+      // The runtime points TMPDIR here inside sandboxed commands (it reads the
+      // newer name first, the older one is kept for its 0.0.26-era behavior).
+      process.env.CLAUDE_CODE_TMPDIR = dir;
+      process.env.CLAUDE_TMPDIR = dir;
       sweepScratchDirs(base, dir);
     } else {
       scratchDir = undefined;
+      delete process.env.CLAUDE_CODE_TMPDIR;
       delete process.env.CLAUDE_TMPDIR;
       if (ctx.hasUI) ctx.ui.notify(`permission-mode: could not create the scratch directory ${dir}`, "warning");
     }

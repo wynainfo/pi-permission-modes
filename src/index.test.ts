@@ -216,6 +216,7 @@ async function setup(
       else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
       if (prevScratch === undefined) delete process.env.PI_PERMISSION_TMPDIR;
       else process.env.PI_PERMISSION_TMPDIR = prevScratch;
+      delete process.env.CLAUDE_CODE_TMPDIR;
       delete process.env.CLAUDE_TMPDIR;
       delete process.env.PI_PERMISSION_MODE;
       rmSync(base, { recursive: true, force: true });
@@ -309,7 +310,8 @@ test("session scratch dir: created per session, TMPDIR, in-bounds, advertised, s
   try {
     const dir = path.join(base, "sess-test");
     assert.ok(existsSync(dir), "scratch dir created from the session id");
-    assert.equal(process.env.CLAUDE_TMPDIR, dir); // the runtime points TMPDIR here inside the sandbox
+    assert.equal(process.env.CLAUDE_CODE_TMPDIR, dir); // the runtime points TMPDIR here inside the sandbox
+    assert.equal(process.env.CLAUDE_TMPDIR, dir); // the name older runtimes read
     assert.ok(!existsSync(stale), "stale sibling swept");
     assert.ok(existsSync(fresh), "fresh sibling kept");
 

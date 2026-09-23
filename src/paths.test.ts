@@ -4,8 +4,6 @@ import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  gitFileBlocksSandbox,
-  gitFileDegradesSandbox,
   isMarkdown,
   isOutside,
   isPlanFile,
@@ -67,37 +65,6 @@ test("isProtectedPath: does not flag look-alikes (no loose substring)", () => {
   assert.equal(isProtectedPath("src/.environment.ts"), false); // not .env / .env.*
   assert.equal(isProtectedPath("my.gitignore"), false);
   assert.equal(isProtectedPath("docs/environment.md"), false);
-});
-
-test("gitFileBlocksSandbox distinguishes 0-byte stub vs real gitfile", () => {
-  const t = tmpdir();
-  if (!existsSync(t)) mkdirSync(t, { recursive: true });
-  const base = mkdtempSync(path.join(t, "perm-git-"));
-  try {
-    // No .git → non-git project: sandbox stays on.
-    const none = path.join(base, "none");
-    mkdirSync(none, { recursive: true });
-    assert.equal(gitFileBlocksSandbox(none), false);
-
-    // Real .git directory → normal repo: sandbox on.
-    const repo = path.join(base, "repo");
-    mkdirSync(path.join(repo, ".git"), { recursive: true });
-    assert.equal(gitFileBlocksSandbox(repo), false);
-
-    // 0-byte .git → sandbox-planted placeholder: not a worktree (cleaned instead).
-    const stub = path.join(base, "stub");
-    mkdirSync(stub, { recursive: true });
-    writeFileSync(path.join(stub, ".git"), "");
-    assert.equal(gitFileBlocksSandbox(stub), false);
-
-    // Non-empty .git file → real worktree/submodule: degrade.
-    const wt = path.join(base, "worktree");
-    mkdirSync(wt, { recursive: true });
-    writeFileSync(path.join(wt, ".git"), "gitdir: /elsewhere\n");
-    assert.equal(gitFileBlocksSandbox(wt), true);
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
 });
 
 test("isPlanFile: markdown under the in-project plan/ dir only", () => {
@@ -283,25 +250,6 @@ test("sandboxAllowedRoots: allowWrite resolved to absolute roots + the runtime t
   // Read-only sandbox (Plan) keeps its roots: reads there are fine, writes fail in the sandbox as in-project.
   assert.ok(sandboxAllowedRoots(ROOT, { enabled: true, writable: false, allowWrite: ["/tmp"] }).includes("/tmp"));
   assert.deepEqual(sandboxAllowedRoots(ROOT, { enabled: true, writable: true }), SANDBOX_RUNTIME_TMP_PATHS);
-});
-
-test("gitFileDegradesSandbox: a worktree/submodule gitfile degrades on Linux only", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "perm-gitfile-"));
-  try {
-    writeFileSync(path.join(root, ".git"), "gitdir: /somewhere/.git/worktrees/x\n");
-    assert.equal(gitFileBlocksSandbox(root), true);
-    assert.equal(gitFileDegradesSandbox(root, "linux"), true); // bwrap binds .git/hooks
-    assert.equal(gitFileDegradesSandbox(root, "darwin"), false); // sandbox-exec denies paths, no mount
-    assert.equal(gitFileDegradesSandbox(root, "win32"), false); // no OS sandbox at all
-    // A 0-byte placeholder or a real .git directory never degrades anywhere.
-    writeFileSync(path.join(root, ".git"), "");
-    assert.equal(gitFileDegradesSandbox(root, "linux"), false);
-    rmSync(path.join(root, ".git"));
-    mkdirSync(path.join(root, ".git"));
-    assert.equal(gitFileDegradesSandbox(root, "linux"), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 });
 
 test("bashPathEscapes: an in-project symlink to an outside EXECUTABLE is not an escape (venv python)", () => {

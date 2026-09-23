@@ -245,14 +245,16 @@ export function resolvePlanPath(raw: unknown): string {
 }
 
 /**
- * The OS sandbox write-protects a fixed set of dotfiles/dirs at the project root
- * (its mandatory-deny list — `@anthropic-ai/sandbox-runtime`'s `DANGEROUS_FILES`
- * + `DANGEROUS_DIRECTORIES` + the `.claude/{commands,agents}` denies). When such
- * a path is ABSENT, the runtime denies it by mounting `/dev/null` over the first
- * missing component, and because the project is writable in Default/Build,
- * bubblewrap materializes that mountpoint as a **0-byte, read-only file** that
- * survives teardown — littering the project (and, for `.git`, breaking the next
- * run). These are the paths to clean up around every sandboxed run.
+ * The OS sandbox write-protects a fixed set of dotfiles/dirs at the project
+ * root (the runtime's mandatory-deny list: its `DANGEROUS_FILES` +
+ * `DANGEROUS_DIRECTORIES` + the `.claude/{commands,agents}` denies). When such
+ * a path is ABSENT, the runtime denies it by mounting `/dev/null` over the
+ * first missing component, and because the project is writable in
+ * Default/Build, bubblewrap materializes that mountpoint as a 0-byte,
+ * read-only file that survives teardown. The runtime removes its own mount
+ * points after every run (`cleanupAfterCommand`); this list is the fallback
+ * sweep for what a pi that died mid-command left behind (a stale `.git`
+ * would break the next run).
  */
 export const SANDBOX_PLACEHOLDER_PATHS = [
   ".git",
@@ -274,10 +276,11 @@ export const SANDBOX_PLACEHOLDER_PATHS = [
 
 /**
  * Delete any 0-byte placeholder files the sandbox left at the project root.
- * Only removes a path that is a **0-byte regular file** — a legitimate version
+ * Only removes a path that is a **0-byte regular file** - a legitimate version
  * of any of these is a directory (`.git`, `.vscode`, `.idea`, `.claude`) or a
  * non-empty file (`.gitmodules`, `.mcp.json`, shell rc files), so real files and
- * dirs are never touched. Called before & after each sandboxed run; best-effort.
+ * dirs are never touched. Called at init and around each sandboxed run as the
+ * crash fallback (the runtime cleans up after itself); best-effort.
  * Returns the number of placeholders removed.
  */
 export function removeSandboxPlaceholders(root: string): number {
@@ -295,33 +298,6 @@ export function removeSandboxPlaceholders(root: string): number {
     }
   }
   return removed;
-}
-
-/**
- * True when `<root>/.git` is a **real gitfile** (a non-empty file) — i.e. a git
- * worktree or submodule. bubblewrap can't bind `.git/hooks` under a file, and
- * unlike the 0-byte placeholder this file is legitimate and must NOT be deleted,
- * so the sandbox degrades to prompting for these projects. (A 0-byte `.git`
- * placeholder returns false here — it's cleaned up instead, see `removeSandboxPlaceholders`.)
- */
-export function gitFileBlocksSandbox(root: string): boolean {
-  try {
-    const st = statSync(path.join(root, ".git"));
-    return !st.isDirectory() && !(st.isFile() && st.size === 0);
-  } catch {
-    return false; // no .git → normal non-git project, sandbox is fine
-  }
-}
-
-/**
- * True when the project's gitfile must degrade the OS sandbox on THIS
- * platform. Only the Linux runtime (bubblewrap) bind-mounts `<cwd>/.git/hooks`
- * and fails through a `.git` file; the macOS runtime (sandbox-exec) protects
- * git by denying the `.git/hooks` and `.git/config` paths in its profile and
- * never mounts anything, so worktrees and submodules sandbox normally there.
- */
-export function gitFileDegradesSandbox(root: string, platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "linux" && gitFileBlocksSandbox(root);
 }
 
 /**

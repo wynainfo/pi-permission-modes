@@ -61,6 +61,15 @@ sudo apt install -y bubblewrap socat ripgrep
   sandboxed modes fall back to prompting.
 - `ripgrep` - provides `rg`.
 
+> **Ubuntu 24.04 and newer** (desktop and server; WSL2 images usually do
+> not) enable `kernel.apparmor_restrict_unprivileged_userns`, which strips
+> the capabilities bubblewrap and the runtime's seccomp helper need. Every
+> sandboxed command then fails with `bwrap: ... Operation not permitted` and
+> nothing runs. Either disable the restriction
+> (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, persist it
+> in `/etc/sysctl.d/`) or grant `userns` to `bwrap` in an AppArmor profile.
+> WSL1 has no user namespaces at all; the sandbox reports it as unsupported.
+
 On **macOS** the sandbox uses the built-in `sandbox-exec` - no extra packages.
 
 > **Native Windows: no sandbox.** There is no OS-level sandbox on Windows and
@@ -118,32 +127,35 @@ project intends, and the sandbox still governs what it may touch. Symlinks to
 outside directories or non-executable files stay escapes.
 
 > **When the sandbox is unavailable** (missing dependency, init failure,
-> `--no-sandbox`, or - on Linux - the project is a **git worktree/submodule**, see below):
-> Default/Plan/Build show `(!) <reason>` in the footer, and in-project `bash` that
-> would have been sandboxed instead **prompts** for confirmation - you are never
-> silently unprotected.
+> unsupported platform, `--no-sandbox`): Default/Plan/Build show
+> `(!) <reason>` in the footer, and in-project `bash` that would have been
+> sandboxed instead **prompts** for confirmation - you are never silently
+> unprotected.
+
+> **Sandbox violations are reported to the model.** When a sandboxed command
+> tries to write outside the mode's writable roots or to reach a host the
+> allowlist refused, its output ends with a `<sandbox_violations>` block
+> naming the path or host, so the model can adjust instead of guessing why
+> a step failed. Linux reports refused write attempts (a denied read just
+> returns nothing, there is no failing syscall to observe); macOS reports
+> both through the system sandbox log.
 
 > **Sandbox placeholder cleanup:** the sandbox runtime write-protects a fixed set
-> of dotfiles/dirs at the project root (`.git`, `.gitconfig`, `.gitmodules`,
-> `.bashrc`/`.zshrc`/… shell rc files, `.npmrc`, `.ripgreprc`, `.mcp.json`,
-> `.vscode`, `.idea`, `.claude/{commands,agents}`). When one of these is **absent**,
-> it blocks the path by mounting `/dev/null` over the first missing component, and -
-> because the project is writable in Default/Build - bubblewrap materializes that
-> mountpoint as a **0-byte, read-only file** that survives teardown (and, for
-> `.git`, would break the next command). The extension keeps such projects **fully
-> sandboxed** and deletes these 0-byte placeholders before and after every
-> sandboxed run, so nothing accumulates. Only 0-byte *files* are removed - real
-> directories (`.vscode/`, `.git/`, …) and non-empty files (`.gitmodules`, …) are
-> never touched.
+> of dotfiles/dirs at the project root (`.git/hooks`, `.gitconfig`, `.gitmodules`,
+> `.bashrc`/`.zshrc`/… shell rc files, `.ripgreprc`, `.mcp.json`, `.vscode`,
+> `.idea`, `.claude/{commands,agents}`). When one of these is **absent**, it
+> blocks the path by mounting `/dev/null` over the first missing component, and
+> because the project is writable in Default/Build, bubblewrap materializes that
+> mountpoint as a **0-byte, read-only file**. The runtime removes its own mount
+> points after every command; the extension additionally sweeps such 0-byte
+> files at startup and around each run, for the case where a pi died
+> mid-command. Only 0-byte *files* are removed - real directories (`.vscode/`,
+> `.git/`, …) and non-empty files (`.gitmodules`, …) are never touched.
 >
-> **On Linux**, a **real git worktree/submodule** (`.git` is a *non-empty* file
-> pointing at the real gitdir) genuinely can't be sandboxed - bubblewrap can't
-> bind `.git/hooks` under a file, and that file is legitimate so we won't delete
-> it. There the extension disables the sandbox for the project (falling back to
-> prompting) instead of letting every command fail with `bwrap: ... Not a
-> directory`. Use a normal clone for full Build-mode sandboxing. **On macOS**
-> worktrees and submodules sandbox normally: `sandbox-exec` protects git by
-> denying the `.git/hooks` and `.git/config` paths, no mount involved.
+> **Git worktrees and submodules** (`.git` is a file pointing at the real git
+> dir) sandbox normally on every platform: the runtime protects `.git/hooks`
+> only when `.git` is a directory, and the real git dir lies outside the
+> project, where the sandbox does not allow writes anyway.
 
 ### Scratch directory
 

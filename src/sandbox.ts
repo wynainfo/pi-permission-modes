@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
-import { gitFileDegradesSandbox, removeSandboxPlaceholders } from "./paths.ts";
+import { removeSandboxPlaceholders } from "./paths.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
 
@@ -29,26 +29,29 @@ const EXTENSION_DIR = fileURLToPath(new URL("..", import.meta.url));
 // Command transport: keep the command text out of the runtime's shell quoting
 // ---------------------------------------------------------------------------
 //
-// wrapWithSandbox embeds the command in a `bash -c` string that it quotes with
-// the shell-quote package - up to three times over on Linux (eval line, inner
-// script, outer bwrap line). Whenever the command contains a single quote,
-// shell-quote picks its double-quoted form and escapes `!` as `\!`, which bash
-// keeps LITERALLY inside double quotes (only $ ` " \ are unescaped there). So
-// every heredoc, `python3 -c '...'`, or `printf` with an exclamation mark
-// reached the sandboxed shell as `\!`: no error, just corrupted bytes.
+// wrapWithSandbox embeds the command in a `bash -c` string that it quotes,
+// up to three times over on Linux (eval line, inner script, outer bwrap
+// line). Up to sandbox-runtime 0.0.26 that quoter was the npm shell-quote
+// package, which escaped `!` as `\!` inside double quotes, so every heredoc,
+// `python3 -c '...'`, or `printf` with an exclamation mark reached the
+// sandboxed shell corrupted. 0.0.77 ships its own single-quote quoter and
+// that bug is gone upstream.
 //
-// The fix never lets the command text near that quoting: the command goes into
-// a private file on the host side (a directory the sandbox cannot write to,
-// mode 0700/0600) and the runtime gets a LAUNCHER that contains neither a
-// single quote nor an exclamation mark, so every quoting pass leaves it alone:
+// The launcher stays anyway. It never lets the command text near any quoting
+// pass, present or future: the command goes into a private file on the host
+// side (a directory the sandbox cannot write to, mode 0700/0600) and the
+// runtime gets a LAUNCHER that contains neither a single quote nor an
+// exclamation mark, so every quoting pass leaves it alone:
 //
 //   bash -c "$(<"/path/to/cmd")"
 //
-// The innermost bash reads the file with the `$(<file)` builtin and runs the
-// content as an ordinary `bash -c` script: same $0, same "bash: line N" error
-// prefixes, same exit status. No `exec`, on purpose - the runtime's network
-// bridge runs the command from a shell whose EXIT trap stops its socat
-// helpers, and that shell has to stay alive to fire it.
+// It also sets TMPDIR for the run (see commandLauncher) and keeps long
+// heredocs clear of bwrap's argument cap, which counts the whole quoted
+// command line. The innermost bash reads the file with the `$(<file)` builtin
+// and runs the content as an ordinary `bash -c` script: same $0, same
+// "bash: line N" error prefixes, same exit status. No `exec`, on purpose -
+// the runtime's network bridge runs the command from a shell whose EXIT trap
+// stops its socat helpers, and that shell has to stay alive to fire it.
 
 /** Characters that must not appear in a launcher (they'd re-enter the quoting problem). */
 const LAUNCHER_UNSAFE = /['!"$`\\]/;
@@ -107,6 +110,35 @@ export function writeCommandFile(command: string, dir: string | undefined = comm
 }
 
 /**
+ * The first bytes of a run's stderr, kept to recognize a sandbox that could
+ * not even start (bubblewrap refused its namespaces) once the child is gone.
+ */
+class StderrHead {
+  private text = "";
+  add(chunk: Buffer | string): void {
+    if (this.text.length < 4096) this.text += String(chunk).slice(0, 4096 - this.text.length);
+  }
+  /** A hint for the model/user when bwrap itself failed, else undefined. */
+  namespaceHint(): string | undefined {
+    if (!/\bbwrap: .*(Operation not permitted|Permission denied|No permissions to create)/i.test(this.text)) return undefined;
+    return (
+      "\n[permission-mode] sandbox: bubblewrap could not set up its namespaces, so the command did not run. " +
+      "On Ubuntu 24.04+ (also under WSL2) this usually means kernel.apparmor_restrict_unprivileged_userns=1; " +
+      "see README, Install. Nothing ran unsandboxed.\n"
+    );
+  }
+}
+
+/** Runtime errors carry a `.code` (LinuxSandboxProfileError); keep it in the message the caller sees. */
+function runError(err: unknown): Error {
+  const e = err as { name?: unknown; code?: unknown; message?: unknown } | null;
+  if (e && typeof e === "object" && e.name === "LinuxSandboxProfileError" && typeof e.code === "string") {
+    return new Error(`sandbox profile error (${e.code}): ${String(e.message)}`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
  * BashOperations backed by `SandboxManager.wrapWithSandbox`. An optional
  * `customConfig` overrides the init-time config per command (used to drop write
  * access in Read mode without re-initializing the sandbox).
@@ -135,21 +167,52 @@ export function createSandboxedBashOps(
       if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
       if (signal?.aborted) throw new Error("aborted"); // never spawn for a call that is already cancelled
       drainBlockedHosts?.(); // discard denials that belong to earlier runs
-      // Clear any leftover 0-byte placeholders the sandbox plants for its
-      // mandatory-deny paths (a stale .git would also break this run).
+      // The runtime removes the mount points it plants for absent mandatory
+      // deny paths after each run (cleanupAfterCommand below); this sweep only
+      // catches what a pi that died mid-command left behind (a stale 0-byte
+      // .git would break this run).
       removeSandboxPlaceholders(cwd);
       // Command transport (see above): the runtime quotes what we hand it, so
       // hand it a launcher and keep the real command in a file.
       const commandFile = writeCommandFile(command);
       const tmpdir = typeof env?.TMPDIR === "string" ? env.TMPDIR : undefined;
       const launcher = commandFile ? commandLauncher(commandFile, tmpdir) : undefined;
+      // Violations the runtime observes while the command runs (refused
+      // writes, denied hosts) are filed under this id; the ORIGINAL command
+      // is what they report, not the launcher.
+      const commandId = `pi-${randomBytes(8).toString("hex")}`;
+      const emitViolations = () => {
+        let block = "";
+        try {
+          block = SandboxManager.annotateStderrWithSandboxFailures?.(commandId, "")?.trim() ?? "";
+        } catch {
+          return;
+        }
+        if (block) onData(Buffer.from(`\n${block}\n`));
+      };
+      let wrapped: string;
       try {
         // The signal rides into the runtime too (its project scan can take a
         // while on big trees); an abort during the wrap must not start the run.
-        const wrapped = await SandboxManager.wrapWithSandbox(launcher ?? command, undefined, customConfig as never, signal as never);
+        wrapped = await SandboxManager.wrapWithSandbox(launcher ?? command, undefined, customConfig as never, signal as never, {
+          commandId,
+          commandText: command,
+        });
+      } catch (err) {
+        // A wrap that threw released what it held; the runtime must NOT be
+        // asked to clean up after it (that would detach a concurrent run's
+        // mount points).
+        if (commandFile) rmSync(commandFile, { force: true });
+        throw runError(err);
+      }
+      // From here on the runtime holds this run's mount points and profile:
+      // cleanupAfterCommand() runs exactly once, after the child is gone,
+      // whatever way we leave (normal close, abort/timeout, spawn failure).
+      try {
         if (signal?.aborted) throw new Error("aborted");
+        const head = new StderrHead();
         // `await` so the finally runs after the child exits, not after the
-        // Promise is constructed — otherwise cleanup would race the run.
+        // Promise is constructed - otherwise cleanup would race the run.
         return await new Promise((resolve, reject) => {
           const child = spawn("bash", ["-c", wrapped], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
           let timedOut = false;
@@ -170,7 +233,10 @@ export function createSandboxedBashOps(
             }, timeout * 1000);
           }
           child.stdout?.on("data", onData);
-          child.stderr?.on("data", onData);
+          child.stderr?.on("data", (chunk: Buffer) => {
+            head.add(chunk);
+            onData(chunk);
+          });
           const onAbort = () => kill();
           child.on("error", (err) => {
             if (timer) clearTimeout(timer);
@@ -182,16 +248,27 @@ export function createSandboxedBashOps(
           child.on("close", (code) => {
             if (timer) clearTimeout(timer);
             signal?.removeEventListener("abort", onAbort);
-            emitBlockedHint();
-            if (signal?.aborted) reject(new Error("aborted"));
-            else if (timedOut) reject(new Error(`timeout:${timeout}`));
-            else resolve({ exitCode: code });
+            // The violation monitors report over sockets of their own; give
+            // events already sent one turn of the loop to land before reading.
+            setImmediate(() => {
+              emitBlockedHint();
+              emitViolations();
+              if (code !== 0) {
+                const hint = head.namespaceHint();
+                if (hint) onData(Buffer.from(hint));
+              }
+              if (signal?.aborted) reject(new Error("aborted"));
+              else if (timedOut) reject(new Error(`timeout:${timeout}`));
+              else resolve({ exitCode: code });
+            });
           });
         });
       } finally {
-        // Always delete the placeholders bwrap just planted, regardless of how
-        // we leave: normal close, abort/timeout rejection, a throw from
-        // wrapWithSandbox, or a synchronous spawn failure.
+        try {
+          SandboxManager.cleanupAfterCommand?.();
+        } catch {
+          // best effort: the sweep below and the runtime's exit handler remain
+        }
         removeSandboxPlaceholders(cwd);
         if (commandFile) rmSync(commandFile, { force: true });
       }
@@ -200,26 +277,10 @@ export function createSandboxedBashOps(
 }
 
 /**
- * The runtime starts its filtering proxy (and consults the ask callback)
- * ONLY when the allowlist is non-empty; an empty `allowedDomains` gets a bare
- * `--unshare-net` with no proxy, so the live prompts, `/net allow`, `/net
- * open`, and `request_network_access` would all be inert while the UI claims
- * otherwise. A reserved `.invalid` name (RFC 2606, never resolvable) stands in
- * so the proxy path always exists; it matches no real host.
- */
-export const EMPTY_ALLOWLIST_SENTINEL = "allowlist-empty.invalid";
-
-function runtimeNetwork(network: SandboxConfig["network"]): SandboxConfig["network"] {
-  if (network?.allowedDomains && network.allowedDomains.length === 0) {
-    return { ...network, allowedDomains: [EMPTY_ALLOWLIST_SENTINEL] };
-  }
-  return network;
-}
-
-/**
  * True when a profile filters network traffic at all: the runtime restricts
- * the network only when `allowedDomains` is DEFINED (an empty list blocks
- * everything but the prompt flow; an absent list means unrestricted).
+ * the network only when `allowedDomains` is DEFINED (an empty list starts the
+ * proxy too, so every host goes through the prompt flow; an absent list means
+ * unrestricted).
  */
 export function networkFiltered(profile: SandboxProfile): boolean {
   return profile.enabled && profile.network?.allowedDomains !== undefined;
@@ -269,7 +330,7 @@ export class SandboxController {
   private runtimeInitialized = false;
   /** applyProfile calls are serialized: the runtime ignores a second initialize while one is in flight. */
   private applying: Promise<void> = Promise.resolve();
-  /** Platform/dependency/git issue — never (re)initialize the runtime. */
+  /** Platform or dependency issue - never (re)initialize the runtime. */
   private degraded = false;
   private hasUI = false;
   private notifyFn: Notify = () => {};
@@ -278,6 +339,8 @@ export class SandboxController {
   ready = false;
   disabled = false;
   warn: string | undefined;
+  /** Non-fatal findings of the runtime's dependency check (shown once, listed by /sandbox). */
+  dependencyWarnings: string[] = [];
 
   /** The active runtime, or null when unavailable. */
   get sandboxManager(): SandboxManagerType | null {
@@ -321,6 +384,7 @@ export class SandboxController {
     this.warn = undefined;
     this.manager = null;
     this.appliedKey = undefined;
+    this.dependencyWarnings = [];
     this.hasUI = hasUI;
     this.notifyFn = notify;
     this.askHost = askHost;
@@ -332,8 +396,10 @@ export class SandboxController {
       this.profile = profile;
       return;
     }
-    if (process.platform !== "darwin" && process.platform !== "linux") {
-      this.warn = `sandbox unsupported on ${process.platform}`;
+    if (process.platform === "win32") {
+      // The runtime's Windows sandbox (alpha) needs a one-time elevated
+      // install and an argv-based wrap; not integrated yet, see README.
+      this.warn = "sandbox unsupported on Windows (run pi under WSL2)";
       this.degraded = true;
       this.profile = profile;
       return;
@@ -350,35 +416,53 @@ export class SandboxController {
         : `sandbox load failed: ${err instanceof Error ? err.message : String(err)}`;
       if (hasUI) {
         notify(
-          `permission-mode: OS sandbox unavailable — protection is heuristic-only.\n${this.warn}\n` +
+          `permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${this.warn}\n` +
             SandboxController.installHint(),
         );
       }
       return;
     }
 
-    // Clear any 0-byte placeholders left by a prior sandboxed run (incl. a stale
-    // .git), so .git below isn't mistaken for a worktree.
-    removeSandboxPlaceholders(cwd);
-
-    // bubblewrap (Linux) unconditionally binds <cwd>/.git/hooks; if .git is a
-    // REAL file (git worktree/submodule) that bind fails and every sandboxed
-    // command errors — and we must not delete that legitimate file. Degrade to
-    // prompting there. macOS's sandbox-exec profile denies the git paths
-    // instead of mounting them, so worktrees sandbox normally on macOS.
-    if (gitFileDegradesSandbox(cwd)) {
+    if (!this.manager.isSupportedPlatform()) {
+      // WSL1 has no bubblewrap support; the runtime knows the platforms it runs on.
+      this.warn = `sandbox unsupported on this platform${process.platform === "linux" ? " (WSL1?)" : ""}`;
       this.degraded = true;
       this.profile = profile;
-      this.warn = "sandbox off: project .git is a file (worktree/submodule); bwrap can't bind .git/hooks";
+      if (hasUI) notify(`permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${this.warn}`);
+      return;
+    }
+
+    // Dependencies, checked here rather than left to initialize(): its errors
+    // (missing bwrap/socat/ripgrep, a root caller without CAP_SETFCAP) become
+    // the footer reason plus the fix-it hint, and its warnings (no seccomp
+    // helper for this architecture, so unix sockets stay unrestricted) are
+    // shown once instead of vanishing.
+    let deps: { errors: string[]; warnings: string[] };
+    try {
+      deps = await this.manager.checkDependenciesAsync();
+    } catch (err) {
+      deps = { errors: [err instanceof Error ? err.message : String(err)], warnings: [] };
+    }
+    if (deps.errors.length > 0) {
+      this.degraded = true;
+      this.profile = profile;
+      this.warn = `sandbox dependencies: ${deps.errors.join("; ")}`;
       if (hasUI) {
         notify(
-          "permission-mode: OS sandbox disabled for this project — its `.git` is a file (git worktree/submodule), " +
-            "which bubblewrap can't sandbox on Linux. In-project bash will prompt for confirmation instead. " +
-            "Use a normal clone for full sandboxing.",
+          `permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${this.warn}\n` +
+            SandboxController.installHint(),
         );
       }
-      return; // leave ready=false → the sandboxed modes degrade to prompting
+      return;
     }
+    this.dependencyWarnings = deps.warnings;
+    if (deps.warnings.length > 0 && hasUI) {
+      notify(`permission-mode: sandbox dependency warning(s): ${deps.warnings.join("; ")}`);
+    }
+
+    // Clear any 0-byte placeholders a pi that died mid-command left behind
+    // (a stale .git would break every run).
+    removeSandboxPlaceholders(cwd);
 
     await this.applyProfile(profile);
   }
@@ -414,9 +498,16 @@ export class SandboxController {
       // silently failing; it reads live session state, so grants/`/net open`
       // apply instantly without re-initializing.
       const ask = this.askHost;
+      // Third argument: the violation monitors (macOS log stream, Linux
+      // seccomp write observer) that feed the <sandbox_violations> block a
+      // run's output ends with. Always on: a headless pi's model reads that
+      // output too. The Linux observer judges writes by the init-time lists,
+      // so a Plan-mode (per-wrap read-only) refusal is not reported; the
+      // block is best effort, the refusal itself is not.
       await this.manager.initialize(
-        { network: runtimeNetwork(cfg.network), filesystem: cfg.filesystem } as never,
+        cfg as never,
         ask ? (p: { host: string; port?: number }) => ask(p.host, p.port) : undefined,
+        true,
       );
       this.runtimeInitialized = true;
       this.ready = true;

@@ -54,7 +54,7 @@
     "video": "https://github.com/wynainfo/pi-permission-modes/releases/download/v2.1.0/pi-permission-modes-demo-web.mp4"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "0.0.26",
+    "@anthropic-ai/sandbox-runtime": "0.0.77",
     "tree-sitter-bash": "^0.25.1",
     "web-tree-sitter": "^0.25.10"
   },

@@ -1,29 +1,24 @@
 /**
  * Command transport tests for sandbox.ts: the launcher must carry a command
  * through the runtime's shell quoting byte-for-byte. The runtime itself needs
- * bubblewrap/sandbox-exec, so this exercises the two things we control - the
- * launcher string and the file it points at - through a real bash, including
- * the nested shell-quote passes the runtime applies (shell-quote is the
- * runtime's own dependency, resolved from its node_modules).
+ * bubblewrap/sandbox-exec, so this exercises the things we control - the
+ * launcher string, the file it points at, and the exec wrapper around a fake
+ * runtime - through a real bash, including the nested quoting passes the
+ * runtime applies (its own quoter, resolved from the installed package).
  */
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { commandLauncher, createSandboxedBashOps, EMPTY_ALLOWLIST_SENTINEL, networkFiltered, withDeniedReads, writeCommandFile } from "./sandbox.ts";
+import { commandLauncher, createSandboxedBashOps, networkFiltered, withDeniedReads, writeCommandFile } from "./sandbox.ts";
 
-const quote: ((xs: string[]) => string) | undefined = (() => {
-  try {
-    return (createRequire(import.meta.url)("shell-quote") as { quote: (xs: string[]) => string }).quote;
-  } catch {
-    return undefined;
-  }
-})();
-const skipQuote = quote ? false : "shell-quote (sandbox-runtime dependency) not installed";
+const quote: ((xs: readonly string[]) => string) | undefined = await import("@anthropic-ai/sandbox-runtime/dist/utils/shell-quote.js")
+  .then((m) => (m as { quote: (xs: readonly string[]) => string }).quote)
+  .catch(() => undefined);
+const skipQuote = quote ? false : "sandbox-runtime not installed";
 
 const runBash = (script: string): string => execFileSync("bash", ["-c", script], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
@@ -92,23 +87,16 @@ test("launcher runs the file content as a bash -c script: bytes, exit status, he
   }
 });
 
-test("through the runtime's nested shell-quote passes: raw command is mangled, launcher is not", { skip: skipQuote }, () => {
+test("through the runtime's nested quoting passes: raw command and launcher both arrive byte-for-byte", { skip: skipQuote }, () => {
   const q = quote!;
   const dir = mkdtempSync(path.join(tmpdir(), "perm-quote-"));
   try {
-    // Control: the historic path. `!` arrives as `\!` (SyntaxWarning/garbage), proving the bug.
+    // 0.0.26 corrupted `!` to `\!` here; the runtime's own quoter (0.0.77)
+    // single-quotes and leaves the raw command intact. The launcher is kept
+    // for TMPDIR and long commands, and must keep surviving the same passes.
     const simple = "python3 -c 'print(\"a!b\")' 2>/dev/null || printf '%s\\n' 'a!b'";
-    const rawOut = (() => {
-      try {
-        return runBash(throughRuntimeQuoting(q, simple));
-      } catch (e) {
-        return (e as { stdout: string }).stdout;
-      }
-    })();
-    assert.notEqual(rawOut, "a!b\n", "control: the raw command must be corrupted by the quoting (else the bug is gone upstream)");
-    assert.match(rawOut, /\\!/);
+    assert.equal(runBash(throughRuntimeQuoting(q, simple)), "a!b\n");
 
-    // The launcher survives the same passes byte-for-byte.
     const file = writeCommandFile(TRICKY, dir)!;
     const launcher = commandLauncher(file)!;
     let out = "";
@@ -147,20 +135,21 @@ test("writeCommandFile default dir lives under /tmp (not under an inherited TMPD
   }
 });
 
-test("networkFiltered / sentinel: an absent allowlist is unrestricted, an empty one is filtered", () => {
+test("networkFiltered: an absent allowlist is unrestricted, an empty one is filtered", () => {
   assert.equal(networkFiltered({ enabled: true, writable: true }), false);
   assert.equal(networkFiltered({ enabled: true, writable: true, network: {} }), false);
   assert.equal(networkFiltered({ enabled: true, writable: true, network: { allowedDomains: [] } }), true);
   assert.equal(networkFiltered({ enabled: false, writable: true, network: { allowedDomains: ["a"] } }), false);
-  assert.match(EMPTY_ALLOWLIST_SENTINEL, /\.invalid$/); // RFC 2606: never resolvable
 });
 
 test("exec: an aborted signal never spawns; an abort during the wrap kills before the command completes", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "perm-abort-"));
   const marker = path.join(dir, "marker");
   // Fake runtime: the wrap takes 200 ms and returns the command unchanged.
+  let cleanups = 0;
   const fakeManager = {
     wrapWithSandbox: (cmd: string) => new Promise<string>((r) => setTimeout(() => r(cmd), 200)),
+    cleanupAfterCommand: () => cleanups++,
   } as unknown as Parameters<typeof createSandboxedBashOps>[0];
   const ops = createSandboxedBashOps(fakeManager);
   const run = (signal: AbortSignal) =>
@@ -180,6 +169,7 @@ test("exec: an aborted signal never spawns; an abort during the wrap kills befor
     assert.ok(Date.now() - t1 < 450, `killed promptly (took ${Date.now() - t1} ms)`);
     await new Promise((r) => setTimeout(r, 700));
     assert.ok(!existsSync(marker), "the command did not complete after the abort");
+    assert.equal(cleanups, 1, "only the wrap that produced a run is cleaned up after");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -191,4 +181,85 @@ test("withDeniedReads: appends session blocks to denyRead of a sandboxed profile
   assert.equal(withDeniedReads(p, []), p);
   const yolo = { enabled: false, writable: true };
   assert.equal(withDeniedReads(yolo, ["/x"]), yolo);
+});
+
+/** A fake runtime that records the wrapper's calls in order and returns the command unchanged. */
+function fakeRuntime(opts: { violations?: string; wrapError?: unknown } = {}) {
+  const calls: string[] = [];
+  const wraps: Array<{ command: string; options: unknown; hasSignal: boolean }> = [];
+  const manager = {
+    async wrapWithSandbox(cmd: string, _shell: unknown, _cfg: unknown, signal: unknown, options: unknown) {
+      calls.push("wrap");
+      wraps.push({ command: cmd, options, hasSignal: signal !== undefined });
+      if (opts.wrapError) throw opts.wrapError;
+      return cmd;
+    },
+    annotateStderrWithSandboxFailures(id: string, stderr: string) {
+      calls.push(`annotate:${id}`);
+      return opts.violations ? `${stderr}\n<sandbox_violations>\n${opts.violations}\n</sandbox_violations>` : stderr;
+    },
+    cleanupAfterCommand() {
+      calls.push("cleanup");
+    },
+  };
+  return { calls, wraps, manager: manager as unknown as Parameters<typeof createSandboxedBashOps>[0] };
+}
+
+test("exec: wraps the launcher under a per-run id with the ORIGINAL command as commandText; cleans up once, after the run", async () => {
+  const rt = fakeRuntime();
+  const ops = createSandboxedBashOps(rt.manager);
+  let out = "";
+  const command = "printf '%s\\n' \"it's a! test\"";
+  const res = await ops.exec(command, process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
+  assert.equal(res.exitCode, 0);
+  assert.equal(out, "it's a! test\n");
+  assert.equal(rt.wraps.length, 1);
+  const w = rt.wraps[0];
+  assert.match(w.command, /^bash -c "\$\(<"/, "the runtime gets the launcher, not the command");
+  const o = w.options as { commandId: string; commandText: string };
+  assert.match(o.commandId, /^pi-[0-9a-f]{16}$/);
+  assert.equal(o.commandText, command);
+  assert.deepEqual(rt.calls, ["wrap", `annotate:${o.commandId}`, "cleanup"], "violations are read for the same id, cleanup is last");
+  rt.calls.length = 0;
+  await ops.exec("true", process.cwd(), { onData: () => {}, signal: undefined as never, timeout: 10 });
+  const second = (rt.wraps[1].options as { commandId: string }).commandId;
+  assert.notEqual(second, o.commandId, "a fresh id per run");
+  assert.equal(rt.calls.filter((c) => c === "cleanup").length, 1);
+});
+
+test("exec: the runtime's violation block is appended to the output the model sees", async () => {
+  const rt = fakeRuntime({ violations: "write /etc/nope" });
+  const ops = createSandboxedBashOps(rt.manager);
+  let out = "";
+  await ops.exec("echo hi", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
+  assert.equal(out, "hi\n\n<sandbox_violations>\nwrite /etc/nope\n</sandbox_violations>\n");
+});
+
+test("exec: a wrap that throws is surfaced with the runtime's error code and is NOT cleaned up after", async () => {
+  const err = Object.assign(new Error("profile holds more mounts than bubblewrap parses"), { name: "LinuxSandboxProfileError", code: "too_many_arguments" });
+  const rt = fakeRuntime({ wrapError: err });
+  const ops = createSandboxedBashOps(rt.manager);
+  await assert.rejects(
+    ops.exec("true", process.cwd(), { onData: () => {}, signal: undefined as never, timeout: 10 }),
+    /sandbox profile error \(too_many_arguments\): profile holds more mounts/,
+  );
+  assert.deepEqual(rt.calls, ["wrap"], "no cleanup for a wrap that released its own state");
+  const plain = fakeRuntime({ wrapError: new Error("boom") });
+  await assert.rejects(createSandboxedBashOps(plain.manager).exec("true", process.cwd(), { onData: () => {}, signal: undefined as never, timeout: 10 }), /boom/);
+});
+
+test("exec: a bubblewrap namespace failure gets the AppArmor hint, other failures do not", async () => {
+  const rt = fakeRuntime();
+  const ops = createSandboxedBashOps(rt.manager);
+  let out = "";
+  const failing = "echo 'bwrap: setting up uid map: Operation not permitted' >&2; exit 1";
+  const res = await ops.exec(failing, process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
+  assert.equal(res.exitCode, 1);
+  assert.match(out, /apparmor_restrict_unprivileged_userns/);
+  out = "";
+  await ops.exec("echo 'bwrap: something else' >&2; exit 1", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
+  assert.doesNotMatch(out, /apparmor/);
+  out = "";
+  await ops.exec("echo 'Operation not permitted' >&2; exit 0", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
+  assert.doesNotMatch(out, /apparmor/, "a successful run never gets the hint");
 });

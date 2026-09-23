@@ -240,14 +240,43 @@ test("unknown surface and $schema are handled", () => {
 });
 
 test("readOnlyOverride drops allowWrite; profileToConfig maps fields; isUnsafeDomain", () => {
-  assert.deepEqual(readOnlyOverride({ filesystem: { allowWrite: ["."], denyRead: ["~/.ssh"] } }).filesystem, {
-    allowWrite: [],
-    denyRead: ["~/.ssh"],
-  });
+  const base = { network: { deniedDomains: [] }, filesystem: { allowWrite: ["."], denyRead: ["~/.ssh"], denyWrite: [] } };
+  assert.deepEqual(readOnlyOverride(base).filesystem, { allowWrite: [], denyRead: ["~/.ssh"], denyWrite: [] });
   const c = profileToConfig({ enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh"], denyWrite: [] });
-  assert.equal(c.filesystem?.allowWrite?.[0], ".");
+  assert.equal(c.filesystem.allowWrite[0], ".");
   assert.ok(isUnsafeDomain("*") && isUnsafeDomain("*.com") && isUnsafeDomain("http://x"));
   assert.ok(!isUnsafeDomain("*.github.com") && !isUnsafeDomain("github.com"));
+});
+
+test("profileToConfig: every list is an array, only allowedDomains may be absent (unrestricted network)", () => {
+  const bare = profileToConfig({ enabled: true, writable: true });
+  assert.deepEqual(bare.filesystem, { denyRead: [], allowWrite: [], denyWrite: [] });
+  assert.deepEqual(bare.network, { allowedDomains: undefined, deniedDomains: [] });
+  const filtered = profileToConfig({ enabled: true, writable: true, network: { allowedDomains: [] } });
+  assert.deepEqual(filtered.network.allowedDomains, []); // an empty list is kept: it filters everything
+  const denied = profileToConfig({ enabled: true, writable: true, network: { deniedDomains: ["evil.example"] } });
+  assert.equal(denied.network.allowedDomains, undefined);
+  assert.deepEqual(denied.network.deniedDomains, ["evil.example"]);
+});
+
+// The runtime does not validate what initialize() receives, so the shape is
+// checked here against its exported zod schema for every stock sandboxed mode
+// (skipped when the runtime is not installed, e.g. a bare checkout).
+const runtimeSchema = await import("@anthropic-ai/sandbox-runtime")
+  .then((m) => (m as { SandboxRuntimeConfigSchema?: { parse: (v: unknown) => unknown } }).SandboxRuntimeConfigSchema)
+  .catch(() => undefined);
+test("profileToConfig output validates against the runtime's SandboxRuntimeConfigSchema for the stock modes", { skip: runtimeSchema ? false : "sandbox-runtime not installed" }, () => {
+  const stock = loadStockDefaults();
+  const checked: string[] = [];
+  for (const [name, mode] of Object.entries(stock.modes)) {
+    if (!mode.sandbox.enabled) continue;
+    const cfg = profileToConfig(mode.sandbox);
+    assert.doesNotThrow(() => runtimeSchema!.parse({ network: cfg.network, filesystem: cfg.filesystem }), `${name}: ${JSON.stringify(cfg)}`);
+    // Plan mode's per-wrap override keeps the shape too.
+    assert.doesNotThrow(() => runtimeSchema!.parse(readOnlyOverride(cfg, ["/tmp/pi/s1"])));
+    checked.push(name);
+  }
+  assert.deepEqual(checked, ["default", "plan", "build"]);
 });
 
 test("persistModeRule: creates the global file with the learned rule, round-trips", () => {
@@ -429,9 +458,12 @@ test("persistModeRule seeds the map from the effective stock+global surface, nev
 });
 
 test("readOnlyOverride keeps the listed dirs writable (the session scratch dir)", () => {
-  const cfg = { filesystem: { allowWrite: [".", "/tmp/pi", "/tmp/pi/s1"], denyRead: ["~/.ssh"] }, network: { allowedDomains: ["a"] } };
-  assert.deepEqual(readOnlyOverride(cfg).filesystem?.allowWrite, []);
-  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem?.allowWrite, ["/tmp/pi/s1"]);
-  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem?.denyRead, ["~/.ssh"]);
-  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).network, { allowedDomains: ["a"] });
+  const cfg = {
+    filesystem: { allowWrite: [".", "/tmp/pi", "/tmp/pi/s1"], denyRead: ["~/.ssh"], denyWrite: [] },
+    network: { allowedDomains: ["a"], deniedDomains: [] },
+  };
+  assert.deepEqual(readOnlyOverride(cfg).filesystem.allowWrite, []);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem.allowWrite, ["/tmp/pi/s1"]);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem.denyRead, ["~/.ssh"]);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).network, { allowedDomains: ["a"], deniedDomains: [] });
 });
