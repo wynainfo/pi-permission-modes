@@ -25,7 +25,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   universal fallback for multi-line targets. Regression tests added at the
   matcher, resolver, and dispatcher levels.
 
-  Reported by dyoon98-creator (https://github.com/dyoon98-creator).
+  Reported by [dyoon98-creator](https://github.com/dyoon98-creator).
 
 ### Fixed
 - **A bash command matched by no rule now falls back to `ask`, not `allow`.**
@@ -54,18 +54,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`show_plan` and `request_network_access` now carry a `promptSnippet`**, so
   they are listed in the system prompt's "Available tools" section like the
   built-ins instead of reaching the model only through the JSON schema, which
-  weakened tool awareness in some models. (#3)
+  weakened tool awareness in some models. Reported by [@sunzx](https://github.com/sunzx)
+  in [#3](https://github.com/wynainfo/pi-permission-modes/issues/3).
 - **macOS git worktrees/submodules are sandboxed again.** The gitfile guard
   that degrades the OS sandbox (bubblewrap can't bind `.git/hooks` under a
   `.git` file) ran on every platform, but only the Linux runtime mounts that
   path — `sandbox-exec` denies the `.git/hooks`/`.git/config` paths in its
-  profile instead. The guard is now Linux-only. (#4)
+  profile instead. The guard is now Linux-only. Reported by
+  [@pafuent](https://github.com/pafuent) in [#4](https://github.com/wynainfo/pi-permission-modes/issues/4).
 - **The extension no longer enables every built-in tool.** Tool hiding
   rebuilt the active set from *all* registered tools minus `hideTools`, which
   silently re-enabled `grep`, `find`, `ls`, and `powershell` for everyone and
   overrode `defaultTools` in `settings.json`. It now starts from pi's current
   active set, remembers only what it hid, and restores only that on a mode
-  switch — your own tool selection stays in force. (#2)
+  switch — your own tool selection stays in force. Reported by
+  [@sunzx](https://github.com/sunzx) in [#2](https://github.com/wynainfo/pi-permission-modes/issues/2).
 
 ## [2.2.0]
 
