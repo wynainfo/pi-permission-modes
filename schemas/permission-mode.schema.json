@@ -28,6 +28,15 @@
       "type": "object",
       "description": "Map of mode name → mode definition.",
       "additionalProperties": { "$ref": "#/$defs/mode" }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One-step plan approval (the Accept / Decline prompt after show_plan, the confirm on switching to the approve mode, /plan approve). Global config only.",
+      "properties": {
+        "approveMode": { "type": "string", "description": "Mode to switch to when a plan is accepted. Default: build." },
+        "approveMessage": { "type": "string", "description": "User message that starts the implementing turn; {path} is replaced by the plan path. Default: The plan in `{path}` is approved. Implement it now." }
+      }
     }
   },
   "$defs": {

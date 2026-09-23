@@ -7,6 +7,22 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **One-step plan approval.** After Plan Mode renders a plan with
+  `show_plan`, an Accept / Decline prompt follows the model's handoff line
+  as soon as the run ends. Accept switches to the approve mode (Build by
+  default) and sends a real user message, "The plan in `<path>` is
+  approved. Implement it now.", so the implementing turn starts under
+  Build's system prompt rather than under a Plan prompt still in effect.
+  Decline (or Esc) keeps Plan Mode and the pending plan. Switching into the
+  approve mode by hand while a plan is pending asks once whether to
+  implement it; `/plan approve` does it without asking, `/plan status`
+  names the pending plan. The pending plan survives reload, resume, and
+  branch navigation; an approved plan is never offered again; headless
+  sessions get no prompts. New global config block `plan` with
+  `approveMode` and `approveMessage` (`{path}` placeholder); a project
+  config cannot set it. The Plan Mode prompt's handoff line and the
+  `show_plan` result text now point the model at the prompt instead of
+  `alt+m`.
 - **Deny and block a path for the session.** Every prompt for an
   out-of-project path (bash escapes and the file tools) offers a fourth
   option, "Deny and block `<path>` for this session". Plain Deny only refused

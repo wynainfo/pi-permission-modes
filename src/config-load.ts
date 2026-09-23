@@ -23,6 +23,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PlanApprovalConfig } from "./plan-approval.ts";
 import {
   type Action,
   type ModeDef,
@@ -354,7 +355,28 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
   const cycleOrder = (isStringArray(over.cycleOrder) ? over.cycleOrder : base.cycleOrder).filter((n) => hasMode(modes, n));
   let defaultMode = typeof over.defaultMode === "string" ? over.defaultMode : base.defaultMode;
   if (!hasMode(modes, defaultMode)) defaultMode = cycleOrder[0] ?? base.defaultMode;
-  return { defaultMode, cycleOrder, modes };
+  const plan = sanitizePlan(over.plan, onError) ?? base.plan;
+  return { defaultMode, cycleOrder, modes, ...(plan ? { plan } : {}) };
+}
+
+/** The top-level `plan` block: string fields only, anything else dropped with a warning. */
+function sanitizePlan(raw: unknown, onError: OnError): PlanApprovalConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    onError("permission-mode: global config: plan must be an object; ignoring");
+    return undefined;
+  }
+  const out: PlanApprovalConfig = {};
+  for (const k of ["approveMode", "approveMessage"] as const) {
+    const v = raw[k];
+    if (v === undefined) continue;
+    if (typeof v === "string") out[k] = v;
+    else onError(`permission-mode: global config: plan.${k} must be a string; ignoring`);
+  }
+  for (const k of Object.keys(raw)) {
+    if (k !== "approveMode" && k !== "approveMessage") onError(`permission-mode: global config: unknown key plan.${k}; ignoring`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +425,9 @@ function applyProject(config: PermissionModeConfig, project: unknown, onError: O
   }
   if (project.defaultMode !== undefined || project.cycleOrder !== undefined) {
     onError("permission-mode: project config cannot change defaultMode/cycleOrder; ignoring");
+  }
+  if (project.plan !== undefined) {
+    onError("permission-mode: project config cannot set plan (approval settings are global); ignoring");
   }
   if (project.modes !== undefined && !isPlainObject(project.modes)) {
     onError("permission-mode: project config modes must be an object; ignoring");

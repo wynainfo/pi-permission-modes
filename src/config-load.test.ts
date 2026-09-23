@@ -486,3 +486,23 @@ test("readOnlyOverride keeps the listed dirs writable (the session scratch dir)"
   assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem.denyRead, ["~/.ssh"]);
   assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).network, { allowedDomains: ["a"], deniedDomains: [] });
 });
+
+test("plan config: global strings are kept, wrong types and unknown keys warn, project cannot set it", () => {
+  const s = sandbox({
+    global: { plan: { approveMode: "default", approveMessage: "Go {path}", extra: 1 } },
+    project: { plan: { approveMode: "yolo" } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.plan, { approveMode: "default", approveMessage: "Go {path}" });
+  assert.ok(s.errors.some((e) => /unknown key plan\.extra/.test(e)));
+  assert.ok(s.errors.some((e) => /project config cannot set plan/.test(e)));
+  s.cleanup();
+  const bad = sandbox({ global: { plan: { approveMode: 3 } } });
+  const c2 = loadModeConfig(bad.cwd, bad.agentDir, (m) => bad.errors.push(m));
+  assert.deepEqual(c2.plan, {});
+  assert.ok(bad.errors.some((e) => /plan\.approveMode must be a string/.test(e)));
+  bad.cleanup();
+  const none = sandbox({});
+  assert.equal(loadModeConfig(none.cwd, none.agentDir).plan, undefined);
+  none.cleanup();
+});

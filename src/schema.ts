@@ -12,6 +12,8 @@
  * the host.
  */
 
+import type { PlanApprovalConfig } from "./plan-approval.ts";
+
 /** Three-state permission outcome (opencode-compatible semantics). */
 export type Action = "allow" | "ask" | "deny";
 
@@ -140,6 +142,8 @@ export interface PermissionModeConfig {
   /** alt+m cycle order; also the display order. */
   cycleOrder: string[];
   modes: Record<string, ModeDef>;
+  /** One-step plan approval settings (plan-approval.ts). Global config only. */
+  plan?: PlanApprovalConfig;
 }
 
 /** Sentinel a mode's `systemPrompt` can use to request the Plan-mode prompt. */
@@ -173,7 +177,7 @@ export function planModeSystemPrompt(today: string): string {
     "   displays it.",
     "4. After show_plan, do NOT summarize, recap, or describe the plan, and add no other",
     "   commentary. Your entire reply must be a single short line: ask the user to review",
-    "   the plan and press `alt+m` (or run `/perm build`) to switch to Build mode and apply it.",
+    "   the plan and accept it in the prompt that follows (or press `alt+m` / run `/plan approve`).",
     "",
     "For quick questions that aren't planning tasks, just answer normally.",
   ].join("\n");

@@ -73,7 +73,7 @@ export async function createShowPlanTool(root: string): Promise<ToolDefinition> 
         content: [
           {
             type: "text",
-            text: `Displayed the plan (${rel}) to the user for review. Ask them to review it and switch to Build mode to apply it.`,
+            text: `Displayed the plan (${rel}) to the user for review. They will be offered to accept it; reply with one short line asking them to review and accept it.`,
           },
         ],
         details: { markdown, path: rel } satisfies PlanDetails,

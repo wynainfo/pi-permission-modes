@@ -48,7 +48,12 @@ class FakePi {
    * `defaultTools`), registered tools join automatically; grep/find/ls stay off. */
   activeTools: string[] = ["read", "bash", "edit", "write"];
   entries: Array<{ customType: string; data: unknown }> = [];
+  /** User messages the extension sent (plan approval). */
+  messages: Array<{ content: unknown; opts?: unknown }> = [];
 
+  sendUserMessage(content: unknown, opts?: unknown) {
+    this.messages.push({ content, opts });
+  }
   registerFlag(name: string, def: { default?: unknown }) {
     if (!this.flags.has(name)) this.flags.set(name, def.default);
   }
@@ -101,8 +106,12 @@ interface FakeCtx {
   notices: string[];
   status: string;
   answers: string[];
+  /** Scripted answers for ui.confirm, and the titles it was asked with. */
+  confirms: boolean[];
+  confirmPrompts: string[];
   ui: {
     select(title: string, options: string[]): Promise<string | undefined>;
+    confirm(title: string, message: string): Promise<boolean>;
     notify(message: string, level?: string): void;
     setStatus(key: string, value: string): void;
     theme: { fg(color: string, text: string): string };
@@ -118,10 +127,16 @@ function makeCtx(cwd: string, opts: { hasUI?: boolean; entries?: Array<{ type: s
     notices: [],
     status: "",
     answers: [],
+    confirms: [],
+    confirmPrompts: [],
     ui: {
       async select(title, options) {
         ctx.prompts.push({ title, options });
         return ctx.answers.shift();
+      },
+      async confirm(title) {
+        ctx.confirmPrompts.push(title);
+        return ctx.confirms.shift() ?? false;
       },
       notify(message) {
         ctx.notices.push(message);
@@ -1008,6 +1023,199 @@ test("injectSandboxInfo:false opts a mode out of the awareness injection", { ski
     );
     await h.pi.emit("session_start", {}, h.ctx);
     assert.equal(await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx), undefined);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// --- plan approval -------------------------------------------------------------
+
+/** Emulate a Plan-mode run that rendered `planPath` with show_plan: agent_start, the tool call, its result, agent_end. */
+async function runWithShownPlan(h: Harness, planPath: string, opts: { error?: string; endRun?: boolean } = {}) {
+  await h.pi.emit("agent_start", { type: "agent_start" }, h.ctx);
+  const toolCallId = `plan${++callId}`;
+  const gate = await h.pi.emit("tool_call", { type: "tool_call", toolCallId, toolName: "show_plan", input: { path: planPath } }, h.ctx);
+  assert.equal(gate, undefined, "show_plan itself is never gated");
+  const result = opts.error ? { details: { error: opts.error } } : { details: { path: planPath, markdown: "# plan" } };
+  await h.pi.emit("tool_execution_end", { type: "tool_execution_end", toolCallId, toolName: "show_plan", result, isError: false }, h.ctx);
+  if (opts.endRun !== false) await h.pi.emit("agent_end", { type: "agent_end", messages: [] }, h.ctx);
+}
+
+const APPROVE_MSG = (p: string) => `The plan in \`${p}\` is approved. Implement it now.`;
+
+test("plan approval A: Accept after the run switches to Build and sends the approval message once", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("plan");
+    h.ctx.answers.push("Accept: switch to Build and implement it");
+    await runWithShownPlan(h, "plan/2026-09-24_x.md");
+    assert.deepEqual(h.ctx.prompts.at(-1), {
+      title: "Plan ready: plan/2026-09-24_x.md",
+      options: ["Accept: switch to Build and implement it", "Decline: keep refining in Plan Mode"],
+    });
+    assert.match(h.ctx.status, /^Build /);
+    assert.deepEqual(h.pi.messages.map((m) => m.content), [APPROVE_MSG("plan/2026-09-24_x.md")]);
+    // Persisted: shown, then approved (no path), so a resume does not re-offer it.
+    const plan = h.pi.entries.filter((e) => e.customType === "perm-plan").map((e) => e.data);
+    assert.deepEqual(plan, [{ path: "plan/2026-09-24_x.md" }, {}]);
+    await h.pi.commands.get("plan")!("status", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /no plan pending/);
+    // The implementing run ends without a show_plan: nothing is asked.
+    const before = h.ctx.prompts.length;
+    await h.pi.emit("agent_start", { type: "agent_start" }, h.ctx);
+    await h.pi.emit("agent_end", { type: "agent_end", messages: [] }, h.ctx);
+    assert.equal(h.ctx.prompts.length, before);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("plan approval: Decline keeps Plan Mode and the pending plan; B confirms on /perm build; Esc counts as decline", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("plan");
+    h.ctx.answers.push("Decline: keep refining in Plan Mode");
+    await runWithShownPlan(h, "plan/2026-09-24_a.md");
+    assert.match(h.ctx.status, /^Plan Mode /);
+    assert.equal(h.pi.messages.length, 0);
+    // A second run without a new show_plan asks nothing.
+    const prompts = h.ctx.prompts.length;
+    await h.pi.emit("agent_start", { type: "agent_start" }, h.ctx);
+    await h.pi.emit("agent_end", { type: "agent_end", messages: [] }, h.ctx);
+    assert.equal(h.ctx.prompts.length, prompts);
+    // Still pending for B and C.
+    await h.pi.commands.get("plan")!("status", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /pending plan: plan\/2026-09-24_a\.md/);
+    // B: the manual switch asks; No leaves Build with nothing sent.
+    h.ctx.confirms.push(false);
+    await h.perm("build");
+    assert.deepEqual(h.ctx.confirmPrompts, ["Implement plan/2026-09-24_a.md now?"]);
+    assert.match(h.ctx.status, /^Build /);
+    assert.equal(h.pi.messages.length, 0);
+    // Back to Plan, switch again, Yes sends it.
+    await h.perm("plan");
+    h.ctx.confirms.push(true);
+    await h.perm("build");
+    assert.deepEqual(h.pi.messages.map((m) => m.content), [APPROVE_MSG("plan/2026-09-24_a.md")]);
+    // A dismissed prompt (Esc -> undefined) is a decline too.
+    await h.perm("plan");
+    await runWithShownPlan(h, "plan/2026-09-24_b.md"); // no scripted answer -> undefined
+    assert.match(h.ctx.status, /^Plan Mode /);
+    assert.equal(h.pi.messages.length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("plan approval C: /plan approve switches and sends without a prompt; nothing pending -> notice only", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.pi.commands.get("plan")!("approve", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /no plan pending/);
+    assert.equal(h.pi.messages.length, 0);
+    await h.perm("plan");
+    await runWithShownPlan(h, "plan/2026-09-24_c.md", { endRun: false });
+    const prompts = h.ctx.prompts.length;
+    await h.pi.commands.get("plan")!("approve", h.ctx);
+    assert.equal(h.ctx.prompts.length, prompts, "explicit approval asks nothing");
+    assert.equal(h.ctx.confirmPrompts.length, 0, "the switch it performs does not ask B");
+    assert.match(h.ctx.status, /^Build /);
+    assert.deepEqual(h.pi.messages.map((m) => m.content), [APPROVE_MSG("plan/2026-09-24_c.md")]);
+    // show_plan in Build (already the approve mode): Accept keeps the mode and sends.
+    h.ctx.answers.push("Accept: switch to Build and implement it");
+    await runWithShownPlan(h, "plan/2026-09-24_d.md");
+    assert.match(h.ctx.status, /^Build /);
+    assert.equal(h.pi.messages.length, 2);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("plan approval: a missing approveMode warns once and disables A, B, and C; approveMessage is templated", { skip }, async () => {
+  const h = await setup();
+  try {
+    const piDir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(path.join(piDir, "permission-mode.json"), JSON.stringify({ plan: { approveMode: "nope" } }));
+    await h.pi.emit("session_start", {}, h.ctx);
+    await h.perm("plan");
+    await runWithShownPlan(h, "plan/2026-09-24_e.md");
+    assert.equal(h.ctx.prompts.length, 0, "no Accept/Decline prompt");
+    assert.equal(h.ctx.notices.filter((n) => /approveMode "nope" is not a defined mode/.test(n)).length, 1);
+    await h.pi.commands.get("plan")!("approve", h.ctx);
+    assert.equal(h.pi.messages.length, 0);
+    assert.equal(h.ctx.notices.filter((n) => /approveMode "nope"/.test(n)).length, 1, "warned once");
+    assert.match(h.ctx.status, /^Plan Mode /);
+
+    // A custom approve mode + message.
+    writeFileSync(
+      path.join(piDir, "permission-mode.json"),
+      JSON.stringify({ plan: { approveMode: "default", approveMessage: "Go: {path} ({path})" } }),
+    );
+    await h.pi.emit("session_start", {}, h.ctx);
+    await h.perm("plan");
+    h.ctx.answers.push("Accept: switch to Default and implement it");
+    await runWithShownPlan(h, "plan/2026-09-24_f.md");
+    assert.match(h.ctx.status, /^Default /);
+    assert.deepEqual(h.pi.messages.map((m) => m.content), ["Go: plan/2026-09-24_f.md (plan/2026-09-24_f.md)"]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("plan approval: headless sessions get no prompt and no switch; the plan is still recorded", { skip }, async () => {
+  const h = await setup({ hasUI: false, permFlag: "plan" });
+  try {
+    await runWithShownPlan(h, "plan/2026-09-24_g.md");
+    assert.equal(h.ctx.prompts.length, 0);
+    assert.equal(h.ctx.confirmPrompts.length, 0);
+    assert.equal(h.pi.messages.length, 0);
+    assert.deepEqual(h.pi.entries.filter((e) => e.customType === "perm-plan").map((e) => e.data), [{ path: "plan/2026-09-24_g.md" }]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("plan approval: resume restores the latest perm-plan entry; an approved plan is not offered again", { skip }, async () => {
+  const entries = [
+    { type: "custom", customType: "perm-mode", data: { mode: "plan" } },
+    { type: "custom", customType: "perm-plan", data: { path: "plan/old.md" } },
+  ];
+  const h = await setup({ entries });
+  try {
+    await h.pi.commands.get("plan")!("status", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /pending plan: plan\/old\.md/);
+    // No show_plan in this run: agent_end asks nothing; B still works.
+    await h.pi.emit("agent_start", { type: "agent_start" }, h.ctx);
+    await h.pi.emit("agent_end", { type: "agent_end", messages: [] }, h.ctx);
+    assert.equal(h.ctx.prompts.length, 0);
+    h.ctx.confirms.push(true);
+    await h.perm("build");
+    assert.deepEqual(h.pi.messages.map((m) => m.content), [APPROVE_MSG("plan/old.md")]);
+  } finally {
+    h.cleanup();
+  }
+  const done = await setup({ entries: [...entries, { type: "custom", customType: "perm-plan", data: {} }] });
+  try {
+    await done.pi.commands.get("plan")!("status", done.ctx);
+    assert.match(done.ctx.notices.at(-1) ?? "", /no plan pending/);
+    done.ctx.confirms.push(true);
+    await done.perm("build");
+    assert.equal(done.ctx.confirmPrompts.length, 0, "nothing pending, nothing asked");
+  } finally {
+    done.cleanup();
+  }
+});
+
+test("plan approval: a show_plan that reported an error leaves nothing pending", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("plan");
+    await runWithShownPlan(h, "notes/x.md", { error: "show_plan only renders Markdown files under plan/." });
+    assert.equal(h.ctx.prompts.length, 0);
+    await h.pi.commands.get("plan")!("status", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /no plan pending/);
+    assert.equal(h.pi.entries.filter((e) => e.customType === "perm-plan").length, 0);
   } finally {
     h.cleanup();
   }

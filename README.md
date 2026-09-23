@@ -107,7 +107,7 @@ be retuned, and you can add your own, in `permission-mode.json` (see
 | Mode | Behavior |
 |------|----------|
 | **Default** | Confirm every `bash`/`edit`/`write`; reads are free. Approved **in-project** `bash` runs **sandboxed** (writes confined to the project). |
-| **Plan Mode** | Planning mode. Reads are free; in-project `bash` runs **sandboxed read-only** (writes/deletes fail), so only read commands effectively work. The one mutation allowed without confirmation is **creating/editing Markdown** (`*.md`/`*.markdown`) inside the project - other `edit`/`write` are blocked. A system-prompt addition steers the model: for a planning task, write the plan to `plan/<YYYY-MM-DD>_<description>.md`, render it for review with the **`show_plan`** tool, then ask you to switch to Build to apply it. |
+| **Plan Mode** | Planning mode. Reads are free; in-project `bash` runs **sandboxed read-only** (writes/deletes fail), so only read commands effectively work. The one mutation allowed without confirmation is **creating/editing Markdown** (`*.md`/`*.markdown`) inside the project - other `edit`/`write` are blocked. A system-prompt addition steers the model: for a planning task, write the plan to `plan/<YYYY-MM-DD>_<description>.md`, render it for review with the **`show_plan`** tool, then hand over to you: an **Accept / Decline** prompt follows the plan (see [Approving a plan](#approving-a-plan)). |
 | **Build** | Reads, writes, and `bash` **inside the project** run with no confirmation; in-project `bash` runs **sandboxed**. |
 | **YOLO** | Never prompts, never sandboxes, no protected-path backstop. Can do anything the current user can. |
 
@@ -166,6 +166,50 @@ outside directories or non-executable files stay escapes.
 > the sandbox (git needs them for the index, refs, and objects) with their
 > `hooks` and `config` write-denied, the same protection a normal repository
 > gets. `/sandbox` lists them.
+
+### Approving a plan
+
+When a run in Plan Mode has rendered a plan with `show_plan`, applying it is
+one action. As soon as the model's handoff line is on screen, a prompt
+appears:
+
+```
+Plan ready: plan/2026-09-24_feature.md
+  > Accept: switch to Build and implement it
+    Decline: keep refining in Plan Mode
+```
+
+- **Accept** switches to the approve mode (Build by default) and sends a
+  real user message, `The plan in \`plan/...\` is approved. Implement it
+  now.`, so the implementing turn starts under Build's system prompt, never
+  under the Plan prompt still in effect. The message is visible in the
+  transcript like anything you type.
+- **Decline** (or Esc) costs nothing: you stay in Plan Mode and refine by
+  typing, as before. The plan stays pending, and it is not offered again
+  until the next `show_plan`.
+
+Two fallbacks cover the other ways in:
+
+- Switching into the approve mode by hand (`alt+m`, `/perm build`) while a
+  plan is pending asks `Implement plan/... now?`; No leaves you in Build with
+  nothing sent.
+- **`/plan approve`** switches and sends without asking; **`/plan status`**
+  names the pending plan.
+
+The pending plan survives `/reload`, resume, and branch navigation (a
+`perm-plan` session entry; an approved plan is never offered again).
+Headless sessions get no prompts and no automatic switch. Two optional
+global config keys tune it:
+
+```jsonc
+"plan": {
+  "approveMode": "build",                                           // any defined mode
+  "approveMessage": "The plan in `{path}` is approved. Implement it now."  // {path} = plan path
+}
+```
+
+A project config cannot set them. If `approveMode` names a mode that does
+not exist, approval is off with a one-time warning.
 
 ### Scratch directory
 

@@ -76,7 +76,8 @@ import {
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
-import { blockablePath, canonicalPath, displayPath, isOutside, isProtectedWrite, normalizeToolPath, sandboxAllowedRoots } from "./paths.ts";
+import { blockablePath, canonicalPath, displayPath, isOutside, isProtectedWrite, normalizeToolPath, resolvePlanPath, sandboxAllowedRoots } from "./paths.ts";
+import { approvalMessage, DEFAULT_APPROVE_MODE, PLAN_ENTRY, type PendingPlan, type PlanEntry, restorePendingPlan, showPlanSucceeded, shownPlanPath } from "./plan-approval.ts";
 import { decide, decideBashChain } from "./resolve.ts";
 import { SandboxController, networkFiltered, withDeniedReads } from "./sandbox.ts";
 import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
@@ -156,6 +157,16 @@ export default async function (pi: ExtensionAPI) {
   const approvedUnsandboxed = new Set<string>();
   // "Allow for session" memory, keyed per-mode.
   const approvals = new SessionApprovals();
+  // One-step plan approval (plan-approval.ts): the plan show_plan rendered
+  // last is offered for approval when the agent goes idle (A), confirmed on a
+  // manual switch into the approve mode (B), and taken by /plan approve (C).
+  // Persisted as perm-plan entries; restored on session_start/session_tree.
+  let pendingPlan: PendingPlan | undefined;
+  let planShownThisRun = false; // a show_plan succeeded during the current agent run
+  let planPrompting = false; // one approval prompt at a time
+  let approvingPlan = false; // setMode called by approvePlan must not ask B
+  let approveModeWarned = false;
+  const planCalls = new Map<string, string>(); // show_plan toolCallId -> requested path
   // Live network state: session domain grants/denies and the open toggle. The
   // sandbox-runtime proxy consults it (via net.decide) for every host outside
   // the allowlist, so changes apply instantly — no sandbox re-init.
@@ -304,6 +315,7 @@ export default async function (pi: ExtensionAPI) {
   const setMode = async (name: string, ctx: ExtensionContext, persist = true, viaFallback = false) => {
     if (!hasMode(config.modes, name)) return;
     uiCtx = ctx;
+    const previous = modeName;
     modeName = name;
     fallbackMode = viaFallback;
     // Forward to child pi processes (e.g. subagents) via inherited env. The child
@@ -317,6 +329,69 @@ export default async function (pi: ExtensionAPI) {
     updateStatus(ctx, m, sandbox, net.open);
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
     if (persist) pi.appendEntry<PermState>("perm-mode", { mode: modeName });
+    // B: a manual switch into the approve mode while a plan is pending (alt+m,
+    // /perm <mode>). Not on session_start/resume (persist=false) and not for
+    // the switch approvePlan itself performs.
+    if (persist && pendingPlan && !approvingPlan && ctx.hasUI && name !== previous && name === approveModeName()) {
+      const plan = pendingPlan;
+      const yes = await ctx.ui.confirm(
+        `Implement ${plan.path} now?`,
+        `Yes sends the approval message to the model. No leaves you in ${m.label} with nothing sent (/plan approve later).`,
+      );
+      if (yes) await approvePlan(ctx);
+    }
+  };
+
+  const approveModeName = (): string => config.plan?.approveMode ?? DEFAULT_APPROVE_MODE;
+
+  /** The approve mode's definition, or undefined (with a one-time warning) when the config names a mode that does not exist. */
+  const approveModeDef = (ctx: ExtensionContext): ModeDef | undefined => {
+    const target = approveModeName();
+    if (hasMode(config.modes, target)) return config.modes[target];
+    if (!approveModeWarned) {
+      approveModeWarned = true;
+      ctx.ui.notify(`permission-mode: plan.approveMode "${target}" is not a defined mode; plan approval is off until it is fixed`, "warning");
+    }
+    return undefined;
+  };
+
+  /**
+   * Approve the pending plan: switch to the approve mode when not already
+   * there, forget the plan (also in the session), and send the approval as a
+   * real user message so a new turn starts under that mode's system prompt.
+   */
+  const approvePlan = async (ctx: ExtensionContext): Promise<boolean> => {
+    const plan = pendingPlan;
+    if (!plan || !approveModeDef(ctx)) return false;
+    const target = approveModeName();
+    approvingPlan = true;
+    try {
+      if (modeName !== target) await setMode(target, ctx);
+    } finally {
+      approvingPlan = false;
+    }
+    pendingPlan = undefined;
+    pi.appendEntry<PlanEntry>(PLAN_ENTRY, {});
+    pi.sendUserMessage(approvalMessage(config.plan?.approveMessage, plan.path));
+    return true;
+  };
+
+  /** A: offer the plan shown during the run that just ended. Decline keeps it pending for B and C. */
+  const offerPlanApproval = async (ctx: ExtensionContext): Promise<void> => {
+    const plan = pendingPlan;
+    if (!plan || plan.declined || planPrompting || !ctx.hasUI) return;
+    const target = approveModeDef(ctx);
+    if (!target) return;
+    planPrompting = true;
+    try {
+      const accept = `Accept: switch to ${target.label} and implement it`;
+      const decline = `Decline: keep refining in ${currentMode().label}`;
+      const choice = await ctx.ui.select(`Plan ready: ${plan.path}`, [accept, decline]);
+      if (choice === accept) await approvePlan(ctx);
+      else plan.declined = true;
+    } finally {
+      planPrompting = false;
+    }
   };
 
   /** The most restrictive built-in-style mode for a headless child without a
@@ -449,6 +524,25 @@ export default async function (pi: ExtensionAPI) {
   pi.registerShortcut("alt+n", {
     description: "Toggle network filtering for this session (filtered <-> open)",
     handler: toggleNetwork,
+  });
+
+  pi.registerCommand("plan", {
+    description: "Plan approval: /plan approve (switch to the approve mode and implement the pending plan) | /plan status",
+    handler: async (args, ctx) => {
+      const arg = args.trim().toLowerCase();
+      if (arg === "approve") {
+        if (!pendingPlan) return ctx.ui.notify("permission-mode: no plan pending (show_plan has not rendered one in this session)", "warning");
+        await approvePlan(ctx);
+        return;
+      }
+      if (arg === "" || arg === "status") {
+        return ctx.ui.notify(
+          pendingPlan ? `permission-mode: pending plan: ${pendingPlan.path} (/plan approve to implement it)` : "permission-mode: no plan pending",
+          "info",
+        );
+      }
+      ctx.ui.notify("permission-mode: usage: /plan approve | status", "warning");
+    },
   });
 
   pi.registerCommand("net", {
@@ -687,6 +781,9 @@ export default async function (pi: ExtensionAPI) {
     // right profile, then setMode reconciles status (applyProfile is a no-op).
     const picked = pickMode(ctx, true);
     modeName = picked.name;
+    pendingPlan = restorePendingPlan(ctx.sessionManager.getEntries());
+    planShownThisRun = false;
+    planCalls.clear();
     // Per-session scratch directory, created up front so the sandbox profile,
     // the bounds, and the awareness prompt all agree on it. Keyed on the
     // session id (a resumed session finds its files); stale siblings swept.
@@ -720,6 +817,7 @@ export default async function (pi: ExtensionAPI) {
   });
   pi.on("session_tree", async (_event, ctx) => {
     uiCtx = ctx;
+    pendingPlan = restorePendingPlan(ctx.sessionManager.getEntries()); // the branch's own plan state
     const picked = pickMode(ctx, false);
     await setMode(picked.name, ctx, false, picked.fallback);
   });
@@ -727,12 +825,36 @@ export default async function (pi: ExtensionAPI) {
     approvals.clearAll(); // session-scoped grants don't outlive the session
     blocked.clear(); // nor do "Deny and block" paths
     net.clear(); // network grants/denies and the open toggle are session-scoped too
+    pendingPlan = undefined; // restored from the session entries on the next start
+    planCalls.clear();
     await sandbox.reset();
   });
 
-  // Drop any unconsumed escape grant once the tool call resolves.
+  // Plan approval (A): a show_plan that succeeded during this run is offered
+  // once the agent is idle, so the plan is on screen and the accepting turn
+  // starts under the approve mode's prompt, never under a Plan prompt still
+  // in effect. Nothing is asked after the implementing run (no show_plan then).
+  pi.on("agent_start", async () => {
+    planShownThisRun = false;
+  });
+  pi.on("agent_end", async (_event, ctx) => {
+    if (!planShownThisRun) return;
+    planShownThisRun = false;
+    await offerPlanApproval(ctx);
+  });
+
+  // Drop any unconsumed escape grant once the tool call resolves; record a
+  // rendered plan as pending (persisted, so resume and /reload keep it).
   pi.on("tool_execution_end", async (event) => {
     approvedUnsandboxed.delete(event.toolCallId);
+    const requested = planCalls.get(event.toolCallId);
+    if (requested === undefined) return;
+    planCalls.delete(event.toolCallId);
+    if (!showPlanSucceeded(event.isError, event.result)) return;
+    const path = shownPlanPath(event.result, requested);
+    pendingPlan = { path, declined: false };
+    planShownThisRun = true;
+    pi.appendEntry<PlanEntry>(PLAN_ENTRY, { path });
   });
 
   // Inject the sandbox-awareness section and the active mode's system prompt
@@ -791,6 +913,7 @@ export default async function (pi: ExtensionAPI) {
     // `input` is a discriminated union across tools; view it loosely (custom
     // tools surface as Record<string, unknown> anyway) and guard each field.
     const input = event.input as Record<string, unknown>;
+    if (toolName === "show_plan" && typeof input.path === "string") planCalls.set(event.toolCallId, resolvePlanPath(input.path));
     // Judge the path pi will actually open: `~`, a leading `@`, and `file://`
     // are normalized by pi's file tools before the open (see normalizeToolPath).
     const inPath = typeof input.path === "string" ? normalizeToolPath(input.path) : undefined;
