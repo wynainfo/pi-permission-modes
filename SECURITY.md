@@ -97,4 +97,5 @@ Non-sensitive hardening ideas are welcome as regular
   by Magnus Gille (https://gille.ai/).
 - **Bash `ask`/`deny` policy bypass via a newline in a command argument**
   (fixed in 2.2.1) — reported by dyoon98-creator (https://github.com/dyoon98-creator);
-  independently found and fixed in PR #5 by BeLeap (https://github.com/BeLeap).
+  independently found and fixed in PR #5 by BeLeap (https://github.com/BeLeap)
+  and in PR #6 by hsiangron (https://github.com/hsiangron).

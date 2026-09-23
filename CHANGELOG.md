@@ -26,10 +26,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   matcher, resolver, and dispatcher levels.
 
   Reported by [dyoon98-creator](https://github.com/dyoon98-creator). Independently
-  found and fixed with the same one-line change in
+  found and fixed earlier, as a wildcard bug, in
   [#5](https://github.com/wynainfo/pi-permission-modes/pull/5) by
-  [@BeLeap](https://github.com/BeLeap), two weeks earlier, as a wildcard bug —
-  the security angle was not visible from that report.
+  [@BeLeap](https://github.com/BeLeap) (dotAll flag) and in
+  [#6](https://github.com/wynainfo/pi-permission-modes/pull/6) by
+  [@hsiangron](https://github.com/hsiangron) (`[\s\S]` classes) — the security
+  angle was not visible from those reports.
 
 ### Fixed
 - **A bash command matched by no rule now falls back to `ask`, not `allow`.**
