@@ -42,6 +42,11 @@ export interface BashCommand {
    * so a `"sudo*": "deny"` rule cannot be dodged by a path or a wrapper.
    */
   aliases?: string[];
+  /**
+   * Quote/escape-normalized tokens the cross-cutting `path` gate is matched
+   * against as well (`cat .en\v` must hit `"*.env": "deny"` like `cat .env`).
+   */
+  pathTokens?: string[];
 }
 
 /** Minimal structural view of a tree-sitter node (real SyntaxNode satisfies it). */
@@ -424,7 +429,9 @@ export async function analyzeBash(command: string, root: string, alsoInside: rea
       // matching alike; attach policy aliases for wrapper/path heads.
       const commands = expandShellCommands((s) => parser.parse(s), parser.parse(command)).map((c) => {
         const aliases = policyAliases(c);
-        return aliases.length ? { ...c, aliases } : c;
+        const raw = [c.name, ...c.args];
+        const pathTokens = [...new Set(raw.map(normalizeBashToken).filter((t) => !raw.includes(t)))];
+        return { ...c, ...(aliases.length ? { aliases } : {}), ...(pathTokens.length ? { pathTokens } : {}) };
       });
       return { commands, outsideReason: outsideReasonFromCommands(commands, root, alsoInside), usedFallback: false };
     } catch {

@@ -163,3 +163,10 @@ test("decideBashCommand: aliases let a deny catch path heads and wrapped command
   assert.equal(decideBashCommand(m, "time", ["sudo", "id"], ["sudo id"]), "deny");
   assert.equal(decideBashChain(m, [{ name: "\\git", args: ["push"], aliases: ["git push"] }]), "ask");
 });
+
+test("decideBashCommand: normalized path tokens let the path gate catch escaped spellings", () => {
+  const m = mode({ path: { "*": "allow", "*.env": "deny" }, bash: { "*": "allow" } });
+  assert.equal(decideBashCommand(m, "cat", [".en\\v"]), "allow"); // raw spelling alone: dodged
+  assert.equal(decideBashCommand(m, "cat", [".en\\v"], [], [".env"]), "deny");
+  assert.equal(decideBashChain(m, [{ name: "cat", args: [".en\\v"], pathTokens: [".env"] }]), "deny");
+});

@@ -307,4 +307,9 @@ test("analyzeBash: real grammar sees redirects, heredoc scripts, eval, and find 
     if (expected) assert.match(a.outsideReason ?? "", expected, command);
     else assert.equal(a.outsideReason, undefined, command);
   }
+  // Normalized path tokens ride along for the path gate.
+  const esc = await analyzeBash("cat .en\\v", root);
+  assert.deepEqual(esc.commands[0].pathTokens, [".env"]);
+  const plain = await analyzeBash("cat .env", root);
+  assert.equal(plain.commands[0].pathTokens, undefined);
 });

@@ -129,8 +129,14 @@ export function decide(
  * Returns undefined when no layer matches at all; `decideBashChain` picks the
  * default ("ask", least-privilege — the same fallback `decide` applies).
  */
-export function decideBashCommand(mode: ModeDef, name: string, args: string[], aliases: readonly string[] = []): Action | undefined {
-  const tokens = [name, ...args];
+export function decideBashCommand(
+  mode: ModeDef,
+  name: string,
+  args: string[],
+  aliases: readonly string[] = [],
+  pathTokens: readonly string[] = [],
+): Action | undefined {
+  const tokens = [name, ...args, ...pathTokens];
   const joined = tokens.join(" ").trim();
   const layers: (Action | undefined)[] = [];
   const sources = mode.projectOverlay ? [mode.permission, mode.projectOverlay] : [mode.permission];
@@ -160,12 +166,12 @@ export function decideBashCommand(mode: ModeDef, name: string, args: string[], a
  */
 export function decideBashChain(
   mode: ModeDef,
-  commands: ReadonlyArray<{ name: string; args: string[]; aliases?: readonly string[] }>,
+  commands: ReadonlyArray<{ name: string; args: string[]; aliases?: readonly string[]; pathTokens?: readonly string[] }>,
   fallback: Action = "ask",
 ): Action {
   let result: Action | undefined;
   for (const c of commands) {
-    result = mostRestrictive(result, decideBashCommand(mode, c.name, c.args, c.aliases ?? []) ?? fallback);
+    result = mostRestrictive(result, decideBashCommand(mode, c.name, c.args, c.aliases ?? [], c.pathTokens ?? []) ?? fallback);
   }
   return result ?? fallback;
 }
