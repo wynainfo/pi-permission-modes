@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   analyzeBash,
   type BashCommand,
+  escapeTargetFromReason,
+  escapingPaths,
   expandShellCommands,
   extractCommands,
   isPrivilegeEscalation,
@@ -312,4 +314,17 @@ test("analyzeBash: real grammar sees redirects, heredoc scripts, eval, and find 
   assert.deepEqual(esc.commands[0].pathTokens, [".env"]);
   const plain = await analyzeBash("cat .env", root);
   assert.equal(plain.commands[0].pathTokens, undefined);
+});
+
+test("escapingPaths / escapeTargetFromReason: every out-of-project path a chain reaches, resolved", () => {
+  const root = "/home/u/proj";
+  const bc = (name: string, ...args: string[]): BashCommand => ({ name, args, isNested: false });
+  assert.deepEqual(escapingPaths([bc("cat", "/etc/hostname", "src/x"), bc("cp", "../secret", "/dev/null")], root), ["/etc/hostname", "/home/u/secret"]);
+  assert.deepEqual(escapingPaths([bc("sudo", "id")], root), []); // privilege: no path
+  assert.deepEqual(escapingPaths([bc("cat", "~root/x")], root), []); // unresolvable
+  assert.deepEqual(escapingPaths([bc("cd")], root), []);
+  assert.equal(escapeTargetFromReason("path outside project: /etc/hostname", root), "/etc/hostname");
+  assert.equal(escapeTargetFromReason("path outside project: ../x", root), "/home/u/x");
+  assert.equal(escapeTargetFromReason("path outside project: cd", root), undefined);
+  assert.equal(escapeTargetFromReason("privilege escalation", root), undefined);
 });

@@ -373,6 +373,42 @@ export function outsideReasonFromCommands(
   return undefined;
 }
 
+/**
+ * Every out-of-project path a command chain reaches (absolute, resolved
+ * against `root`, symlinks not yet followed) - the candidates a user may
+ * block for the session after a Deny. Privilege escalation and unresolvable
+ * tokens (`~user`, a bare `cd`) contribute nothing.
+ */
+export function escapingPaths(commands: BashCommand[], root: string, alsoInside: readonly string[] = []): string[] {
+  const out = new Set<string>();
+  for (const c of commands) {
+    for (const raw of [c.name, ...c.args]) {
+      const tok = normalizeBashToken(raw);
+      if (/^~[^/]/.test(tok)) continue;
+      const p = pathPartOfToken(tok);
+      let target: string | undefined;
+      if (p.startsWith("/")) target = p;
+      else if (p === "~" || p.startsWith("~/")) target = path.join(os.homedir(), p.slice(1));
+      else if (p.includes("/") || p === "..") target = path.resolve(root, p);
+      else continue;
+      if (SAFE_OUTSIDE_RE.test(target)) continue;
+      if (bashPathEscapes(root, target, alsoInside)) out.add(path.resolve(target));
+    }
+  }
+  return [...out];
+}
+
+/** The escape target named by a heuristic reason ("path outside project: <tok>"), resolved like the detector does. */
+export function escapeTargetFromReason(reason: string | undefined, root: string): string | undefined {
+  const m = reason?.match(/^path outside project: (.+)$/);
+  if (!m) return undefined;
+  const p = pathPartOfToken(normalizeBashToken(m[1]));
+  if (/^~[^/]/.test(p) || /^(cd|pushd)\b/.test(p)) return undefined;
+  if (p.startsWith("/")) return p;
+  if (p === "~" || p.startsWith("~/")) return path.join(os.homedir(), p.slice(1));
+  return path.resolve(root, p);
+}
+
 /** A parser that turns a command string into commands (real or, in tests, fake). */
 export interface BashParser {
   parse(command: string): BashCommand[];

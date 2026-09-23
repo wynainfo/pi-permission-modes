@@ -35,7 +35,16 @@ you can rely on it appropriately.
   only by the AST/heuristic prompt layer - if detection misses it (e.g. a
   variable-built path), the sandbox allows the read. Treat the project boundary
   for reads as best-effort, and the `denyRead` list (`~/.ssh`, `~/.aws`,
-  `~/.gnupg` by default) as the hard guard. One deliberate exemption in the
+  `~/.gnupg`, `~/.netrc`, `~/.git-credentials`, `~/.pypirc`,
+  `~/.gem/credentials`, `~/.vault-token`, `~/.password-store`, and pi's own
+  `~/.pi/agent/auth.json` and `oauth.json` by default) as the hard guard. A
+  denied prompt is a refusal, not containment: a determined agent can read
+  the same file through a script it writes into the project. **Deny and
+  block** (offered on every out-of-project path prompt) turns that Deny into
+  containment for the session by adding the path to `denyRead` and
+  re-applying the sandbox; the file tools refuse it directly. A true
+  allow-list for reads needs a runtime feature (`allowRead` carve-outs from
+  `denyRead`) that does not exist yet. One deliberate exemption in the
   bash prompt layer: an in-project symlink whose target is an *executable
   file* outside the project (a venv's `bin/python`) is not treated as an
   escape - executing it is the project's intent and the sandbox still confines

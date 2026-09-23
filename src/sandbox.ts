@@ -225,6 +225,16 @@ export function networkFiltered(profile: SandboxProfile): boolean {
   return profile.enabled && profile.network?.allowedDomains !== undefined;
 }
 
+/**
+ * The profile with extra `denyRead` entries (the session's blocked paths, see
+ * BlockedPaths): the OS sandbox then masks them for bash. Unchanged when the
+ * mode doesn't sandbox or there is nothing to add.
+ */
+export function withDeniedReads(profile: SandboxProfile, paths: readonly string[]): SandboxProfile {
+  if (!profile.enabled || paths.length === 0) return profile;
+  return { ...profile, denyRead: [...new Set([...(profile.denyRead ?? []), ...paths])] };
+}
+
 /** How the caller surfaces warnings (e.g. a TUI notify), only used when there's a UI. */
 type Notify = (message: string) => void;
 

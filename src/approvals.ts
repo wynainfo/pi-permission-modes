@@ -11,6 +11,7 @@
  * three-way Allow once / Allow for session / Deny prompt).
  */
 
+import path from "node:path";
 import type { Surface } from "./schema.ts";
 
 export class SessionApprovals {
@@ -41,6 +42,47 @@ export class SessionApprovals {
   clearAll(): void {
     this.store.clear();
   }
+}
+
+/**
+ * Session-scoped out-of-project paths the user chose to BLOCK ("Deny and
+ * block <path> for this session"). Canonical absolute paths; a path is
+ * covered when it equals a blocked path or lies under a blocked directory.
+ * The dispatcher folds the list into the active profile's `denyRead` (so the
+ * OS sandbox masks the paths for bash) and checks it directly for the file
+ * tools (which aren't sandboxed). Session lifetime only.
+ */
+export class BlockedPaths {
+  private paths = new Set<string>();
+
+  add(p: string): void {
+    this.paths.add(p);
+  }
+
+  remove(p: string): boolean {
+    return this.paths.delete(p);
+  }
+
+  covers(p: string): boolean {
+    for (const b of this.paths) {
+      if (p === b || p.startsWith(b.endsWith(path.sep) ? b : b + path.sep)) return true;
+    }
+    return false;
+  }
+
+  list(): string[] {
+    return [...this.paths];
+  }
+
+  clear(): void {
+    this.paths.clear();
+  }
+}
+
+/** An extra prompt option that denies AND runs a side effect (e.g. block the path for the session). */
+export interface DenyOption {
+  label: string;
+  run: () => void | Promise<void>;
 }
 
 /** Minimal UI surface needed by `askWithSession` (a subset of ctx.ui + hasUI). */
@@ -77,14 +119,20 @@ export async function askWithSession(
   target: string | string[],
   title: string,
   onForever?: () => void | Promise<void>,
+  denyAnd?: DenyOption,
 ): Promise<boolean> {
   if (!ui.hasUI) return false; // no way to confirm → deny
   const targets = Array.isArray(target) ? target : [target];
-  // Already granted this session — every target must be covered.
+  // Already granted this session - every target must be covered.
   if (targets.length > 0 && targets.every((t) => approvals.has(mode, surface, t))) return true;
 
   const options = onForever ? [ALLOW_ONCE, ALLOW_SESSION, ALLOW_FOREVER, DENY] : [ALLOW_ONCE, ALLOW_SESSION, DENY];
+  if (denyAnd) options.push(denyAnd.label); // "Deny and block … for this session"
   const choice = await ui.select(title, options);
+  if (denyAnd && choice === denyAnd.label) {
+    await denyAnd.run();
+    return false;
+  }
   if (choice === ALLOW_FOREVER) {
     for (const t of targets) approvals.remember(mode, surface, t); // cover the rest of this session immediately
     await onForever?.();

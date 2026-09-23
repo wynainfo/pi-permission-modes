@@ -18,7 +18,7 @@
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -365,6 +365,52 @@ test("file tools judge the path pi opens: ~, @, file:// are normalized before th
   }
 });
 
+test("deny and block: an escape prompt offers it, the path is masked for the session, /perm unblock lifts it", { skip }, async () => {
+  const h = await setup();
+  const home = os.homedir();
+  try {
+    // Bash escape to a file under home: four options, the last one blocks.
+    h.ctx.answers.push("Deny and block ~/secret.txt for this session");
+    const first = await h.call("bash", { command: "cat ~/secret.txt" });
+    assert.equal(first?.block, true);
+    assert.deepEqual(h.ctx.prompts[0].options, ["Allow once", "Allow for session", "Deny", "Deny and block ~/secret.txt for this session"]);
+    assert.ok(h.ctx.notices.some((n) => /~\/secret\.txt is now unreadable inside the sandbox for this session/.test(n)));
+    // Listed, and enforced without a prompt for bash and for the file tools.
+    await h.perm("blocks");
+    assert.match(h.ctx.notices.at(-1) ?? "", /- ~\/secret\.txt/);
+    const again = await h.call("bash", { command: `python3 -c 'open("${path.join(home, "secret.txt")}")' && cat ~/secret.txt` });
+    assert.equal(again?.block, true);
+    assert.match(again?.reason ?? "", /blocked for this session/);
+    const read = await h.call("read", { path: "~/secret.txt" });
+    assert.equal(read?.block, true);
+    assert.match(read?.reason ?? "", /blocked for this session/);
+    assert.equal(h.ctx.prompts.length, 1, "no further prompts for a blocked path");
+    // Unblock: the read prompts again (external_directory ask), offering the option again.
+    await h.perm("unblock ~/secret.txt");
+    assert.match(h.ctx.notices.at(-1) ?? "", /readable again/);
+    h.ctx.answers.push("Deny");
+    assert.equal((await h.call("read", { path: "~/secret.txt" }))?.block, true);
+    assert.equal(h.ctx.prompts.length, 2);
+    assert.equal(h.ctx.prompts[1].options.at(-1), "Deny and block ~/secret.txt for this session");
+    // Privilege and home-level escapes do not offer it.
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: "sudo id" });
+    assert.deepEqual(h.ctx.prompts[2].options, ["Allow once", "Allow for session", "Deny"]);
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: "ls ~" });
+    assert.deepEqual(h.ctx.prompts[3].options, ["Allow once", "Allow for session", "Deny"]); // home is never blockable
+    // clear-approvals clears blocks as well.
+    h.ctx.answers.push("Deny and block ~/other.txt for this session");
+    await h.call("read", { path: "~/other.txt" });
+    await h.perm("clear-approvals");
+    assert.match(h.ctx.notices.at(-1) ?? "", /cleared session approvals and blocked paths/);
+    await h.perm("blocks");
+    assert.match(h.ctx.notices.at(-1) ?? "", /no paths blocked/);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("bash: a session grant never covers an escape, and an approved escape covers only itself", { skip }, async () => {
   const h = await setup();
   try {
@@ -698,8 +744,11 @@ test("defaults audit: stale /perm-init copy warns per field, acknowledge silence
     h.ctx.notices.length = 0;
     await h.pi.emit("session_start", {}, h.ctx);
     const stale = h.ctx.notices.find((n) => /still hold an outdated default/.test(n)) ?? "";
-    assert.match(stale, /3 value\(s\)/);
-    for (const m of ["default", "plan", "build"]) assert.match(stale, new RegExp(`modes\\.${m}\\.sandbox\\.allowWrite still holds the 2\\.0\\.0 to 2\\.2\\.1 default`));
+    assert.match(stale, /6 value\(s\)/); // allowWrite (changed in 2.3.0) and denyRead (changed in 2.4.0) in each sandboxed mode
+    for (const m of ["default", "plan", "build"]) {
+      assert.match(stale, new RegExp(`modes\\.${m}\\.sandbox\\.allowWrite still holds the 2\\.0\\.0 to 2\\.2\\.1 default`));
+      assert.match(stale, new RegExp(`modes\\.${m}\\.sandbox\\.denyRead still holds the 2\\.0\\.0 to 2\\.3\\.1 default`));
+    }
     assert.match(stale, /acknowledgeDefaults/);
     const upgrade = h.ctx.notices.find((n) => /updated 2\.0\.0 ->/.test(n)) ?? "";
     assert.match(upgrade, /stock defaults changed for modes\.default\.sandbox\.allowWrite/);

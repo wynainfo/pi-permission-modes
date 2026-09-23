@@ -127,8 +127,14 @@ export function auditStaleDefaults(
     if (!cur.has(p)) continue; // custom mode / unknown field: nothing to compare against
     const currentValue = cur.get(p);
     if (sameValue(value, currentValue)) continue; // redundant copy of the current default
-    const old = hist.find((h) => h.leaves.has(p) && sameValue(h.leaves.get(p), value));
-    if (old) findings.push({ path: p, value, currentValue, from: old.from, to: old.to });
+    // A value may have shipped unchanged across several ranges: report the
+    // whole span (earliest `from` to latest `to` among the matching entries).
+    const matches = hist.filter((h) => h.leaves.has(p) && sameValue(h.leaves.get(p), value));
+    if (matches.length > 0) {
+      const from = matches.reduce((a, h) => (compareVersions(h.from, a) < 0 ? h.from : a), matches[0].from);
+      const to = matches.reduce((a, h) => (compareVersions(h.to, a) > 0 ? h.to : a), matches[0].to);
+      findings.push({ path: p, value, currentValue, from, to });
+    }
   }
   return findings;
 }

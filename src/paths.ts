@@ -156,6 +156,50 @@ export function bashPathEscapes(root: string, p: string, alsoInside: readonly st
   return true;
 }
 
+/** Canonical absolute form of `p` resolved against `root` (symlinks followed, dangling links too). */
+export function canonicalPath(root: string, p: string): string {
+  return canonicalize(path.resolve(root, p));
+}
+
+/** Top-level locations a session block must never cover (masking them would break the machine or the project). */
+const UNBLOCKABLE = ["/", "/tmp", "/private", "/private/tmp", "/usr", "/etc", "/var", "/opt", "/home", "/Users", "/bin", "/sbin", "/lib", "/lib64", "/dev", "/proc", "/sys", "/run"];
+
+/**
+ * The canonical path a user may block for the session after denying an
+ * escape to `p`, or undefined when blocking it would be unsafe or pointless:
+ * the root or a top-level system directory, any direct child of `/`, the
+ * home directory itself, an ancestor (or equal) of the project root or of a
+ * sandbox-writable root (`alsoInside`), a path already covered by `denyRead`,
+ * or a path inside the project (not an escape). A denied `cd ~` must never
+ * mask the home; a denied `cat ~/secret.txt` should mask exactly that file.
+ */
+export function blockablePath(
+  root: string,
+  p: string,
+  opts: { alsoInside?: readonly string[]; denyRead?: readonly string[] } = {},
+): string | undefined {
+  const target = canonicalPath(root, p);
+  const home = canonicalize(os.homedir());
+  if (target === home || UNBLOCKABLE.some((u) => target === u || target === canonicalize(u))) return undefined;
+  if (path.dirname(target) === path.parse(target).root) return undefined; // a direct child of "/"
+  const realRoot = canonicalize(root);
+  if (relInside(path.relative(realRoot, target))) return undefined; // inside the project: not an escape
+  if (relInside(path.relative(target, realRoot))) return undefined; // ancestor of the project
+  for (const r of opts.alsoInside ?? []) {
+    if (relInside(path.relative(target, canonicalize(path.resolve(root, expandHome(r)))))) return undefined; // ancestor of a writable root
+  }
+  for (const d of opts.denyRead ?? []) {
+    if (relInside(path.relative(canonicalize(expandHome(d)), target))) return undefined; // already masked
+  }
+  return target;
+}
+
+/** Render a path with the home directory as `~` (for prompts and notices). */
+export function displayPath(p: string): string {
+  const home = os.homedir();
+  return p === home ? "~" : p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p;
+}
+
 /**
  * Temp dir the sandbox runtime allows writes to unconditionally, on top of a
  * profile's `allowWrite` (it also points TMPDIR there inside sandboxed

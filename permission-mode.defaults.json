@@ -11,7 +11,7 @@
         "writable": true,
         "allowWrite": [".", "/tmp/pi"],
         "denyWrite": [],
-        "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
+        "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc", "~/.git-credentials", "~/.pypirc", "~/.gem/credentials", "~/.vault-token", "~/.password-store", "~/.pi/agent/auth.json", "~/.pi/agent/oauth.json"],
         "network": {
           "allowedDomains": [
             "npmjs.org",
@@ -52,7 +52,7 @@
         "writable": false,
         "allowWrite": [".", "/tmp/pi"],
         "denyWrite": [],
-        "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
+        "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc", "~/.git-credentials", "~/.pypirc", "~/.gem/credentials", "~/.vault-token", "~/.password-store", "~/.pi/agent/auth.json", "~/.pi/agent/oauth.json"],
         "network": {
           "allowedDomains": [
             "npmjs.org",
@@ -92,7 +92,7 @@
         "writable": true,
         "allowWrite": [".", "/tmp/pi"],
         "denyWrite": [],
-        "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
+        "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc", "~/.git-credentials", "~/.pypirc", "~/.gem/credentials", "~/.vault-token", "~/.password-store", "~/.pi/agent/auth.json", "~/.pi/agent/oauth.json"],
         "network": {
           "allowedDomains": [
             "npmjs.org",

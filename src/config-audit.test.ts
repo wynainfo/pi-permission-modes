@@ -82,6 +82,8 @@ test("shipped data: history parses, covers 2.0.0 to 2.2.1, differs from the curr
   assert.ok(history.length >= 1);
   assert.equal(history[0].from, "2.0.0");
   assert.equal(history[0].to, "2.2.1");
+  assert.equal(history[1].from, "2.3.0");
+  assert.equal(history[1].to, "2.3.1");
   const current = { version: extensionVersion(), defaults: loadStockDefaults() };
   for (const h of history) {
     assert.ok(defaultsChangedSince(h.from, current, history).length > 0, `history ${h.from}-${h.to} must differ from the current defaults`);
@@ -89,7 +91,13 @@ test("shipped data: history parses, covers 2.0.0 to 2.2.1, differs from the curr
   // The real regression this exists for: a 2.2.x /perm init copy still says /tmp.
   const oldCopy = JSON.parse(JSON.stringify(history[0].defaults)) as Record<string, unknown>;
   const stale = auditStaleDefaults(oldCopy, current, history);
-  assert.deepEqual(stale.map((f) => f.path).sort(), ["modes.build.sandbox.allowWrite", "modes.default.sandbox.allowWrite", "modes.plan.sandbox.allowWrite"]);
+  assert.deepEqual(
+    stale.map((f) => f.path).sort(),
+    ["build", "default", "plan"].flatMap((m) => [`modes.${m}.sandbox.allowWrite`, `modes.${m}.sandbox.denyRead`]).sort(),
+  );
+  // Ranges are reported per value: allowWrite changed in 2.3.0, denyRead in 2.4.0.
+  assert.equal(stale.find((f) => f.path === "modes.build.sandbox.allowWrite")?.to, "2.2.1");
+  assert.equal(stale.find((f) => f.path === "modes.build.sandbox.denyRead")?.to, "2.3.1");
   // And a verbatim copy of the CURRENT defaults is fully silent.
   const freshCopy = JSON.parse(readFileSync(stockDefaultsFile(), "utf-8")) as Record<string, unknown>;
   assert.deepEqual(auditStaleDefaults(freshCopy, current, history), []);

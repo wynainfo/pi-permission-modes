@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { type ApprovalUI, askWithSession, SessionApprovals } from "./approvals.ts";
+import { type ApprovalUI, askWithSession, BlockedPaths, SessionApprovals } from "./approvals.ts";
 
 test("SessionApprovals: remembers per (mode, surface, target)", () => {
   const a = new SessionApprovals();
@@ -113,4 +113,39 @@ test("askWithSession: 'Allow forever' option only appears with onForever, and pe
   assert.deepEqual(seen, ["Allow once", "Allow for session", "Allow forever", "Deny"]);
   assert.equal(persisted, 1);
   assert.equal(a.has("default", "tool", "foo"), true); // also covers the session
+});
+
+test("BlockedPaths: covers the path and everything under a blocked directory", () => {
+  const b = new BlockedPaths();
+  b.add("/home/u/secret.txt");
+  b.add("/home/u/private");
+  assert.equal(b.covers("/home/u/secret.txt"), true);
+  assert.equal(b.covers("/home/u/secret.txt.bak"), false);
+  assert.equal(b.covers("/home/u/private/x/y"), true);
+  assert.equal(b.covers("/home/u/private2"), false);
+  assert.deepEqual(b.list().sort(), ["/home/u/private", "/home/u/secret.txt"]);
+  assert.equal(b.remove("/home/u/private"), true);
+  assert.equal(b.remove("/home/u/private"), false);
+  b.clear();
+  assert.deepEqual(b.list(), []);
+});
+
+test("askWithSession: the 'deny and …' option denies and runs its side effect; absent otherwise", async () => {
+  const seen: string[][] = [];
+  const mk = (answer: string | undefined): ApprovalUI => ({
+    hasUI: true,
+    select: async (_t: string, o: string[]) => {
+      seen.push(o);
+      return answer;
+    },
+  });
+  let ran = 0;
+  const denyAnd = { label: "Deny and block ~/x for this session", run: () => void ran++ };
+  assert.equal(await askWithSession(mk(denyAnd.label), new SessionApprovals(), "d", "bash", "x", "?", undefined, denyAnd), false);
+  assert.equal(ran, 1);
+  assert.deepEqual(seen[0], ["Allow once", "Allow for session", "Deny", denyAnd.label]);
+  assert.equal(await askWithSession(mk("Deny"), new SessionApprovals(), "d", "bash", "x", "?", undefined, denyAnd), false);
+  assert.equal(ran, 1, "plain Deny does not run it");
+  await askWithSession(mk("Deny"), new SessionApprovals(), "d", "bash", "x", "?");
+  assert.deepEqual(seen[2], ["Allow once", "Allow for session", "Deny"]);
 });

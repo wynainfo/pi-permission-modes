@@ -210,6 +210,21 @@ command to pass silently - approving `git` does *not* cover a later
 `git status && curl … | sh` (that chain prompts again, and approving it grants
 `git` *and* `curl`). Clear them with `/perm clear-approvals`.
 
+**Deny and block.** A prompt for an out-of-project *path* (bash or a file
+tool) offers a fourth option, **Deny and block `<path>` for this session**.
+Plain Deny refuses that one command; the agent is free to try again another
+way, and reads outside the project are not contained by the sandbox (see
+[SECURITY.md](SECURITY.md)), so a script that opens the file would succeed.
+Deny and block adds the path to the session's `denyRead`: the sandbox is
+re-applied at once, so any indirect read from bash gets nothing (Linux masks
+a file with `/dev/null`, macOS returns a permission error), and the file
+tools refuse it without a prompt. The awareness section lists the block, so
+the model stops probing. Only the exact file or directory named is blocked,
+never the home directory, a system root, or an ancestor of the project or of
+a writable root; when a path can't be blocked safely the option is simply not
+offered. `/perm blocks` lists the session's blocks, `/perm unblock <path>`
+lifts one, and `/perm clear-approvals` clears them with the grants.
+
 ---
 
 ## How protection works
@@ -402,6 +417,28 @@ Add a mode under `modes` in the global config and (optionally) list it in
 > glob patterns from its `allowWrite`/`denyRead`/`denyWrite` lists on Linux - use
 > literal paths there (macOS supports globs). This applies to the **sandbox**
 > lists, not the `permission` policy globs, which are matched by this extension.
+
+> **Strict home (optional).** Reads outside the project are deny-listed, not
+> allow-listed: the sandbox blocks only `denyRead` (credential files and dirs
+> by default, see the defaults file) and lets everything else under `~` be
+> read so toolchains work. A cautious profile can mask private directories
+> too; paste into a mode's `denyRead` and keep what you can live without:
+>
+> ```jsonc
+> "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.netrc", "~/.git-credentials",
+>              "~/.pypirc", "~/.gem/credentials", "~/.vault-token", "~/.password-store",
+>              "~/.pi/agent/auth.json", "~/.pi/agent/oauth.json",
+>              "~/Documents", "~/Desktop", "~/Downloads", "~/Pictures", "~/.config", "~/.local/share"]
+> ```
+>
+> Tools that read their own config from `~/.config` (gh, many CLIs) or
+> `~/.local/share` will fail inside the sandbox with that list; drop those two
+> entries if the agent needs them. The shipped list deliberately leaves out
+> files tools read (`~/.config/gh/hosts.yml`, `~/.kube`, `~/.docker/config.json`,
+> `~/.npmrc`); add them yourself if the agent never needs those tools. Note
+> that `~/.pi/agent/auth.json` in the default list means a `pi` started from
+> inside sandboxed bash cannot authenticate; remove it if you spawn nested pi
+> sessions that way.
 
 > **Temp directories, per platform.** The runtime *always* allows writes to its
 > own `/tmp/claude` (and, on macOS, to the user's `$TMPDIR` under

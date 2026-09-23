@@ -47,10 +47,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { askWithSession, SessionApprovals } from "./approvals.ts";
+import { askWithSession, BlockedPaths, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate } from "./bash-enforce.ts";
-import { analyzeBash } from "./bash-parse.ts";
+import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
   auditStaleDefaults,
   defaultsChangedSince,
@@ -76,9 +76,9 @@ import {
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
-import { isOutside, isProtectedWrite, normalizeToolPath, sandboxAllowedRoots } from "./paths.ts";
+import { blockablePath, canonicalPath, displayPath, isOutside, isProtectedWrite, normalizeToolPath, sandboxAllowedRoots } from "./paths.ts";
 import { decide, decideBashChain } from "./resolve.ts";
-import { SandboxController, networkFiltered } from "./sandbox.ts";
+import { SandboxController, networkFiltered, withDeniedReads } from "./sandbox.ts";
 import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
   type Action,
@@ -139,7 +139,11 @@ export default async function (pi: ExtensionAPI) {
   // with the scratch dir appended to allowWrite, so it is always writable and
   // never prompts, whatever the config says about the shared base.
   let scratchDir: string | undefined;
-  const effectiveSandbox = (m: ModeDef): SandboxProfile => withScratchDir(m.sandbox, scratchDir);
+  // Paths the user blocked for the session ("Deny and block"): folded into the
+  // effective profile's denyRead so the OS sandbox masks them for bash, and
+  // checked directly for the (unsandboxed) file tools.
+  const blocked = new BlockedPaths();
+  const effectiveSandbox = (m: ModeDef): SandboxProfile => withDeniedReads(withScratchDir(m.sandbox, scratchDir), blocked.list());
 
   const sandbox = new SandboxController();
   // toolCallIds the user explicitly approved to run OUTSIDE the sandbox.
@@ -188,6 +192,7 @@ export default async function (pi: ExtensionAPI) {
     target: string | string[],
     title: string,
     onForever?: () => void | Promise<void>,
+    denyAnd?: DenyOption,
   ): Promise<boolean> =>
     askWithSession(
       { hasUI: ctx.hasUI, select: (t, o) => ctx.ui.select(t, o) },
@@ -197,7 +202,40 @@ export default async function (pi: ExtensionAPI) {
       target,
       title,
       onForever,
+      denyAnd,
     );
+
+  /**
+   * The "Deny and block … for this session" option for an escape prompt, or
+   * undefined when none of the escaping paths may be blocked (see
+   * blockablePath). Choosing it records the paths and re-applies the sandbox
+   * profile so the runtime masks them at once.
+   */
+  const denyAndBlock = (ctx: ExtensionContext, targets: readonly string[]): DenyOption | undefined => {
+    const m = currentMode();
+    const eff = effectiveSandbox(m);
+    const eligible = [
+      ...new Set(
+        targets
+          .map((t) => blockablePath(root, t, { alsoInside: eff.allowWrite ?? [], denyRead: eff.denyRead ?? [] }))
+          .filter((t): t is string => t !== undefined && !blocked.covers(t)),
+      ),
+    ];
+    if (eligible.length === 0) return undefined;
+    const shown = eligible.map(displayPath).join(", ");
+    return {
+      label: `Deny and block ${shown} for this session`,
+      run: async () => {
+        for (const t of eligible) blocked.add(t);
+        await sandbox.applyProfile(effectiveSandbox(currentMode()));
+        updateStatus(ctx, currentMode(), sandbox, net.open);
+        ctx.ui.notify(
+          `permission-mode: ${shown} ${eligible.length === 1 ? "is" : "are"} now unreadable inside the sandbox for this session (/perm blocks to list, /perm unblock <path> to lift)`,
+          "info",
+        );
+      },
+    };
+  };
 
   /** "Allow forever": persist `<mode>.permission.<surface>.<key> = allow` to the
    * global config and hot-reload so it applies now and in future sessions. */
@@ -330,12 +368,30 @@ export default async function (pi: ExtensionAPI) {
     handler: async (ctx) => cycle(ctx),
   });
   pi.registerCommand("perm", {
-    description: `Set or cycle permission mode: /perm [${config.cycleOrder.join("|")}|init|clear-approvals]`,
+    description: `Set or cycle permission mode: /perm [${config.cycleOrder.join("|")}|init|clear-approvals|blocks|unblock <path>]`,
     handler: async (args, ctx) => {
       const arg = args.trim().toLowerCase();
       if (arg === "clear-approvals") {
         approvals.clearAll();
-        return ctx.ui.notify("permission-mode: cleared session approvals", "info");
+        const hadBlocks = blocked.list().length > 0;
+        blocked.clear();
+        if (hadBlocks) await sandbox.applyProfile(effectiveSandbox(currentMode()));
+        return ctx.ui.notify(`permission-mode: cleared session approvals${hadBlocks ? " and blocked paths" : ""}`, "info");
+      }
+      if (arg === "blocks") {
+        const list = blocked.list();
+        return ctx.ui.notify(
+          list.length ? `permission-mode: blocked for this session:\n${list.map((b) => `  - ${displayPath(b)}`).join("\n")}` : "permission-mode: no paths blocked for this session",
+          "info",
+        );
+      }
+      if (arg.startsWith("unblock")) {
+        const raw = args.trim().slice("unblock".length).trim();
+        if (!raw) return ctx.ui.notify("permission-mode: usage: /perm unblock <path>", "warning");
+        const target = canonicalPath(root, normalizeToolPath(raw));
+        if (!blocked.remove(target)) return ctx.ui.notify(`permission-mode: ${displayPath(target)} is not blocked (see /perm blocks)`, "warning");
+        await sandbox.applyProfile(effectiveSandbox(currentMode()));
+        return ctx.ui.notify(`permission-mode: ${displayPath(target)} is readable again for this session`, "info");
       }
       if (arg === "init") {
         // Scaffold an editable FULL copy of the stock defaults at the global
@@ -462,6 +518,7 @@ export default async function (pi: ExtensionAPI) {
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
           `Deny read:  ${c.filesystem?.denyRead?.join(", ") || "(none)"}`,
+          `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,
           `Allow write: ${c.filesystem?.allowWrite?.join(", ") || "(none)"}`,
           `Deny write:  ${c.filesystem?.denyWrite?.join(", ") || "(none)"}`,
         ].join("\n"),
@@ -656,6 +713,7 @@ export default async function (pi: ExtensionAPI) {
   });
   pi.on("session_shutdown", async () => {
     approvals.clearAll(); // session-scoped grants don't outlive the session
+    blocked.clear(); // nor do "Deny and block" paths
     net.clear(); // network grants/denies and the open toggle are session-scoped too
     await sandbox.reset();
   });
@@ -676,7 +734,9 @@ export default async function (pi: ExtensionAPI) {
     applyToolVisibility(); // keep hidden tools hidden as the tool set evolves
     const m = currentMode();
     const parts: string[] = [];
-    const aware = sandboxAwarenessPrompt(m, {
+    // The effective profile carries the session's blocked paths in denyRead,
+    // so the model sees them under "Reads are broadly allowed EXCEPT".
+    const aware = sandboxAwarenessPrompt({ ...m, sandbox: effectiveSandbox(m) }, {
       active: sandbox.ready && !sandbox.disabled,
       reason: sandbox.disabled ? "disabled via --no-sandbox" : sandbox.warn,
       networkOpen: net.open,
@@ -782,7 +842,17 @@ export default async function (pi: ExtensionAPI) {
         // not cover a different one that merely shares its command name.
         const names = [...new Set(analysis.commands.map((c) => c.name).filter(Boolean))];
         const keys = analysis.outsideReason ? [`escape:${command}`] : names.length > 0 ? names : [command];
-        if (!(await promptAllow(ctx, "bash", keys, gate.title))) return { block: true, reason: gate.reason };
+        // Paths this command reaches outside the project (none for privilege
+        // escalation). One already blocked this session: block outright, no
+        // prompt. Otherwise the prompt offers "Deny and block".
+        const targets = analysis.outsideReason?.startsWith("path outside project")
+          ? analysis.usedFallback
+            ? [escapeTargetFromReason(analysis.outsideReason, root)].filter((t): t is string => t !== undefined)
+            : escapingPaths(analysis.commands, root, bounds)
+          : [];
+        const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
+        if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it` };
+        if (!(await promptAllow(ctx, "bash", keys, gate.title, undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }
       return undefined;
@@ -792,6 +862,11 @@ export default async function (pi: ExtensionAPI) {
     const surface = FILE_TOOL_SURFACE[toolName];
     if (surface && inPath !== undefined) {
       const path = inPath;
+      // A path blocked for the session ("Deny and block") is denied outright:
+      // the file tools are not sandboxed, so the kernel mask alone would not cover them.
+      if (blocked.covers(canonicalPath(root, path))) {
+        return { block: true, reason: `Path "${path}" is blocked for this session (Deny and block); /perm unblock lifts it` };
+      }
       const outside = isOutside(root, path, bounds);
       const action = decide(m, surface, path, { isOutside: outside });
       if (action === "deny") {
@@ -803,9 +878,10 @@ export default async function (pi: ExtensionAPI) {
         return { block: true, reason: `Path "${path}" is blocked by ${m.label}` };
       }
       if (action === "ask") {
-        const title = outside ? `Outside project — allow ${toolName}? (${path})` : `Allow ${toolName}? (${path})`;
+        const title = outside ? `Outside project - allow ${toolName}? (${path})` : `Allow ${toolName}? (${path})`;
         const reason = outside ? "Access outside project blocked" : "blocked";
-        if (!(await promptAllow(ctx, surface, path, title))) return { block: true, reason };
+        const denyAnd = outside ? denyAndBlock(ctx, [path]) : undefined;
+        if (!(await promptAllow(ctx, surface, path, title, undefined, denyAnd))) return { block: true, reason };
       }
       return undefined; // allow
     }

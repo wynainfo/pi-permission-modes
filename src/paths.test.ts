@@ -17,6 +17,9 @@ import {
   SANDBOX_PLACEHOLDER_PATHS,
   SANDBOX_RUNTIME_TMP_PATHS,
   bashPathEscapes,
+  blockablePath,
+  canonicalPath,
+  displayPath,
   normalizeToolPath,
   sandboxAllowedRoots,
 } from "./paths.ts";
@@ -383,4 +386,25 @@ test("isOutside: a directory named ..foo is inside the project", () => {
   assert.equal(isOutside(ROOT, "../foo"), true);
   assert.equal(isOutside(ROOT, ".."), true);
   assert.equal(isPlanFile(ROOT, "plan/..x.md"), true);
+});
+
+test("blockablePath: exact files and leaf dirs yes; roots, home, ancestors, denied, in-project no", () => {
+  const home = os.homedir();
+  const root = path.join(home, "temp", "test");
+  assert.equal(blockablePath(root, path.join(home, "secret.txt")), path.join(home, "secret.txt"));
+  assert.equal(blockablePath(root, path.join(home, "Documents")), path.join(home, "Documents")); // a private dir: the user's call
+  assert.equal(blockablePath(root, "/etc/passwd"), "/etc/passwd");
+  assert.equal(blockablePath(root, home), undefined); // never the home itself
+  assert.equal(blockablePath(root, "/"), undefined);
+  assert.equal(blockablePath(root, "/etc"), undefined); // top-level system dir
+  assert.equal(blockablePath(root, "/srv"), undefined); // any direct child of /
+  assert.equal(blockablePath(root, path.join(home, "temp")), undefined); // ancestor of the project
+  assert.equal(blockablePath(root, root), undefined);
+  assert.equal(blockablePath(root, path.join(root, "src", "x")), undefined); // inside the project: not an escape
+  assert.equal(blockablePath(root, "/tmp/pi", { alsoInside: ["/tmp/pi/sess"] }), undefined); // ancestor of a writable root
+  assert.equal(blockablePath(root, "/tmp/pi/other", { alsoInside: ["/tmp/pi/sess"] }), "/tmp/pi/other");
+  assert.equal(blockablePath(root, path.join(home, ".ssh", "id_rsa"), { denyRead: ["~/.ssh"] }), undefined); // already masked
+  assert.equal(displayPath(path.join(home, "a", "b")), "~/a/b");
+  assert.equal(displayPath("/etc/x"), "/etc/x");
+  assert.equal(canonicalPath(root, "../x"), path.join(home, "temp", "x"));
 });

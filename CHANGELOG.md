@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Deny and block a path for the session.** Every prompt for an
+  out-of-project path (bash escapes and the file tools) offers a fourth
+  option, "Deny and block `<path>` for this session". Plain Deny only refused
+  that one command, and reads outside the project are not contained by the
+  sandbox, so an agent that was denied `cat ~/secret.txt` could write a
+  Python script into the project and read the file anyway. Deny and block
+  adds the path to the session's `denyRead` and re-applies the sandbox at
+  once: bash reads of it get nothing (Linux masks the file with `/dev/null`,
+  macOS returns EPERM), the file tools refuse it without a prompt, a later
+  bash command naming it is blocked outright, and the awareness section
+  lists it so the model stops probing. Only the exact file or directory is
+  blocked, never the home directory, a system root, a direct child of `/`,
+  or an ancestor of the project or of a writable root; when nothing can be
+  blocked safely the option is not offered. `/perm blocks` lists the
+  session's blocks, `/perm unblock <path>` lifts one, `/perm clear-approvals`
+  clears them together with the grants. Session lifetime only.
+
+### Changed
+- **Default `denyRead` covers more credential files:** `~/.netrc`,
+  `~/.git-credentials`, `~/.pypirc`, `~/.gem/credentials`, `~/.vault-token`,
+  `~/.password-store`, and pi's own `~/.pi/agent/auth.json` and
+  `oauth.json`, in Default, Plan, and Build. Files that tools read from
+  inside the sandbox (`~/.config/gh/hosts.yml`, `~/.kube`,
+  `~/.docker/config.json`, `~/.npmrc`) are deliberately not included; the
+  README shows a stricter "strict home" list to paste. Note that the pi auth
+  entry means a `pi` started from inside sandboxed bash cannot authenticate;
+  remove it if you spawn nested pi sessions that way. Existing global
+  configs get the outdated-default warning for their old `denyRead`.
+- The outdated-default audit now reports the whole version span a value
+  shipped in (e.g. "the 2.0.0 to 2.3.1 default") instead of only the newest
+  range that carried it.
+
 ## [2.3.1]
 
 ### Security

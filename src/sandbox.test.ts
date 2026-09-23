@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { commandLauncher, createSandboxedBashOps, EMPTY_ALLOWLIST_SENTINEL, networkFiltered, writeCommandFile } from "./sandbox.ts";
+import { commandLauncher, createSandboxedBashOps, EMPTY_ALLOWLIST_SENTINEL, networkFiltered, withDeniedReads, writeCommandFile } from "./sandbox.ts";
 
 const quote: ((xs: string[]) => string) | undefined = (() => {
   try {
@@ -183,4 +183,12 @@ test("exec: an aborted signal never spawns; an abort during the wrap kills befor
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("withDeniedReads: appends session blocks to denyRead of a sandboxed profile only", () => {
+  const p = { enabled: true, writable: true, denyRead: ["~/.ssh"] };
+  assert.deepEqual(withDeniedReads(p, ["/home/u/secret.txt", "~/.ssh"]).denyRead, ["~/.ssh", "/home/u/secret.txt"]);
+  assert.equal(withDeniedReads(p, []), p);
+  const yolo = { enabled: false, writable: true };
+  assert.equal(withDeniedReads(yolo, ["/x"]), yolo);
 });
