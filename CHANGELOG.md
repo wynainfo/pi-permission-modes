@@ -26,6 +26,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tree-sitter and the heuristic path. Symlinks to outside directories or
   non-executable files, dangling links, and paths named by their outside
   location still prompt as before; the file tools still follow symlinks.
+- **The awareness section now says that background processes die with the
+  command.** Each bash call runs in its own sandbox (a fresh PID namespace on
+  Linux) that is torn down when the command exits, so `&`, `nohup`, and
+  `setsid` cannot start anything long-running; a job either kept the call
+  hanging until the timeout or was gone by the next turn, and the model found
+  out by wasting turns. The section tells it up front to run long tasks in
+  the foreground with an adequate timeout, or to ask the user.
 - **Exclamation marks no longer arrive as `\!` in sandboxed bash.** The
   sandbox runtime embeds the command in a `bash -c` string that it quotes with
   the shell-quote package, up to three times over on Linux. Whenever the

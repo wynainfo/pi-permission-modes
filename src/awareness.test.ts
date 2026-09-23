@@ -42,6 +42,16 @@ test("writable sandboxed mode: renders paths, secrets, domains, and the prompt f
   assert.doesNotMatch(out, /write-denied/); // empty denyWrite → no bullet
 });
 
+test("background processes: the teardown caveat is stated when the sandbox is active, not when degraded", () => {
+  const active = sandboxAwarenessPrompt(mode(), { active: true }) ?? "";
+  assert.match(active, /Background processes do not outlive the command/);
+  assert.match(active, /`&`, `nohup`, and `setsid` cannot start anything long-running/);
+  // Read-only bash (Plan) is sandboxed the same way.
+  assert.match(sandboxAwarenessPrompt(mode({}, { writable: false }), { active: true }) ?? "", /do not outlive the command/);
+  // Degraded: commands run unconfined, background jobs work as usual, so no caveat.
+  assert.doesNotMatch(sandboxAwarenessPrompt(mode(), { active: false, reason: "x" }) ?? "", /outlive/);
+});
+
 test("read-only mode: says READ-ONLY instead of listing writable paths", () => {
   const out = sandboxAwarenessPrompt(mode({ label: "Plan Mode" }, { writable: false }), { active: true });
   assert.ok(out);

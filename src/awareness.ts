@@ -108,6 +108,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     );
   }
   lines.push(
+    "- Background processes do not outlive the command: each bash call runs in its own sandbox that is torn down when the command exits, so `&`, `nohup`, and `setsid` cannot start anything long-running. Run long tasks in the foreground with an adequate timeout, or ask the user.",
     "- Commands beyond these boundaries (out-of-project paths, sudo/doas) are fine to issue: the user is asked for permission automatically, and approved commands run outside the sandbox.",
     mode.bypassProtectedPaths
       ? "- File tools (read/edit/write/…) are policy-gated rather than OS-sandboxed."
