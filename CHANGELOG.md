@@ -53,6 +53,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   them, and Deny and block keeps offering paths that a carve-out re-exposes
   while skipping paths a deny already masks.
 
+### Fixed
+- `/perm <typo>` no longer cycles to the next mode: an argument that is
+  neither a mode name nor a subcommand prints the usage line. A bare
+  `/perm` still cycles.
+
 ### Changed
 - **Sandbox runtime upgraded from `@anthropic-ai/sandbox-runtime` 0.0.26 to
   0.0.77.** The runtime moved a long way in between, and several of this

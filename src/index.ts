@@ -501,7 +501,8 @@ export default async function (pi: ExtensionAPI) {
         }
       }
       if (hasMode(config.modes, arg)) await setMode(arg, ctx);
-      else await cycle(ctx);
+      else if (arg === "") await cycle(ctx);
+      else ctx.ui.notify(`permission-mode: unknown mode or subcommand "${arg}"; usage: /perm [${config.cycleOrder.join("|")}|init|clear-approvals|blocks|unblock <path>]`, "warning");
     },
   });
   const networkEnforcing = () => sandbox.ready && networkFiltered(currentMode().sandbox);

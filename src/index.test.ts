@@ -733,6 +733,20 @@ test("startup: --perm flag wins; a persisted session entry restores the mode", {
   }
 });
 
+test("/perm: a bare call cycles, an unknown argument prints usage without switching", { skip }, async () => {
+  const h = await setup();
+  try {
+    assert.match(h.ctx.status, /^Default /);
+    await h.perm("buidl");
+    assert.match(h.ctx.status, /^Default /);
+    assert.match(h.ctx.notices.at(-1) ?? "", /unknown mode or subcommand "buidl"; usage: \/perm \[default\|plan\|build\|yolo\|init/);
+    await h.perm("");
+    assert.match(h.ctx.status, /^Plan Mode /);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("alt+m cycles modes and persists the choice as a session entry", { skip }, async () => {
   const h = await setup();
   try {
@@ -862,8 +876,9 @@ test("prototype names are not modes anywhere: /perm, env, session entries, headl
   try {
     assert.match(h.ctx.status, /^Default /); // env value ignored
     h.ctx.notices.length = 0;
-    await h.perm("constructor"); // unknown -> cycles instead of throwing
-    assert.ok(h.ctx.notices.some((n) => /Permission mode: Plan Mode/.test(n)));
+    await h.perm("constructor"); // unknown -> usage notice, no switch, no throw
+    assert.match(h.ctx.notices.at(-1) ?? "", /unknown mode or subcommand "constructor"/);
+    assert.match(h.ctx.status, /^Default /);
   } finally {
     h.cleanup();
   }
