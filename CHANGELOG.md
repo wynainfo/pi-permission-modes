@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.1]
+
 ### Security
 - **A bare filename that is a symlink out of the project is an escape.**
   The bash escape detector only judged tokens that look like paths (a `/`,
