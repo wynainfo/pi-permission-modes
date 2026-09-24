@@ -1069,7 +1069,7 @@ test("plan approval A: Accept after the run switches to Build and sends the appr
       options: ["Accept: switch to Build and implement it", "Decline: keep refining in Plan Mode"],
     });
     assert.match(h.ctx.status, /^Build /);
-    assert.deepEqual(h.pi.messages.map((m) => m.content), [APPROVE_MSG("plan/2026-09-24_x.md")]);
+    assert.deepEqual(h.pi.messages, [{ content: APPROVE_MSG("plan/2026-09-24_x.md"), opts: { deliverAs: "followUp" } }]); // queued: agent_end still counts as streaming
     // Persisted: shown, then approved (no path), so a resume does not re-offer it.
     const plan = h.pi.entries.filter((e) => e.customType === "perm-plan").map((e) => e.data);
     assert.deepEqual(plan, [{ path: "plan/2026-09-24_x.md" }, {}]);

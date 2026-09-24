@@ -372,7 +372,11 @@ export default async function (pi: ExtensionAPI) {
     }
     pendingPlan = undefined;
     pi.appendEntry<PlanEntry>(PLAN_ENTRY, {});
-    pi.sendUserMessage(approvalMessage(config.plan?.approveMessage, plan.path));
+    // agent_end fires while the run still counts as streaming (it settles
+    // after its listeners), and a plain send throws then. A follow-up is
+    // queued behind the finishing run and pi starts a fresh run for it; when
+    // the agent is idle (B via alt+m, /plan approve) it is sent right away.
+    pi.sendUserMessage(approvalMessage(config.plan?.approveMessage, plan.path), { deliverAs: "followUp" });
     return true;
   };
 
