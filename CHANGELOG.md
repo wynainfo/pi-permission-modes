@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.0]
+
 ### Security
 - **Parallel sandboxed commands no longer lose their write denies.** The
   extension deleted the runtime's 0-byte mount points for absent protected
