@@ -138,7 +138,10 @@ outside directories or non-executable files stay escapes.
 > naming the path or host, so the model can adjust instead of guessing why
 > a step failed. Linux reports refused write attempts (a denied read just
 > returns nothing, there is no failing syscall to observe); macOS reports
-> both through the system sandbox log.
+> both through the system sandbox log. The Linux report is best effort in
+> both directions: it can list a write that actually landed in the throwaway
+> tmpfs the sandbox mounts over a read-denied directory (lost when the
+> command ends), and it misses Plan mode's read-only refusals.
 
 > **Sandbox placeholder cleanup:** the sandbox runtime write-protects a fixed set
 > of dotfiles/dirs at the project root (`.git/hooks`, `.gitconfig`, `.gitmodules`,
@@ -146,11 +149,11 @@ outside directories or non-executable files stay escapes.
 > `.idea`, `.claude/{commands,agents}`). When one of these is **absent**, it
 > blocks the path by mounting `/dev/null` over the first missing component, and
 > because the project is writable in Default/Build, bubblewrap materializes that
-> mountpoint as a **0-byte, read-only file**. The runtime removes its own mount
-> points after every command; the extension additionally sweeps such 0-byte
-> files at startup and around each run, for the case where a pi died
-> mid-command. Only 0-byte *files* are removed - real directories (`.vscode/`,
-> `.git/`, …) and non-empty files (`.gitmodules`, …) are never touched.
+> mountpoint as a **0-byte, read-only file**. The runtime removes these mount
+> points once no sandboxed command is running any more, and re-covers
+> leftovers of a crashed session on its next run. (Up to 2.3.1 the extension
+> also deleted them around every command itself, which could strip the
+> denies from a sandboxed command running in parallel; it no longer does.)
 > **Known limitation:** inside the sandbox those masks appear as character
 > devices at the project root, so `git status` lists them as untracked and
 > `git add -A` / `git add .` at the root fails with "can only add regular
@@ -164,13 +167,19 @@ outside directories or non-executable files stay escapes.
 > only when `.git` is a directory. Because the real git dir lies outside the
 > project, the extension makes it and the shared common dir writable inside
 > the sandbox (git needs them for the index, refs, and objects) with their
-> `hooks` and `config` write-denied, the same protection a normal repository
-> gets. `/sandbox` lists them.
+> `hooks`, `config`, and pointer files write-denied, and says so at session
+> start; `/sandbox` lists them. The `.git` file is project content, so it is
+> trusted only for a layout git itself creates: a worktree whose git dir
+> points back at this `.git` file, or a submodule whose `core.worktree` is
+> this project. Anything else (a planted `.git` naming your home, `/`, or
+> another repository) grants nothing, and the `.git` file itself is
+> write-denied inside the sandbox. In Plan mode the git dirs stay read-only.
 
 ### Approving a plan
 
-When a run in Plan Mode has rendered a plan with `show_plan`, applying it is
-one action. As soon as the model's handoff line is on screen, a prompt
+When a run in Plan Mode (any mode whose `systemPrompt` is `"@plan"`) has
+rendered a plan with `show_plan`, applying it is one action. A `show_plan`
+in any other mode only displays the file. As soon as the model's handoff line is on screen, a prompt
 appears:
 
 ```
@@ -184,6 +193,8 @@ Plan ready: plan/2026-09-24_feature.md
   now.`, so the implementing turn starts under Build's system prompt, never
   under the Plan prompt still in effect. The message is visible in the
   transcript like anything you type.
+- Approval covers what you saw: if the plan file changes after it was
+  shown, approving is refused until the model shows it again.
 - **Decline** (or Esc) costs nothing: you stay in Plan Mode and refine by
   typing, as before. The plan stays pending, and it is not offered again
   until the next `show_plan`.
@@ -521,9 +532,11 @@ Add a mode under `modes` in the global config and (optionally) list it in
 > spawn nested pi sessions that way.
 
 > **Temp directories, per platform.** The runtime *always* allows writes to its
-> own `/tmp/claude` (and, on macOS, to the user's `$TMPDIR` under
-> `/var/folders/…`), regardless of `allowWrite`; on macOS `/tmp` is
-> `/private/tmp` and both spellings are handled. Windows has no OS sandbox, so
+> own `/tmp/claude`, regardless of `allowWrite`; on macOS `/tmp` is
+> `/private/tmp` and both spellings are handled. The per-user macOS temp dir
+> under `/var/folders/…` is *not* writable (it was with runtime 0.0.26);
+> `TMPDIR` inside sandboxed bash points at the session scratch directory
+> instead. Windows has no OS sandbox, so
 > there `allowWrite` only feeds the prompt bounds. A tool that hardcodes `/tmp`
 > and ignores `TMPDIR` fails **silently** inside the sandbox (no prompt - the
 > kernel denies it); add `/tmp` back to the mode's `allowWrite` if you need

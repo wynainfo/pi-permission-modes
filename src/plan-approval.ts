@@ -11,12 +11,37 @@
  * never offered again.
  */
 
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+/** Plan paths that may appear in the approval message: plain names, no control characters, backticks, or quotes. */
+export const SAFE_PLAN_PATH = /^[\w./ -]+$/;
+
+/** sha256 of the plan file, or undefined when it cannot be read. */
+export function planHash(root: string, planPath: string): string | undefined {
+  try {
+    return createHash("sha256").update(readFileSync(path.resolve(root, planPath))).digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
+type SessionEntries = ReadonlyArray<{ type: string; customType?: string; data?: unknown }>;
+
+/** The entries of the session's current branch (after /tree navigation), falling back to all entries. */
+export function sessionBranch(ctx: { sessionManager: { getEntries(): SessionEntries; getBranch?: () => SessionEntries } }): SessionEntries {
+  return ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries();
+}
+
 /** Session entry type recording the pending plan (see restorePendingPlan). */
 export const PLAN_ENTRY = "perm-plan";
 
-/** `{ path }` = a plan is pending; `{}` = the pending plan was approved. */
+/** `{ path, sha }` = a plan is pending; `{}` = the pending plan was approved. */
 export interface PlanEntry {
   path?: string;
+  /** sha256 of the plan file as it was shown (approval refuses a changed file). */
+  sha?: string;
 }
 
 export interface PendingPlan {
@@ -24,6 +49,8 @@ export interface PendingPlan {
   path: string;
   /** Declined in the end-of-run prompt: not offered again until the next show_plan (B and C still work). */
   declined: boolean;
+  /** sha256 of the file as shown; undefined for entries written before hashing existed. */
+  sha?: string;
 }
 
 /** Top-level `plan` config (global only; a project config cannot set it). */
@@ -50,8 +77,9 @@ export function restorePendingPlan(
   let pending: PendingPlan | undefined;
   for (const e of entries) {
     if (e.type !== "custom" || e.customType !== PLAN_ENTRY) continue;
-    const p = (e.data as PlanEntry | undefined)?.path;
-    pending = typeof p === "string" && p ? { path: p, declined: false } : undefined;
+    const d = e.data as PlanEntry | undefined;
+    const p = d?.path;
+    pending = typeof p === "string" && p && SAFE_PLAN_PATH.test(p) ? { path: p, declined: false, ...(typeof d?.sha === "string" ? { sha: d.sha } : {}) } : undefined;
   }
   return pending;
 }

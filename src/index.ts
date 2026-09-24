@@ -77,9 +77,21 @@ import {
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
 import { blockablePath, canonicalPath, displayPath, isOutside, isProtectedWrite, normalizeToolPath, resolvePlanPath, sandboxAllowedRoots } from "./paths.ts";
-import { approvalMessage, DEFAULT_APPROVE_MODE, PLAN_ENTRY, type PendingPlan, type PlanEntry, restorePendingPlan, showPlanSucceeded, shownPlanPath } from "./plan-approval.ts";
+import {
+  approvalMessage,
+  DEFAULT_APPROVE_MODE,
+  PLAN_ENTRY,
+  type PendingPlan,
+  type PlanEntry,
+  planHash,
+  restorePendingPlan,
+  SAFE_PLAN_PATH,
+  sessionBranch,
+  showPlanSucceeded,
+  shownPlanPath,
+} from "./plan-approval.ts";
 import { decide, decideBashChain } from "./resolve.ts";
-import { SandboxController, networkFiltered, withDeniedReads } from "./sandbox.ts";
+import { SandboxController, commandFilesDir, networkFiltered, runtimeInstallDir, withDeniedReads } from "./sandbox.ts";
 import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
   type Action,
@@ -234,7 +246,15 @@ export default async function (pi: ExtensionAPI) {
     const eligible = [
       ...new Set(
         targets
-          .map((t) => blockablePath(root, t, { alsoInside: eff.allowWrite ?? [], denyRead: eff.denyRead ?? [], allowRead: eff.allowRead ?? [] }))
+          .map((t) =>
+            blockablePath(root, t, {
+              alsoInside: eff.allowWrite ?? [],
+              denyRead: eff.denyRead ?? [],
+              allowRead: eff.allowRead ?? [],
+              // What the sandbox itself needs to run: never maskable.
+              protectedDirs: [path.dirname(process.execPath), runtimeInstallDir(), commandFilesDir()].filter((d): d is string => !!d),
+            }),
+          )
           .filter((t): t is string => t !== undefined && !blocked.covers(t)),
       ),
     ];
@@ -363,6 +383,12 @@ export default async function (pi: ExtensionAPI) {
   const approvePlan = async (ctx: ExtensionContext): Promise<boolean> => {
     const plan = pendingPlan;
     if (!plan || !approveModeDef(ctx)) return false;
+    // Approval covers what the user saw: a plan file edited after show_plan
+    // rendered it (by the model in the same run, say) is not approved blindly.
+    if (plan.sha && planHash(root, plan.path) !== plan.sha) {
+      ctx.ui.notify(`permission-mode: ${plan.path} changed since it was shown; ask for show_plan again before approving`, "warning");
+      return false;
+    }
     const target = approveModeName();
     approvingPlan = true;
     try {
@@ -468,7 +494,7 @@ export default async function (pi: ExtensionAPI) {
           "info",
         );
       }
-      if (arg.startsWith("unblock")) {
+      if (arg === "unblock" || arg.startsWith("unblock ")) {
         const raw = args.trim().slice("unblock".length).trim();
         if (!raw) return ctx.ui.notify("permission-mode: usage: /perm unblock <path>", "warning");
         const target = canonicalPath(root, normalizeToolPath(raw));
@@ -648,7 +674,7 @@ export default async function (pi: ExtensionAPI) {
         throw new Error("permission-mode: the sandbox became unavailable after this command was approved; run it again");
       }
       const ops = plan.sandboxed
-        ? sandbox.bashOps({ readOnly: plan.readOnly, keepWritable: scratchDir ? [scratchDir] : [], extraDenyRead: blocked.list() })
+        ? sandbox.bashOps({ readOnly: plan.readOnly, keepWritable: scratchDir ? [scratchDir] : [], extraDenyRead: blocked.list(), tmpdir: scratchDir })
         : null;
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
@@ -786,7 +812,7 @@ export default async function (pi: ExtensionAPI) {
     // right profile, then setMode reconciles status (applyProfile is a no-op).
     const picked = pickMode(ctx, true);
     modeName = picked.name;
-    pendingPlan = restorePendingPlan(ctx.sessionManager.getEntries());
+    pendingPlan = restorePendingPlan(sessionBranch(ctx));
     planShownThisRun = false;
     planCalls.clear();
     // Per-session scratch directory, created up front so the sandbox profile,
@@ -822,7 +848,9 @@ export default async function (pi: ExtensionAPI) {
   });
   pi.on("session_tree", async (_event, ctx) => {
     uiCtx = ctx;
-    pendingPlan = restorePendingPlan(ctx.sessionManager.getEntries()); // the branch's own plan state
+    pendingPlan = restorePendingPlan(sessionBranch(ctx)); // the branch's own plan state
+    planShownThisRun = false;
+    planCalls.clear();
     const picked = pickMode(ctx, false);
     await setMode(picked.name, ctx, false, picked.fallback);
   });
@@ -856,10 +884,17 @@ export default async function (pi: ExtensionAPI) {
     if (requested === undefined) return;
     planCalls.delete(event.toolCallId);
     if (!showPlanSucceeded(event.isError, event.result)) return;
-    const path = shownPlanPath(event.result, requested);
-    pendingPlan = { path, declined: false };
+    // Only a plan shown in a planning mode (the "@plan" prompt) is offered:
+    // elsewhere show_plan is plain display, and a model must not be able to
+    // put "switch to Build" in front of the user from any mode it likes.
+    if (currentMode().systemPrompt !== PLAN_PROMPT_SENTINEL) return;
+    const planPath = shownPlanPath(event.result, requested);
+    // The path ends up in a user-authored message: plain names only.
+    if (!SAFE_PLAN_PATH.test(planPath)) return;
+    const sha = planHash(root, planPath);
+    pendingPlan = { path: planPath, declined: false, ...(sha ? { sha } : {}) };
     planShownThisRun = true;
-    pi.appendEntry<PlanEntry>(PLAN_ENTRY, { path });
+    pi.appendEntry<PlanEntry>(PLAN_ENTRY, { path: planPath, ...(sha ? { sha } : {}) });
   });
 
   // Inject the sandbox-awareness section and the active mode's system prompt

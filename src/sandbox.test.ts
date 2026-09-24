@@ -9,11 +9,11 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { bashCustomConfig, commandLauncher, createSandboxedBashOps, networkFiltered, runtimeExtrasFor, runtimeInstallDir, withDeniedReads, withRuntimeExtras, writeCommandFile } from "./sandbox.ts";
+import { SandboxController, bashCustomConfig, commandLauncher, createSandboxedBashOps, networkFiltered, runtimeExtrasFor, runtimeInstallDir, withDeniedReads, withRuntimeExtras, writeCommandFile } from "./sandbox.ts";
 
 const quote: ((xs: readonly string[]) => string) | undefined = await import("@anthropic-ai/sandbox-runtime/dist/utils/shell-quote.js")
   .then((m) => (m as { quote: (xs: readonly string[]) => string }).quote)
@@ -276,40 +276,98 @@ test("exec: a bubblewrap namespace failure gets the AppArmor hint, other failure
   assert.doesNotMatch(out, /apparmor/, "a successful run never gets the hint");
 });
 
-test("runtime extras: the runtime's own dir is re-opened under any deny, a worktree's git dirs become writable with hooks/config denied", () => {
+test("runtime extras: runtime dir re-opened; a real worktree's git dirs writable with hooks/config/pointers denied; not in read-only runs", () => {
   const dir = runtimeInstallDir();
   if (dir) assert.ok(existsSync(path.join(dir, "package.json")), dir);
-  const base = mkdtempSync(path.join(tmpdir(), "perm-extras-"));
+  const base = realpathSync(mkdtempSync(path.join(tmpdir(), "perm-extras-")));
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, stdio: "ignore" });
   try {
-    const plain = runtimeExtrasFor(base, "/opt/rt");
-    assert.deepEqual(plain, { allowRead: ["/opt/rt"], allowWrite: [], denyWrite: [] });
+    assert.deepEqual(runtimeExtrasFor(base, "/opt/rt"), { allowRead: ["/opt/rt"], allowWrite: [], denyWrite: [] });
     const main = path.join(base, "main");
-    mkdirSync(path.join(main, ".git", "worktrees", "wt"), { recursive: true });
-    writeFileSync(path.join(main, ".git", "worktrees", "wt", "commondir"), "../..\n");
+    mkdirSync(main);
+    git(main, "init", "-q");
+    git(main, "commit", "-q", "--allow-empty", "-m", "init");
+    git(main, "worktree", "add", "-q", "../wt", "-b", "wt");
     const wt = path.join(base, "wt");
-    mkdirSync(wt);
-    writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "wt")}\n`);
-    const ex = runtimeExtrasFor(wt, ""); // "" = no runtime dir (undefined would pick the default)
     const gitdir = path.join(main, ".git", "worktrees", "wt");
     const common = path.join(main, ".git");
+    const ex = runtimeExtrasFor(wt, "");
     assert.deepEqual(ex.allowRead, []);
-    assert.deepEqual(ex.allowWrite.map((p) => path.relative(base, p)), [gitdir, common].map((p) => path.relative(base, p)));
-    assert.deepEqual(ex.denyWrite.map((p) => path.relative(base, p)), [path.join(gitdir, "hooks"), path.join(gitdir, "config"), path.join(common, "hooks"), path.join(common, "config")].map((p) => path.relative(base, p)));
+    assert.deepEqual(ex.allowWrite, [gitdir, common]);
+    assert.ok(ex.denyWrite.includes(path.join(wt, ".git")), "the gitfile itself cannot be rewritten");
+    for (const f of [path.join(gitdir, "gitdir"), path.join(gitdir, "commondir"), path.join(common, "hooks"), path.join(common, "config")]) {
+      assert.ok(ex.denyWrite.includes(f), f);
+    }
+    assert.ok(ex.denyWrite.every((f) => existsSync(f)), "only existing paths (no mount points planted in git dirs)");
 
-    // Folded into the runtime config, on top of the profile; the profile itself is untouched.
+    // A forged gitfile in a non-git project: nothing writable, the gitfile write-denied.
+    const evil = path.join(base, "evil");
+    mkdirSync(evil);
+    writeFileSync(path.join(evil, ".git"), `gitdir: ${os.homedir()}\n`);
+    assert.deepEqual(runtimeExtrasFor(evil, ""), { allowRead: [], allowWrite: [], denyWrite: [path.join(evil, ".git")] });
+
+    // Folded into configs; a read-only run does NOT keep the git dirs writable.
     const profile = { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~"], allowRead: ["."] };
     const cfg = withRuntimeExtras({ enabled: true, network: { deniedDomains: [] }, filesystem: { denyRead: ["~"], allowRead: ["."], allowWrite: ["."], denyWrite: [] } }, { ...ex, allowRead: ["/opt/rt"] });
     assert.deepEqual(cfg.filesystem.allowRead, [".", "/opt/rt"]);
-    assert.deepEqual(cfg.filesystem.allowWrite.slice(0, 1), ["."]);
-    assert.equal(cfg.filesystem.allowWrite.length, 3);
-    assert.equal(cfg.filesystem.denyWrite.length, 4);
-    // Per-command configs carry them too, and a read-only run keeps the git dirs writable.
+    assert.deepEqual(cfg.filesystem.allowWrite, [".", gitdir, common]);
     const ro = bashCustomConfig(profile, { readOnly: true, keepWritable: ["/tmp/pi/s1"] }, { ...ex, allowRead: ["/opt/rt"] })!;
-    assert.deepEqual(ro.filesystem.allowWrite.map((p) => (p.startsWith(base) ? path.relative(base, p) : p)), ["/tmp/pi/s1", path.relative(base, gitdir), path.relative(base, common)]);
-    assert.deepEqual(ro.filesystem.allowRead, [".", "/opt/rt"]);
+    assert.deepEqual(ro.filesystem.allowWrite, ["/tmp/pi/s1"]);
+    assert.ok(ro.filesystem.denyWrite.includes(path.join(common, "hooks")));
     const none = withRuntimeExtras({ enabled: true, network: { deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: ["."], denyWrite: [] } }, { allowRead: [], allowWrite: [], denyWrite: [] });
     assert.ok(!("allowRead" in none.filesystem), "no extras, no allowRead key");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test("withDeniedReads: a block closes the allowRead carve-outs at or under it", () => {
+  const home = os.homedir();
+  const p = { enabled: true, writable: true, denyRead: ["~"], allowRead: [".", "~/.gitconfig", "~/.config", "~/.config/gh"] };
+  const out = withDeniedReads(p, [path.join(home, ".gitconfig"), path.join(home, ".config")]);
+  assert.deepEqual(out.allowRead, ["."]);
+  assert.deepEqual(withDeniedReads(p, [path.join(home, ".config", "gh", "hosts.yml")]).allowRead, p.allowRead, "a block deeper than a carve-out keeps it (the deny wins there)");
+});
+
+test("exec: TMPDIR comes from the explicit option, never from pi's env; pi's env reaches the command", async () => {
+  const rt = fakeRuntime();
+  const ops = createSandboxedBashOps(rt.manager, undefined, undefined, { tmpdir: "/tmp/pi/sess-x" });
+  let out = "";
+  await ops.exec('echo "$TMPDIR|$PI_MARK"', process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10, env: { ...process.env, TMPDIR: "/var/folders/pi-own", PI_MARK: "m1" } });
+  assert.equal(out, "/tmp/pi/sess-x|m1\n");
+});
+
+test("controller: a profile switch waits for running sandboxed commands before resetting the runtime", async () => {
+  const calls: string[] = [];
+  let release!: () => void;
+  const hold = new Promise<void>((r) => (release = r));
+  const manager = {
+    async wrapWithSandbox(cmd: string) {
+      return cmd;
+    },
+    annotateStderrWithSandboxFailures: (_id: string, s: string) => s,
+    cleanupAfterCommand: () => calls.push("cleanup"),
+    async reset() {
+      calls.push("reset");
+    },
+    async initialize() {
+      calls.push("initialize");
+    },
+  };
+  const c = new SandboxController();
+  const notes: string[] = [];
+  // Wire the controller as init() would have, without the real runtime.
+  Object.assign(c, { manager, profile: { enabled: true, writable: true, allowWrite: ["."] }, runtimeInitialized: true, ready: true, appliedKey: "old", hasUI: true, notifyFn: (m: string) => notes.push(m) });
+  const ops = c.bashOps()!;
+  const run = ops.exec("sleep 0.3", process.cwd(), { onData: () => {}, signal: undefined as never, timeout: 10 });
+  await new Promise((r) => setTimeout(r, 50));
+  const switched = c.applyProfile({ enabled: true, writable: true, allowWrite: [".", "/other"] }).then(() => calls.push("switched"));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(calls, [], "no reset while the command runs");
+  assert.match(notes.join("\n"), /waiting for 1 running sandboxed command/);
+  await run;
+  await switched;
+  assert.deepEqual(calls, ["cleanup", "reset", "initialize", "switched"]);
+  release();
+  await hold;
 });

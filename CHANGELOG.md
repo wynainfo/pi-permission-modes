@@ -6,6 +6,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Parallel sandboxed commands no longer lose their write denies.** The
+  extension deleted the runtime's 0-byte mount points for absent protected
+  dotfiles (`.bashrc`, `.mcp.json`, `.vscode`, ...) before and after every
+  sandboxed command. pi runs tool calls in parallel, and deleting such a
+  file on the host while another sandboxed command is running detaches that
+  command's deny mount, so it could create those files (or `.git/hooks/*`
+  when the hooks directory was missing). The sweep is gone; the runtime
+  removes its mount points once no sandbox is running and re-covers
+  leftovers itself. The sweep also deleted a user's own empty file with one
+  of those names; that is gone with it. Present since 2.0.0.
+- A sandbox profile change (switching to a mode with different sandbox
+  lists) now waits for running sandboxed commands before re-initializing
+  the runtime, which would otherwise strip their mounts and network proxy.
+
 ### Added
 - **One-step plan approval.** After Plan Mode renders a plan with
   `show_plan`, an Accept / Decline prompt follows the model's handoff line
@@ -18,7 +33,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   implement it; `/plan approve` does it without asking, `/plan status`
   names the pending plan. The pending plan survives reload, resume, and
   branch navigation; an approved plan is never offered again; headless
-  sessions get no prompts. New global config block `plan` with
+  sessions get no prompts. Only a plan shown in a planning mode (`"@plan"`
+  prompt) is offered, approval is refused if the file changed after it was
+  shown, and plan names with unusual characters are never put into the
+  approval message. The pending plan follows the current session branch.
+  New global config block `plan` with
   `approveMode` and `approveMessage` (`{path}` placeholder); a project
   config cannot set it. The Plan Mode prompt's handoff line and the
   `show_plan` result text now point the model at the prompt instead of
@@ -35,7 +54,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   masks the file with `/dev/null`,
   macOS returns EPERM), the file tools refuse it without a prompt, a later
   bash command naming it is blocked outright, and the awareness section
-  lists it so the model stops probing. Only the exact file or directory is
+  lists it so the model stops probing. A block also closes any `allowRead`
+  carve-out at or under it. Only the exact file or directory is
   blocked, never the home directory, a system root, a direct child of `/`,
   or an ancestor of the project or of a writable root; when nothing can be
   blocked safely the option is not offered. `/perm blocks` lists the
@@ -70,7 +90,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     longer breaks bubblewrap and the extension no longer degrades those
     projects to prompting. Their git dir and common dir (outside the
     project) are made writable inside the sandbox so `git add`/`commit`
-    work, with `hooks` and `config` write-denied as in a normal repository.
+    work, with `hooks`, `config`, and the pointer files write-denied as in
+    a normal repository. The `.git` file is validated as a layout git
+    itself creates (worktree back-reference or submodule `core.worktree`),
+    never `/`, home, or an ancestor of either, and is itself write-denied,
+    so a planted gitfile grants nothing. Plan mode keeps them read-only.
+  - `TMPDIR` inside sandboxed bash is the session scratch directory,
+    passed explicitly: the launcher used to copy pi's own `TMPDIR` over it,
+    which on macOS (where 0.0.77 no longer allows `/var/folders`) would
+    break `mktemp`. pi's environment for the bash tool now reaches
+    sandboxed commands as it does unsandboxed ones.
   - The extension re-opens the runtime's own package directory inside the
     sandbox: under a `denyRead` that covers it (a strict-home `~`), the
     runtime's seccomp helper would otherwise be unreadable and every command

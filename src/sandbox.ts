@@ -8,13 +8,14 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
-import { gitDirsOf, removeSandboxPlaceholders } from "./paths.ts";
+import { gitDirsOf } from "./paths.ts";
+import { expandHome } from "./resolve.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
 
@@ -120,7 +121,10 @@ class StderrHead {
   }
   /** A hint for the model/user when bwrap itself failed, else undefined. */
   namespaceHint(): string | undefined {
-    if (!/\bbwrap: .*(Operation not permitted|Permission denied|No permissions to create)/i.test(this.text)) return undefined;
+    // Only when bwrap's own error is the FIRST line: a command that ran
+    // (and printed something first) must not get "the command did not run".
+    const first = this.text.split("\n", 1)[0];
+    if (!/^bwrap: .*(Operation not permitted|Permission denied|No permissions to create)/i.test(first)) return undefined;
     return (
       "\n[permission-mode] sandbox: bubblewrap could not set up its namespaces, so the command did not run. " +
       "On Ubuntu 24.04+ (also under WSL2) this usually means kernel.apparmor_restrict_unprivileged_userns=1; " +
@@ -147,6 +151,12 @@ export function createSandboxedBashOps(
   SandboxManager: SandboxManagerType,
   customConfig?: Partial<SandboxConfig>,
   drainBlockedHosts?: () => string[],
+  runOpts: {
+    /** TMPDIR for the command (the session scratch dir). NOT taken from pi's env: that is pi's own TMPDIR. */
+    tmpdir?: string;
+    /** Called once a wrap succeeded; the returned function once the run's cleanup is done (in-flight tracking). */
+    onRun?: () => () => void;
+  } = {},
 ): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
@@ -167,16 +177,15 @@ export function createSandboxedBashOps(
       if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
       if (signal?.aborted) throw new Error("aborted"); // never spawn for a call that is already cancelled
       drainBlockedHosts?.(); // discard denials that belong to earlier runs
-      // The runtime removes the mount points it plants for absent mandatory
-      // deny paths after each run (cleanupAfterCommand below); this sweep only
-      // catches what a pi that died mid-command left behind (a stale 0-byte
-      // .git would break this run).
-      removeSandboxPlaceholders(cwd);
+      // No placeholder sweep here: the runtime removes the mount points it
+      // plants for absent protected dotfiles once NO sandbox is running any
+      // more (cleanupAfterCommand below), and re-covers leftovers of a crashed
+      // pi itself. Deleting them from the host while a parallel command runs
+      // would detach that command's deny mounts.
       // Command transport (see above): the runtime quotes what we hand it, so
       // hand it a launcher and keep the real command in a file.
       const commandFile = writeCommandFile(command);
-      const tmpdir = typeof env?.TMPDIR === "string" ? env.TMPDIR : undefined;
-      const launcher = commandFile ? commandLauncher(commandFile, tmpdir) : undefined;
+      const launcher = commandFile ? commandLauncher(commandFile, runOpts.tmpdir) : undefined;
       // Violations the runtime observes while the command runs (refused
       // writes, denied hosts) are filed under this id; the ORIGINAL command
       // is what they report, not the launcher.
@@ -208,13 +217,14 @@ export function createSandboxedBashOps(
       // From here on the runtime holds this run's mount points and profile:
       // cleanupAfterCommand() runs exactly once, after the child is gone,
       // whatever way we leave (normal close, abort/timeout, spawn failure).
+      const runDone = runOpts.onRun?.();
       try {
         if (signal?.aborted) throw new Error("aborted");
         const head = new StderrHead();
         // `await` so the finally runs after the child exits, not after the
         // Promise is constructed - otherwise cleanup would race the run.
         return await new Promise((resolve, reject) => {
-          const child = spawn("bash", ["-c", wrapped], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+          const child = spawn("bash", ["-c", wrapped], { cwd, env: env ?? process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
           let timedOut = false;
           let timer: NodeJS.Timeout | undefined;
           const kill = () => {
@@ -267,9 +277,9 @@ export function createSandboxedBashOps(
         try {
           SandboxManager.cleanupAfterCommand?.();
         } catch {
-          // best effort: the sweep below and the runtime's exit handler remain
+          // best effort: the runtime's exit handler and its re-covering remain
         }
-        removeSandboxPlaceholders(cwd);
+        runDone?.();
         if (commandFile) rmSync(commandFile, { force: true });
       }
     },
@@ -293,7 +303,19 @@ export function networkFiltered(profile: SandboxProfile): boolean {
  */
 export function withDeniedReads(profile: SandboxProfile, paths: readonly string[]): SandboxProfile {
   if (!profile.enabled || paths.length === 0) return profile;
-  return { ...profile, denyRead: [...new Set([...(profile.denyRead ?? []), ...paths])] };
+  const out: SandboxProfile = { ...profile, denyRead: [...new Set([...(profile.denyRead ?? []), ...paths])] };
+  // The runtime lets an allowRead entry at or under a denied path win (a
+  // carve-out is bound back over the mask), so a block must also close the
+  // carve-outs it covers, or blocking ~/.gitconfig under a strict home
+  // would change nothing for bash.
+  if (profile.allowRead?.length) {
+    const blocked = paths.map((b) => path.resolve(expandHome(b)));
+    out.allowRead = profile.allowRead.filter((a) => {
+      const abs = path.resolve(expandHome(a));
+      return !blocked.some((b) => abs === b || abs.startsWith(b + path.sep));
+    });
+  }
+  return out;
 }
 
 export interface BashOpsOptions {
@@ -303,6 +325,8 @@ export interface BashOpsOptions {
   keepWritable?: string[];
   /** Paths masked for this command on top of the profile's `denyRead` (the session's "Deny and block" list). */
   extraDenyRead?: readonly string[];
+  /** TMPDIR inside the command (the session scratch dir). */
+  tmpdir?: string;
 }
 
 /**
@@ -328,14 +352,34 @@ export function runtimeInstallDir(): string | undefined {
   }
 }
 
+/** The directory command files are written to (created on first use), for callers that must never mask it. */
+export function commandFilesDir(): string | undefined {
+  return commandFileDir();
+}
+
 /** The extras for a project at `cwd` (see RuntimeExtras). */
 export function runtimeExtrasFor(cwd: string, runtimeDir: string | undefined = runtimeInstallDir()): RuntimeExtras {
   const extras: RuntimeExtras = { allowRead: runtimeDir ? [runtimeDir] : [], allowWrite: [], denyWrite: [] };
+  // A gitfile at the project root is always write-denied: rewritten to point
+  // at a git dir with planted hooks, it would run code at the user's next
+  // host-side git command (a normal repo's .git/hooks and .git/config are
+  // denied by the runtime; a gitfile is not).
+  const gitfile = path.join(cwd, ".git");
+  try {
+    if (lstatSync(gitfile).isFile()) extras.denyWrite.push(gitfile);
+  } catch {
+    // absent: nothing to protect (and nothing git would follow)
+  }
   const git = gitDirsOf(cwd);
   if (git) {
     for (const d of new Set([git.gitdir, git.commondir])) {
       extras.allowWrite.push(d);
-      extras.denyWrite.push(path.join(d, "hooks"), path.join(d, "config"));
+      // hooks and config as for an in-project .git; the pointer files and
+      // the per-worktree config so the layout cannot be redirected. Only
+      // existing paths: the runtime would plant mount points for absent ones.
+      for (const f of ["hooks", "config", "config.worktree", "gitdir", "commondir"]) {
+        if (existsSync(path.join(d, f))) extras.denyWrite.push(path.join(d, f));
+      }
     }
   }
   return extras;
@@ -361,11 +405,12 @@ export function bashCustomConfig(profile: SandboxProfile, opts: BashOpsOptions, 
   const extra = opts.extraDenyRead ?? [];
   if (!opts.readOnly && extra.length === 0) return undefined;
   // Read-only keeps the session scratch dir writable: TMPDIR points there,
-  // and a Plan-mode `mktemp` or Python `tempfile` must still work. The git
-  // dirs of a worktree stay writable too: a read-only run of `git status`
-  // refreshes the index.
+  // and a Plan-mode `mktemp` or Python `tempfile` must still work. A
+  // worktree's git dirs are NOT kept: read-only means no ref or object
+  // writes in the main repository either (git tolerates a failed index
+  // refresh, exactly as in a normal repo under Plan).
   const base = withRuntimeExtras(profileToConfig(withDeniedReads(profile, extra)), extras);
-  return opts.readOnly ? readOnlyOverride(base, [...(opts.keepWritable ?? []), ...(extras?.allowWrite ?? [])]) : base;
+  return opts.readOnly ? readOnlyOverride(base, opts.keepWritable ?? []) : base;
 }
 
 /** How the caller surfaces warnings (e.g. a TUI notify), only used when there's a UI. */
@@ -430,7 +475,31 @@ export class SandboxController {
    */
   bashOps(opts: BashOpsOptions = {}): BashOperations | null {
     if (!this.manager || !this.profile) return null;
-    return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts, this.extras), this.drainBlockedHosts);
+    return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts, this.extras), this.drainBlockedHosts, {
+      tmpdir: opts.tmpdir,
+      onRun: () => this.runStarted(),
+    });
+  }
+
+  /** Sandboxed commands currently running (wrapped, not yet cleaned up). */
+  private inflight = 0;
+  private idleWaiters: Array<() => void> = [];
+
+  private runStarted(): () => void {
+    this.inflight++;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.inflight--;
+      if (this.inflight === 0) for (const w of this.idleWaiters.splice(0)) w();
+    };
+  }
+
+  /** Resolves once no sandboxed command is running (reset() would strip a running command's mounts and network). */
+  private whenIdle(): Promise<void> {
+    if (this.inflight === 0) return Promise.resolve();
+    return new Promise((r) => this.idleWaiters.push(r));
   }
 
   /** Install instructions shown when the runtime is missing or fails to init. */
@@ -534,9 +603,11 @@ export class SandboxController {
       notify(`permission-mode: sandbox dependency warning(s): ${deps.warnings.join("; ")}`);
     }
 
-    // Clear any 0-byte placeholders a pi that died mid-command left behind
-    // (a stale .git would break every run).
-    removeSandboxPlaceholders(cwd);
+    if (this.extras?.allowWrite.length && hasUI) {
+      notify(
+        `permission-mode: git worktree/submodule detected; sandboxed bash may write its git dirs (${this.extras.allowWrite.join(", ")}), hooks and config excluded`,
+      );
+    }
 
     await this.applyProfile(profile);
   }
@@ -563,6 +634,13 @@ export class SandboxController {
     const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem });
     if (this.ready && key === this.appliedKey) return;
 
+    if (this.inflight > 0) {
+      // reset() force-removes every mount point and stops the proxy: a
+      // command still running would lose its denies and its network. Wait
+      // for the running ones (the switch completes when they finish).
+      if (this.hasUI) this.notifyFn(`permission-mode: waiting for ${this.inflight} running sandboxed command(s) before applying the new sandbox profile`);
+      await this.whenIdle();
+    }
     try {
       if (this.runtimeInitialized) {
         await this.manager.reset();

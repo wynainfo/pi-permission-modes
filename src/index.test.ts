@@ -1047,6 +1047,10 @@ test("injectSandboxInfo:false opts a mode out of the awareness injection", { ski
 
 /** Emulate a Plan-mode run that rendered `planPath` with show_plan: agent_start, the tool call, its result, agent_end. */
 async function runWithShownPlan(h: Harness, planPath: string, opts: { error?: string; endRun?: boolean } = {}) {
+  if (!opts.error) {
+    mkdirSync(path.dirname(path.join(h.root, planPath)), { recursive: true });
+    writeFileSync(path.join(h.root, planPath), `# ${planPath}\n`);
+  }
   await h.pi.emit("agent_start", { type: "agent_start" }, h.ctx);
   const toolCallId = `plan${++callId}`;
   const gate = await h.pi.emit("tool_call", { type: "tool_call", toolCallId, toolName: "show_plan", input: { path: planPath } }, h.ctx);
@@ -1071,8 +1075,11 @@ test("plan approval A: Accept after the run switches to Build and sends the appr
     assert.match(h.ctx.status, /^Build /);
     assert.deepEqual(h.pi.messages, [{ content: APPROVE_MSG("plan/2026-09-24_x.md"), opts: { deliverAs: "followUp" } }]); // queued: agent_end still counts as streaming
     // Persisted: shown, then approved (no path), so a resume does not re-offer it.
-    const plan = h.pi.entries.filter((e) => e.customType === "perm-plan").map((e) => e.data);
-    assert.deepEqual(plan, [{ path: "plan/2026-09-24_x.md" }, {}]);
+    const plan = h.pi.entries.filter((e) => e.customType === "perm-plan").map((e) => e.data as { path?: string; sha?: string });
+    assert.equal(plan.length, 2);
+    assert.equal(plan[0].path, "plan/2026-09-24_x.md");
+    assert.match(plan[0].sha ?? "", /^[0-9a-f]{64}$/, "the shown content is hashed");
+    assert.deepEqual(plan[1], {});
     await h.pi.commands.get("plan")!("status", h.ctx);
     assert.match(h.ctx.notices.at(-1) ?? "", /no plan pending/);
     // The implementing run ends without a show_plan: nothing is asked.
@@ -1136,11 +1143,13 @@ test("plan approval C: /plan approve switches and sends without a prompt; nothin
     assert.equal(h.ctx.confirmPrompts.length, 0, "the switch it performs does not ask B");
     assert.match(h.ctx.status, /^Build /);
     assert.deepEqual(h.pi.messages.map((m) => m.content), [APPROVE_MSG("plan/2026-09-24_c.md")]);
-    // show_plan in Build (already the approve mode): Accept keeps the mode and sends.
-    h.ctx.answers.push("Accept: switch to Build and implement it");
+    // show_plan outside a planning mode (here Build) is plain display: nothing is offered.
+    const before = h.ctx.prompts.length;
     await runWithShownPlan(h, "plan/2026-09-24_d.md");
-    assert.match(h.ctx.status, /^Build /);
-    assert.equal(h.pi.messages.length, 2);
+    assert.equal(h.ctx.prompts.length, before);
+    await h.pi.commands.get("plan")!("status", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /no plan pending/);
+    assert.equal(h.pi.messages.length, 1);
   } finally {
     h.cleanup();
   }
@@ -1185,7 +1194,7 @@ test("plan approval: headless sessions get no prompt and no switch; the plan is 
     assert.equal(h.ctx.prompts.length, 0);
     assert.equal(h.ctx.confirmPrompts.length, 0);
     assert.equal(h.pi.messages.length, 0);
-    assert.deepEqual(h.pi.entries.filter((e) => e.customType === "perm-plan").map((e) => e.data), [{ path: "plan/2026-09-24_g.md" }]);
+    assert.deepEqual(h.pi.entries.filter((e) => e.customType === "perm-plan").map((e) => (e.data as { path: string }).path), ["plan/2026-09-24_g.md"]);
   } finally {
     h.cleanup();
   }
@@ -1231,6 +1240,24 @@ test("plan approval: a show_plan that reported an error leaves nothing pending",
     await h.pi.commands.get("plan")!("status", h.ctx);
     assert.match(h.ctx.notices.at(-1) ?? "", /no plan pending/);
     assert.equal(h.pi.entries.filter((e) => e.customType === "perm-plan").length, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("plan approval: a plan edited after show_plan is not approved blindly; unsafe plan names are never offered", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("plan");
+    await runWithShownPlan(h, "plan/2026-09-24_h.md", { endRun: false });
+    writeFileSync(path.join(h.root, "plan/2026-09-24_h.md"), "# swapped after it was shown\n");
+    await h.pi.commands.get("plan")!("approve", h.ctx);
+    assert.equal(h.pi.messages.length, 0);
+    assert.match(h.ctx.notices.at(-1) ?? "", /changed since it was shown/);
+    assert.match(h.ctx.status, /^Plan Mode /);
+    // A name carrying a backtick (message injection) is displayed but not offered.
+    await runWithShownPlan(h, "plan/x`y.md");
+    assert.equal(h.ctx.prompts.length, 0);
   } finally {
     h.cleanup();
   }

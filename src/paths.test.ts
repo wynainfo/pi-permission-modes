@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,10 +10,8 @@ import {
   isPlanFile,
   isProtectedPath,
   isProtectedWrite,
-  removeSandboxPlaceholders,
   resolvePlanPath,
   SAFE_OUTSIDE_RE,
-  SANDBOX_PLACEHOLDER_PATHS,
   SANDBOX_RUNTIME_TMP_PATHS,
   bashPathEscapes,
   blockablePath,
@@ -78,51 +77,6 @@ test("isPlanFile: markdown under the in-project plan/ dir only", () => {
   assert.equal(isPlanFile(root, "planner/x.md"), false); // sibling dir, not plan/
   assert.equal(isPlanFile(root, "../plan/x.md"), false); // escapes project
   assert.equal(isPlanFile(root, undefined), false);
-});
-
-test("removeSandboxPlaceholders deletes 0-byte placeholders, leaves real files/dirs", () => {
-  const t2 = tmpdir();
-  if (!existsSync(t2)) mkdirSync(t2, { recursive: true });
-  const base = mkdtempSync(path.join(t2, "perm-rm-"));
-  try {
-    const proj = path.join(base, "proj");
-    mkdirSync(proj, { recursive: true });
-
-    // 0-byte placeholders the sandbox plants (files for dotfiles AND dir-names).
-    for (const name of [".bashrc", ".zshrc", ".gitconfig", ".mcp.json", ".git", ".vscode", ".idea", ".claude"]) {
-      writeFileSync(path.join(proj, name), "");
-    }
-    // Legitimate content that must NOT be touched:
-    writeFileSync(path.join(proj, ".gitmodules"), "[submodule]\n"); // real non-empty file
-    mkdirSync(path.join(proj, ".vscode-real"), { recursive: true });
-    const realIdea = path.join(base, "realidea");
-    mkdirSync(path.join(realIdea, ".idea"), { recursive: true }); // a real .idea DIR (separate proj)
-
-    const removed = removeSandboxPlaceholders(proj);
-    assert.equal(removed, 8); // all 8 zero-byte placeholders gone
-    for (const name of [".bashrc", ".zshrc", ".gitconfig", ".mcp.json", ".git", ".vscode", ".idea", ".claude"]) {
-      assert.equal(existsSync(path.join(proj, name)), false, name);
-    }
-    assert.equal(existsSync(path.join(proj, ".gitmodules")), true); // real file kept
-    assert.equal(removeSandboxPlaceholders(realIdea), 0); // a real .idea dir is left alone
-
-    // No placeholders → 0.
-    const none = path.join(base, "none");
-    mkdirSync(none, { recursive: true });
-    assert.equal(removeSandboxPlaceholders(none), 0);
-
-    // Nested .claude/{commands,agents} placeholders inside a real .claude dir.
-    const nested = path.join(base, "nested");
-    mkdirSync(path.join(nested, ".claude"), { recursive: true });
-    writeFileSync(path.join(nested, ".claude", "commands"), "");
-    assert.equal(removeSandboxPlaceholders(nested), 1);
-    assert.equal(existsSync(path.join(nested, ".claude")), true); // real dir kept
-    assert.equal(existsSync(path.join(nested, ".claude", "commands")), false);
-
-    assert.ok(SANDBOX_PLACEHOLDER_PATHS.includes(".mcp.json"));
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
 });
 
 test("resolvePlanPath trims and strips a leading @", () => {
@@ -343,6 +297,14 @@ test("blockablePath: exact files and leaf dirs yes; roots, home, ancestors, deni
   assert.equal(blockablePath(root, path.join(home, "secret.txt")), path.join(home, "secret.txt"));
   assert.equal(blockablePath(root, path.join(home, "Documents")), path.join(home, "Documents")); // a private dir: the user's call
   assert.equal(blockablePath(root, "/etc/passwd"), "/etc/passwd");
+  // What the sandbox needs to run is never blockable: system trees, and the protected dirs (node, runtime, command files).
+  assert.equal(blockablePath(root, "/usr/bin/env"), undefined);
+  assert.equal(blockablePath(root, "/usr/lib/x86_64-linux-gnu"), undefined);
+  assert.equal(blockablePath(root, "/lib64/ld-linux-x86-64.so.2"), undefined);
+  const nodeDir = path.join(home, ".nvm", "versions", "node", "v22", "bin");
+  assert.equal(blockablePath(root, path.join(nodeDir, "node"), { protectedDirs: [nodeDir] }), undefined); // under
+  assert.equal(blockablePath(root, path.join(home, ".nvm"), { protectedDirs: [nodeDir] }), undefined); // ancestor
+  assert.equal(blockablePath(root, path.join(home, ".npmrc"), { protectedDirs: [nodeDir] }), path.join(home, ".npmrc")); // unrelated
   assert.equal(blockablePath(root, home), undefined); // never the home itself
   assert.equal(blockablePath(root, "/"), undefined);
   assert.equal(blockablePath(root, "/etc"), undefined); // top-level system dir
@@ -365,31 +327,66 @@ test("blockablePath: exact files and leaf dirs yes; roots, home, ancestors, deni
   assert.equal(canonicalPath(root, "../x"), path.join(home, "temp", "x"));
 });
 
-test("gitDirsOf: worktree and submodule gitfiles resolve to their git dir and common dir; plain repos give nothing", () => {
-  const base = mkdtempSync(path.join(tmpdir(), "perm-gitdirs-"));
+const hasGit = (() => {
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always", ...args], { cwd, stdio: "ignore" });
+
+test("gitDirsOf: real worktrees and submodules resolve; forged or dangerous gitfiles are refused", { skip: hasGit ? false : "git not installed" }, () => {
+  const base = realpathSync(mkdtempSync(path.join(tmpdir(), "perm-gitdirs-")));
   try {
     const main = path.join(base, "main");
-    mkdirSync(path.join(main, ".git", "worktrees", "wt"), { recursive: true });
-    writeFileSync(path.join(main, ".git", "worktrees", "wt", "commondir"), "../..\n");
+    mkdirSync(main);
+    git(main, "init", "-q");
+    git(main, "commit", "-q", "--allow-empty", "-m", "init");
+    git(main, "worktree", "add", "-q", "../wt", "-b", "wt");
     const wt = path.join(base, "wt");
-    mkdirSync(wt);
-    writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "wt")}\n`);
-    const real = (p: string) => realpathSync(p);
-    assert.deepEqual(gitDirsOf(wt), { gitdir: real(path.join(main, ".git", "worktrees", "wt")), commondir: real(path.join(main, ".git")) });
-    // Submodule: relative gitdir, no commondir file.
-    const sub = path.join(main, "sub");
-    mkdirSync(path.join(main, ".git", "modules", "sub"), { recursive: true });
-    mkdirSync(sub);
-    writeFileSync(path.join(sub, ".git"), "gitdir: ../.git/modules/sub\n");
-    const subDirs = gitDirsOf(sub)!;
-    assert.equal(subDirs.gitdir, real(path.join(main, ".git", "modules", "sub")));
-    assert.equal(subDirs.commondir, subDirs.gitdir);
+    assert.deepEqual(gitDirsOf(wt), { gitdir: path.join(main, ".git", "worktrees", "wt"), commondir: path.join(main, ".git") });
+
+    // Submodule (absorbed into the superproject's .git/modules).
+    const lib = path.join(base, "lib");
+    mkdirSync(lib);
+    git(lib, "init", "-q");
+    git(lib, "commit", "-q", "--allow-empty", "-m", "lib");
+    git(main, "submodule", "add", "-q", lib, "sub");
+    const sub = gitDirsOf(path.join(main, "sub"))!;
+    assert.equal(sub.gitdir, path.join(main, ".git", "modules", "sub"));
+    assert.equal(sub.commondir, sub.gitdir);
+
     assert.equal(gitDirsOf(main), undefined); // .git is a directory
     assert.equal(gitDirsOf(base), undefined); // no .git
-    writeFileSync(path.join(wt, ".git"), ""); // a 0-byte placeholder is not a gitfile
-    assert.equal(gitDirsOf(wt), undefined);
-    writeFileSync(path.join(wt, ".git"), "gitdir: /nowhere/at/all\n"); // dangling: nothing to make writable
-    assert.equal(gitDirsOf(wt), undefined);
+
+    // Forgeries: a planted gitfile pointing at a real repo it does not belong to,
+    // at home, at /, at a fake worktree layout inside the project, and a symlinked .git.
+    const evil = path.join(base, "evil");
+    mkdirSync(evil);
+    const plant = (content: string) => writeFileSync(path.join(evil, ".git"), content);
+    plant(`gitdir: ${path.join(main, ".git", "worktrees", "wt")}\n`); // back-reference names wt, not evil
+    assert.equal(gitDirsOf(evil), undefined);
+    plant(`gitdir: ${path.join(main, ".git")}\n`); // a real common dir, but not under modules/ and no core.worktree
+    assert.equal(gitDirsOf(evil), undefined);
+    plant(`gitdir: ${os.homedir()}\n`);
+    assert.equal(gitDirsOf(evil), undefined);
+    plant("gitdir: /\n");
+    assert.equal(gitDirsOf(evil), undefined);
+    mkdirSync(path.join(evil, ".gitx", "worktrees", "w"), { recursive: true });
+    for (const d of [path.join(evil, ".gitx"), path.join(evil, ".gitx", "worktrees", "w")]) writeFileSync(path.join(d, "HEAD"), "ref: x\n");
+    mkdirSync(path.join(evil, ".gitx", "objects"));
+    mkdirSync(path.join(evil, ".gitx", "refs"));
+    writeFileSync(path.join(evil, ".gitx", "worktrees", "w", "gitdir"), path.join(evil, ".git"));
+    plant("gitdir: .gitx/worktrees/w\n"); // a self-consistent layout, but inside the project
+    assert.equal(gitDirsOf(evil), undefined);
+    plant("\ngitdir: /\n"); // only the first line counts
+    assert.equal(gitDirsOf(evil), undefined);
+    rmSync(path.join(evil, ".git"));
+    symlinkSync(path.join(wt, ".git"), path.join(evil, ".git")); // a symlinked gitfile is not a gitfile
+    assert.equal(gitDirsOf(evil), undefined);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

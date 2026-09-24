@@ -164,6 +164,9 @@ export function canonicalPath(root: string, p: string): string {
 /** Top-level locations a session block must never cover (masking them would break the machine or the project). */
 const UNBLOCKABLE = ["/", "/tmp", "/private", "/private/tmp", "/usr", "/etc", "/var", "/opt", "/home", "/Users", "/bin", "/sbin", "/lib", "/lib64", "/dev", "/proc", "/sys", "/run"];
 
+/** Trees whose every entry is off limits for a session block (the shell, the runtime helpers, libc live here). */
+const SYSTEM_TREES = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"];
+
 /**
  * The canonical path a user may block for the session after denying an
  * escape to `p`, or undefined when blocking it would be unsafe or pointless:
@@ -176,12 +179,24 @@ const UNBLOCKABLE = ["/", "/tmp", "/private", "/private/tmp", "/usr", "/etc", "/
 export function blockablePath(
   root: string,
   p: string,
-  opts: { alsoInside?: readonly string[]; denyRead?: readonly string[]; allowRead?: readonly string[] } = {},
+  opts: {
+    alsoInside?: readonly string[];
+    denyRead?: readonly string[];
+    allowRead?: readonly string[];
+    /** Directories the sandbox itself needs (runtime package, node, command files): never blockable, nor anything under or above them. */
+    protectedDirs?: readonly string[];
+  } = {},
 ): string | undefined {
   const target = canonicalPath(root, p);
   const home = canonicalize(os.homedir());
   if (target === home || UNBLOCKABLE.some((u) => target === u || target === canonicalize(u))) return undefined;
   if (path.dirname(target) === path.parse(target).root) return undefined; // a direct child of "/"
+  // System binaries and libraries: masking any of them breaks every sandboxed command.
+  if (SYSTEM_TREES.some((u) => relInside(path.relative(canonicalize(u), target)))) return undefined;
+  for (const d of opts.protectedDirs ?? []) {
+    const c = canonicalize(d);
+    if (relInside(path.relative(c, target)) || relInside(path.relative(target, c))) return undefined;
+  }
   const realRoot = canonicalize(root);
   if (relInside(path.relative(realRoot, target))) return undefined; // inside the project: not an escape
   if (relInside(path.relative(target, realRoot))) return undefined; // ancestor of the project
@@ -250,86 +265,69 @@ export function resolvePlanPath(raw: unknown): string {
     .replace(/^@/, "");
 }
 
-/**
- * The OS sandbox write-protects a fixed set of dotfiles/dirs at the project
- * root (the runtime's mandatory-deny list: its `DANGEROUS_FILES` +
- * `DANGEROUS_DIRECTORIES` + the `.claude/{commands,agents}` denies). When such
- * a path is ABSENT, the runtime denies it by mounting `/dev/null` over the
- * first missing component, and because the project is writable in
- * Default/Build, bubblewrap materializes that mountpoint as a 0-byte,
- * read-only file that survives teardown. The runtime removes its own mount
- * points after every run (`cleanupAfterCommand`); this list is the fallback
- * sweep for what a pi that died mid-command left behind (a stale `.git`
- * would break the next run).
- */
-export const SANDBOX_PLACEHOLDER_PATHS = [
-  ".git",
-  ".gitconfig",
-  ".gitmodules",
-  ".bashrc",
-  ".bash_profile",
-  ".zshrc",
-  ".zprofile",
-  ".profile",
-  ".ripgreprc",
-  ".mcp.json",
-  ".vscode",
-  ".idea",
-  ".claude",
-  ".claude/commands",
-  ".claude/agents",
-];
-
-/**
- * Delete any 0-byte placeholder files the sandbox left at the project root.
- * Only removes a path that is a **0-byte regular file** - a legitimate version
- * of any of these is a directory (`.git`, `.vscode`, `.idea`, `.claude`) or a
- * non-empty file (`.gitmodules`, `.mcp.json`, shell rc files), so real files and
- * dirs are never touched. Called at init and around each sandboxed run as the
- * crash fallback (the runtime cleans up after itself); best-effort.
- * Returns the number of placeholders removed.
- */
-export function removeSandboxPlaceholders(root: string): number {
-  let removed = 0;
-  for (const rel of SANDBOX_PLACEHOLDER_PATHS) {
-    const p = path.join(root, rel);
-    try {
-      const st = statSync(p);
-      if (st.isFile() && st.size === 0) {
-        rmSync(p, { force: true });
-        removed++;
-      }
-    } catch {
-      // absent / unreadable → nothing to clean
-    }
+/** A directory that looks like a git repository's (common) dir: HEAD file plus objects/ and refs/ directories. */
+function looksLikeGitDir(d: string, common: boolean): boolean {
+  try {
+    if (!statSync(path.join(d, "HEAD")).isFile()) return false;
+    if (!common) return true;
+    return statSync(path.join(d, "objects")).isDirectory() && statSync(path.join(d, "refs")).isDirectory();
+  } catch {
+    return false;
   }
-  return removed;
+}
+
+/** Directories no git-dir extra may ever be: the root, the home dir, a direct child of "/", an ancestor of home or of the project, or inside the project. */
+function unsafeGitDir(d: string, realRoot: string): boolean {
+  const home = canonicalize(os.homedir());
+  if (d === path.parse(d).root || path.dirname(d) === path.parse(d).root) return true;
+  if (relInside(path.relative(d, home)) || relInside(path.relative(d, realRoot))) return true; // equal to or an ancestor of either
+  return relInside(path.relative(realRoot, d)); // inside the project (the project is writable anyway; never a real worktree layout)
 }
 
 /**
- * The git directories of a project whose `.git` is a gitfile (a worktree or
- * a submodule): the worktree's own git dir (`gitdir:` line, holds HEAD, the
- * index, logs) and the common dir it shares with the main repository
- * (`<gitdir>/commondir`, holds objects, refs, hooks, config). Both lie
- * outside the project, where the sandbox allows no writes, so `git add` and
- * `git commit` would fail inside it; the controller makes them writable with
- * `hooks` and `config` denied. Empty for a normal repository (its `.git` is
- * in-project) and for a non-git project; canonical paths.
+ * The git directories of a project whose `.git` is a gitfile (a git worktree
+ * or an absorbed submodule): the per-worktree git dir (HEAD, index, logs)
+ * and the common dir shared with the main repository (objects, refs, hooks,
+ * config). Both lie outside the project, where the sandbox allows no writes,
+ * so `git add` and `git commit` would fail inside it; the controller makes
+ * them writable with their hooks and config denied.
+ *
+ * The gitfile is project content, and sandboxed bash can create or rewrite
+ * it, so nothing in it is trusted on its own. Accepted only when the layout
+ * is one git itself creates:
+ * - worktree: the git dir is `<common>/worktrees/<name>`, `<common>` looks
+ *   like a repository, and the git dir's back-reference file `gitdir` names
+ *   this very `.git` file. The `commondir` file is never read.
+ * - submodule: the git dir sits under a `modules` directory, looks like a
+ *   repository, and its `core.worktree` resolves to this project.
+ * Refused outright: `/`, the home dir, direct children of `/`, ancestors of
+ * home or the project, anything inside the project. Undefined otherwise
+ * (normal repository, no git, or anything that does not check out).
  */
 export function gitDirsOf(root: string): { gitdir: string; commondir: string } | undefined {
   const gitfile = path.join(root, ".git");
   try {
-    if (!statSync(gitfile).isFile()) return undefined;
-    const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitfile, "utf8"));
+    if (!lstatSync(gitfile).isFile()) return undefined; // a directory, a symlink, or absent
+    const first = readFileSync(gitfile, "utf8").split(/\r?\n/, 1)[0];
+    const m = /^gitdir: (.+)$/.exec(first);
     if (!m) return undefined;
-    const gitdir = realpathSync(path.resolve(root, m[1]));
-    let commondir = gitdir;
-    try {
-      const rel = readFileSync(path.join(gitdir, "commondir"), "utf8").trim();
-      if (rel) commondir = realpathSync(path.resolve(gitdir, rel));
-    } catch {
-      // no commondir file: a submodule's gitdir is its own common dir
+    const realRoot = canonicalize(root);
+    const realGitfile = realpathSync(gitfile);
+    const gitdir = realpathSync(path.resolve(root, m[1].trim()));
+    let commondir: string;
+    if (path.basename(path.dirname(gitdir)) === "worktrees") {
+      commondir = path.dirname(path.dirname(gitdir));
+      if (!looksLikeGitDir(gitdir, false) || !looksLikeGitDir(commondir, true)) return undefined;
+      const back = readFileSync(path.join(gitdir, "gitdir"), "utf8").trim();
+      if (realpathSync(path.resolve(gitdir, back)) !== realGitfile) return undefined;
+    } else {
+      commondir = gitdir;
+      if (!gitdir.split(path.sep).includes("modules") || !looksLikeGitDir(gitdir, true)) return undefined;
+      const cfg = readFileSync(path.join(gitdir, "config"), "utf8");
+      const wt = /^\s*worktree\s*=\s*(.+?)\s*$/m.exec(cfg.slice(Math.max(0, cfg.search(/^\s*\[core\]/m))));
+      if (!wt || realpathSync(path.resolve(gitdir, wt[1])) !== realRoot) return undefined;
     }
+    if (unsafeGitDir(gitdir, realRoot) || unsafeGitDir(commondir, realRoot)) return undefined;
     return { gitdir, commondir };
   } catch {
     return undefined;
