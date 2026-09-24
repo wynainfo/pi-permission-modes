@@ -19,6 +19,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   detector and the heuristic fallback share the new resolution. Globs and
   names after a `cd` are still judged as written (SECURITY.md).
 
+### Fixed
+- **The "connection(s) blocked" hint is per command.** Refused hosts were
+  collected in one session-wide list that every sandboxed command emptied
+  at start and end, so with parallel tool calls a hint went missing or
+  showed up under the wrong command. The hint now comes from the command's
+  own `<sandbox_violations>` block (the runtime attributes each refusal to
+  the command that made it) and names only hosts the user can still allow
+  (not deny-list entries).
+- The violation block no longer reports writes to `/dev` and `/proc`
+  (e.g. `/dev/shm`): they succeed inside the sandbox, and the runtime's
+  Linux monitor misreported them as denied.
+
 ### Changed
 - The npm package no longer ships the test files (`src/*.test.ts`).
 

@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SandboxController, bashCustomConfig, commandLauncher, createSandboxedBashOps, networkFiltered, runtimeExtrasFor, runtimeInstallDir, withDeniedReads, withRuntimeExtras, writeCommandFile } from "./sandbox.ts";
+import { SandboxController, bashCustomConfig, commandLauncher, processViolations, createSandboxedBashOps, networkFiltered, runtimeExtrasFor, runtimeInstallDir, withDeniedReads, withRuntimeExtras, writeCommandFile } from "./sandbox.ts";
 
 const quote: ((xs: readonly string[]) => string) | undefined = await import("@anthropic-ai/sandbox-runtime/dist/utils/shell-quote.js")
   .then((m) => (m as { quote: (xs: readonly string[]) => string }).quote)
@@ -239,6 +239,40 @@ test("exec: wraps the launcher under a per-run id with the ORIGINAL command as c
   assert.equal(rt.calls.filter((c) => c === "cleanup").length, 1);
 });
 
+test("processViolations: /dev and /proc monitor noise is dropped; grantable network denials become the hint's hosts", () => {
+  const block = [
+    "<sandbox_violations>",
+    "deny openat /dev/shm/sem.mp-x",
+    "deny openat /proc/self/attr/current",
+    "deny openat /etc/nope",
+    "deny network-outbound example.com:443 (user denied)",
+    "deny network-outbound Other.io:80 (host is not on the allow list)",
+    "deny network-outbound evil.com:443 (host is on the deny list)",
+    "deny network-outbound [::1]:8080 (user denied)",
+    "</sandbox_violations>",
+  ].join("\n");
+  const r = processViolations(block);
+  assert.equal(
+    r.block,
+    "<sandbox_violations>\ndeny openat /etc/nope\ndeny network-outbound example.com:443 (user denied)\ndeny network-outbound Other.io:80 (host is not on the allow list)\ndeny network-outbound evil.com:443 (host is on the deny list)\ndeny network-outbound [::1]:8080 (user denied)\n</sandbox_violations>",
+  );
+  assert.deepEqual(r.grantableHosts, ["example.com", "Other.io", "::1"]);
+  assert.deepEqual(processViolations("<sandbox_violations>\ndeny openat /dev/shm/x\n</sandbox_violations>"), { block: "", grantableHosts: [] });
+  assert.deepEqual(processViolations(""), { block: "", grantableHosts: [] });
+});
+
+test("exec: the network hint names only this command's refused hosts, after its violation block", async () => {
+  const rt = fakeRuntime({ violations: "deny network-outbound example.com:443 (user denied)" });
+  const ops = createSandboxedBashOps(rt.manager);
+  let out = "";
+  await ops.exec("true", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
+  assert.match(out, /<\/sandbox_violations>\n\n\[permission-mode\] network: connection\(s\) blocked by the sandbox allowlist: example\.com\. Request access/);
+  const quiet = fakeRuntime();
+  let none = "";
+  await createSandboxedBashOps(quiet.manager).exec("true", process.cwd(), { onData: (b) => (none += String(b)), signal: undefined as never, timeout: 10 });
+  assert.equal(none, "", "no violations, no hint");
+});
+
 test("exec: the runtime's violation block is appended to the output the model sees", async () => {
   const rt = fakeRuntime({ violations: "write /etc/nope" });
   const ops = createSandboxedBashOps(rt.manager);
@@ -331,7 +365,7 @@ test("withDeniedReads: a block closes the allowRead carve-outs at or under it", 
 
 test("exec: TMPDIR comes from the explicit option, never from pi's env; pi's env reaches the command", async () => {
   const rt = fakeRuntime();
-  const ops = createSandboxedBashOps(rt.manager, undefined, undefined, { tmpdir: "/tmp/pi/sess-x" });
+  const ops = createSandboxedBashOps(rt.manager, undefined, { tmpdir: "/tmp/pi/sess-x" });
   let out = "";
   await ops.exec('echo "$TMPDIR|$PI_MARK"', process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10, env: { ...process.env, TMPDIR: "/var/folders/pi-own", PI_MARK: "m1" } });
   assert.equal(out, "/tmp/pi/sess-x|m1\n");

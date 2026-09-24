@@ -109,16 +109,6 @@ test("decide: concurrent asks for the same host coalesce into one prompt", async
   assert.equal(calls, 1);
 });
 
-test("drainBlocked reports each denied host once, then resets", async () => {
-  const s = new NetworkSession();
-  const deny = async (): Promise<"deny"> => "deny";
-  await s.decide("x.io", 443, deny);
-  await s.decide("x.io", 443, deny); // remembered deny also records a block
-  await s.decide("y.io", 443, undefined);
-  assert.deepEqual(s.drainBlocked().sort(), ["x.io", "y.io"]);
-  assert.deepEqual(s.drainBlocked(), []);
-});
-
 test("clear() resets grants, denies, and the open toggle", async () => {
   const s = new NetworkSession();
   s.open = true;

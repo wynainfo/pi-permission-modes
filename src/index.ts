@@ -842,7 +842,6 @@ export default async function (pi: ExtensionAPI) {
       // Live network gate: the proxy consults session state for every host
       // outside the allowlist; unknown hosts prompt via askNetHost.
       askHost: (host, port) => net.decide(host, port, askNetHost),
-      drainBlockedHosts: () => net.drainBlocked(),
     });
     await setMode(picked.name, ctx, false, picked.fallback);
   });

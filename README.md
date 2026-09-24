@@ -141,7 +141,9 @@ outside directories or non-executable files stay escapes.
 > both through the system sandbox log. The Linux report is best effort in
 > both directions: it can list a write that actually landed in the throwaway
 > tmpfs the sandbox mounts over a read-denied directory (lost when the
-> command ends), and it misses Plan mode's read-only refusals.
+> command ends), and it misses Plan mode's read-only refusals. Lines for
+> `/dev` and `/proc` are dropped: writes there (e.g. `/dev/shm`) succeed
+> inside the sandbox and were misreported.
 
 > **Sandbox placeholder cleanup:** the sandbox runtime write-protects a fixed set
 > of dotfiles/dirs at the project root (`.git/hooks`, `.gitconfig`, `.gitmodules`,

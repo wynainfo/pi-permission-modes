@@ -142,6 +142,30 @@ function runError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
+/** Violation lines for paths the Linux write monitor misreports: writes into bwrap's own /dev and /proc succeed (e.g. /dev/shm). */
+const MONITOR_NOISE = /^deny \S+ \/(dev|proc)\//;
+/** Network denials the user can still lift (not a deny-list entry or a failed prompt). */
+const GRANTABLE_NET_DENY = /^deny network-outbound (.+):\d+ \((user denied|host is not on the allow list)\)$/;
+
+/**
+ * The runtime's `<sandbox_violations>` block for one command, cleaned up:
+ * the monitor's /dev and /proc noise removed (the block is dropped when
+ * nothing else remains), plus the hosts in it the user could grant. Every
+ * line in it belongs to this command (attributed by commandId), so the
+ * network hint is per command even when pi runs commands in parallel.
+ */
+export function processViolations(block: string): { block: string; grantableHosts: string[] } {
+  const m = /^<sandbox_violations>\r?\n([\s\S]*?)\r?\n?<\/sandbox_violations>$/.exec(block.trim());
+  if (!m) return { block: block.trim(), grantableHosts: [] };
+  const lines = m[1].split(/\r?\n/).filter((l) => l.trim() && !MONITOR_NOISE.test(l));
+  const hosts = new Set<string>();
+  for (const l of lines) {
+    const h = GRANTABLE_NET_DENY.exec(l);
+    if (h) hosts.add(h[1].replace(/^\[|\]$/g, ""));
+  }
+  return { block: lines.length ? `<sandbox_violations>\n${lines.join("\n")}\n</sandbox_violations>` : "", grantableHosts: [...hosts] };
+}
+
 /**
  * BashOperations backed by `SandboxManager.wrapWithSandbox`. An optional
  * `customConfig` overrides the init-time config per command (used to drop write
@@ -150,7 +174,6 @@ function runError(err: unknown): Error {
 export function createSandboxedBashOps(
   SandboxManager: SandboxManagerType,
   customConfig?: Partial<SandboxConfig>,
-  drainBlockedHosts?: () => string[],
   runOpts: {
     /** TMPDIR for the command (the session scratch dir). NOT taken from pi's env: that is pi's own TMPDIR. */
     tmpdir?: string;
@@ -160,23 +183,8 @@ export function createSandboxedBashOps(
 ): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
-      // Any network denial during this run (allowlist miss the user didn't
-      // approve) is recorded by the ask callback; surface it to the model
-      // after the run so a refused connection is diagnosable, not mystery.
-      const emitBlockedHint = () => {
-        const hosts = drainBlockedHosts?.() ?? [];
-        if (hosts.length > 0) {
-          onData(
-            Buffer.from(
-              `\n[permission-mode] network: connection(s) blocked by the sandbox allowlist: ${hosts.join(", ")}. ` +
-                "Request access with the request_network_access tool, or ask the user (/net allow <domain>).\n",
-            ),
-          );
-        }
-      };
       if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
       if (signal?.aborted) throw new Error("aborted"); // never spawn for a call that is already cancelled
-      drainBlockedHosts?.(); // discard denials that belong to earlier runs
       // No placeholder sweep here: the runtime removes the mount points it
       // plants for absent protected dotfiles once NO sandbox is running any
       // more (cleanupAfterCommand below), and re-covers leftovers of a crashed
@@ -190,14 +198,26 @@ export function createSandboxedBashOps(
       // writes, denied hosts) are filed under this id; the ORIGINAL command
       // is what they report, not the launcher.
       const commandId = `pi-${randomBytes(8).toString("hex")}`;
+      // After the run: the runtime's violation block for THIS command, and
+      // a hint when it refused hosts the user could still allow, so a
+      // blocked connection is diagnosable rather than a mystery.
       const emitViolations = () => {
-        let block = "";
+        let raw = "";
         try {
-          block = SandboxManager.annotateStderrWithSandboxFailures?.(commandId, "")?.trim() ?? "";
+          raw = SandboxManager.annotateStderrWithSandboxFailures?.(commandId, "")?.trim() ?? "";
         } catch {
           return;
         }
+        const { block, grantableHosts } = processViolations(raw);
         if (block) onData(Buffer.from(`\n${block}\n`));
+        if (grantableHosts.length > 0) {
+          onData(
+            Buffer.from(
+              `\n[permission-mode] network: connection(s) blocked by the sandbox allowlist: ${grantableHosts.join(", ")}. ` +
+                "Request access with the request_network_access tool, or ask the user (/net allow <domain>).\n",
+            ),
+          );
+        }
       };
       let wrapped: string;
       try {
@@ -261,7 +281,6 @@ export function createSandboxedBashOps(
             // The violation monitors report over sockets of their own; give
             // events already sent one turn of the loop to land before reading.
             setImmediate(() => {
-              emitBlockedHint();
               emitViolations();
               if (code !== 0) {
                 const hint = head.namespaceHint();
@@ -429,8 +448,6 @@ export interface InitOptions {
    * keeps the historic silent-deny behavior.
    */
   askHost?: (host: string, port: number | undefined) => Promise<boolean>;
-  /** Drained by the bash wrapper to report hosts blocked during a run. */
-  drainBlockedHosts?: () => string[];
 }
 
 /**
@@ -452,7 +469,6 @@ export class SandboxController {
   private hasUI = false;
   private notifyFn: Notify = () => {};
   private askHost: ((host: string, port: number | undefined) => Promise<boolean>) | undefined;
-  private drainBlockedHosts: (() => string[]) | undefined;
   ready = false;
   disabled = false;
   warn: string | undefined;
@@ -475,7 +491,7 @@ export class SandboxController {
    */
   bashOps(opts: BashOpsOptions = {}): BashOperations | null {
     if (!this.manager || !this.profile) return null;
-    return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts, this.extras), this.drainBlockedHosts, {
+    return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts, this.extras), {
       tmpdir: opts.tmpdir,
       onRun: () => this.runStarted(),
     });
@@ -508,7 +524,7 @@ export class SandboxController {
     return `Fix: cd ${EXTENSION_DIR} && npm install${linux}`;
   }
 
-  async init({ cwd, noSandbox, hasUI, notify, profile, askHost, drainBlockedHosts }: InitOptions): Promise<void> {
+  async init({ cwd, noSandbox, hasUI, notify, profile, askHost }: InitOptions): Promise<void> {
     await this.applying.catch(() => {}); // let an in-flight profile switch settle first
     // A re-run (resume, /reload) must start from a clean runtime: initialize()
     // is a no-op while the runtime still holds its previous initialization.
@@ -531,7 +547,6 @@ export class SandboxController {
     this.hasUI = hasUI;
     this.notifyFn = notify;
     this.askHost = askHost;
-    this.drainBlockedHosts = drainBlockedHosts;
 
     if (noSandbox) {
       this.disabled = true;
