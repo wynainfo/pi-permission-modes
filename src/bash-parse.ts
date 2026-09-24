@@ -22,7 +22,7 @@
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { bashConfirmReason, normalizeBashToken, pathPartOfToken, PRIVILEGE_RE } from "./heuristics.ts";
+import { bashConfirmReason, normalizeBashToken, pathPartOfToken, PRIVILEGE_RE, tokenTarget } from "./heuristics.ts";
 import { bashPathEscapes, SAFE_OUTSIDE_RE } from "./paths.ts";
 
 /** One command extracted from a bash line. */
@@ -357,16 +357,12 @@ export function outsideReasonFromCommands(
       const dest = c.args.find((a) => a === "-" || !a.startsWith("-"));
       if (dest === undefined || dest === "-") return `path outside project: ${c.name} ${dest ?? ""}`.trim();
     }
-    for (const raw of [c.name, ...c.args]) {
+    for (const [i, raw] of [c.name, ...c.args].entries()) {
       const tok = normalizeBashToken(raw);
       if (/^~[^/]/.test(tok)) return `path outside project: ${raw}`; // ~user: another user's home
-      const p = pathPartOfToken(tok);
-      let target: string | undefined;
-      if (p.startsWith("/")) target = p;
-      else if (p === "~" || p.startsWith("~/")) target = path.join(os.homedir(), p.slice(1));
-      else if (p.includes("/") || p === "..") target = path.resolve(root, p);
-      else continue;
-      if (SAFE_OUTSIDE_RE.test(target)) continue;
+      // Arguments may be bare symlink names; a bare command name is a PATH lookup, not a path.
+      const target = tokenTarget(tok, root, i > 0);
+      if (target === undefined || SAFE_OUTSIDE_RE.test(target)) continue;
       if (bashPathEscapes(root, target, alsoInside)) return `path outside project: ${raw}`;
     }
   }
@@ -382,16 +378,11 @@ export function outsideReasonFromCommands(
 export function escapingPaths(commands: BashCommand[], root: string, alsoInside: readonly string[] = []): string[] {
   const out = new Set<string>();
   for (const c of commands) {
-    for (const raw of [c.name, ...c.args]) {
+    for (const [i, raw] of [c.name, ...c.args].entries()) {
       const tok = normalizeBashToken(raw);
       if (/^~[^/]/.test(tok)) continue;
-      const p = pathPartOfToken(tok);
-      let target: string | undefined;
-      if (p.startsWith("/")) target = p;
-      else if (p === "~" || p.startsWith("~/")) target = path.join(os.homedir(), p.slice(1));
-      else if (p.includes("/") || p === "..") target = path.resolve(root, p);
-      else continue;
-      if (SAFE_OUTSIDE_RE.test(target)) continue;
+      const target = tokenTarget(tok, root, i > 0);
+      if (target === undefined || SAFE_OUTSIDE_RE.test(target)) continue;
       if (bashPathEscapes(root, target, alsoInside)) out.add(path.resolve(target));
     }
   }

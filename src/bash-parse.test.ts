@@ -98,8 +98,8 @@ test("outsideReasonFromCommands: a venv interpreter symlinked outside the projec
     const c = (...a: string[]): BashCommand => ({ name: a[0], args: a.slice(1), isNested: false });
     assert.equal(outsideReasonFromCommands([c(".venv/bin/python", "-m", "pytest")], root), undefined);
     assert.equal(outsideReasonFromCommands([c("cd", root), c(".venv/bin/python", "-u", "-")], root), undefined);
-    // Bare names are never path tokens (by design); a slash makes it one.
-    assert.equal(outsideReasonFromCommands([c("cat", "dangling")], root), undefined);
+    // A bare name that is a symlink out of the project is an escape too (dangling or not).
+    assert.match(outsideReasonFromCommands([c("cat", "dangling")], root) ?? "", /path outside project: dangling/);
     assert.match(outsideReasonFromCommands([c("cat", "./dangling")], root) ?? "", /path outside project: \.\/dangling/);
     assert.match(outsideReasonFromCommands([c(exe, "-V")], root) ?? "", /path outside project/); // named directly: still outside
   } finally {
@@ -327,4 +327,36 @@ test("escapingPaths / escapeTargetFromReason: every out-of-project path a chain 
   assert.equal(escapeTargetFromReason("path outside project: ../x", root), "/home/u/x");
   assert.equal(escapeTargetFromReason("path outside project: cd", root), undefined);
   assert.equal(escapeTargetFromReason("privilege escalation", root), undefined);
+});
+
+test("bare-word symlinks: an argument naming an in-project symlink to outside is an escape; plain names and executables are not", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "perm-bare-"));
+  try {
+    const root = path.join(base, "proj");
+    mkdirSync(root);
+    const secret = path.join(base, "secret.txt");
+    writeFileSync(secret, "x");
+    mkdirSync(path.join(base, "outdir"));
+    const exe = path.join(base, "tool");
+    writeFileSync(exe, "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync(secret, path.join(root, "data"));
+    symlinkSync(path.join(base, "outdir"), path.join(root, "outlink"));
+    symlinkSync(exe, path.join(root, "toollink"));
+    writeFileSync(path.join(root, "a.txt"), "a");
+    symlinkSync(path.join(root, "a.txt"), path.join(root, "inlink"));
+    const c = (...a: string[]): BashCommand => ({ name: a[0], args: a.slice(1), isNested: false });
+    assert.match(outsideReasonFromCommands([c("cat", "data")], root) ?? "", /path outside project: data/);
+    assert.match(outsideReasonFromCommands([c("ls", "outlink")], root) ?? "", /path outside project: outlink/);
+    assert.match(outsideReasonFromCommands([c("cp", "'data'", "x")], root) ?? "", /path outside project/); // quoted spelling
+    assert.equal(outsideReasonFromCommands([c("cat", "a.txt")], root), undefined); // plain in-project file
+    assert.equal(outsideReasonFromCommands([c("cat", "inlink")], root), undefined); // link staying inside
+    assert.equal(outsideReasonFromCommands([c("toollink", "-V")], root), undefined); // command position: PATH lookup
+    assert.equal(outsideReasonFromCommands([c("run", "toollink")], root), undefined); // link to an outside executable: the venv rule
+    assert.equal(outsideReasonFromCommands([c("grep", "-data", "a.txt")], root), undefined); // flags are not names
+    assert.equal(outsideReasonFromCommands([c("cat", "missing")], root), undefined);
+    // The block candidates name the link; blockablePath canonicalizes it to the real target.
+    assert.deepEqual(escapingPaths([c("cat", "data", "a.txt")], root), [path.join(root, "data")]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

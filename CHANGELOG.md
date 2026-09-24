@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **A bare filename that is a symlink out of the project is an escape.**
+  The bash escape detector only judged tokens that look like paths (a `/`,
+  `~`, or `..`), so with an in-project `data -> ~/secret.txt`, `cat data`
+  ran sandboxed without a prompt and the sandbox allowed the read (reads
+  outside the project are only limited by `denyRead`). Arguments that name
+  a symlink in the project root are now resolved like any other path: a
+  link leaving the project prompts (and can be denied and blocked, which
+  masks the link's real target), a link staying inside does not, and a
+  link to an outside executable keeps the venv exemption. Both the AST
+  detector and the heuristic fallback share the new resolution. Globs and
+  names after a `cd` are still judged as written (SECURITY.md).
+
 ### Changed
 - The npm package no longer ships the test files (`src/*.test.ts`).
 

@@ -17,7 +17,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1259,6 +1259,26 @@ test("plan approval: a plan edited after show_plan is not approved blindly; unsa
     await runWithShownPlan(h, "plan/x`y.md");
     assert.equal(h.ctx.prompts.length, 0);
   } finally {
+    h.cleanup();
+  }
+});
+
+test("bare-word symlink out of the project prompts as an escape and can be denied and blocked", { skip }, async () => {
+  const h = await setup();
+  const outside = mkdtempSync(path.join(tmpdir(), "perm-bare-out-"));
+  try {
+    writeFileSync(path.join(outside, "secret.txt"), "top secret");
+    symlinkSync(path.join(outside, "secret.txt"), path.join(h.root, "data"));
+    await h.perm("build");
+    h.ctx.answers.push(`Deny and block ${path.join(outside, "secret.txt")} for this session`);
+    const res = await h.call("bash", { command: "cat data" });
+    assert.equal(res?.block, true);
+    assert.match(h.ctx.prompts[0]?.title ?? "", /path outside project: data/);
+    assert.ok(h.ctx.prompts[0]?.options.at(-1)?.includes(path.join(outside, "secret.txt")), "the block targets the link's real file");
+    const again = await h.call("bash", { command: "cat data" });
+    assert.match(again?.reason ?? "", /blocked for this session/);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
     h.cleanup();
   }
 });

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { bashConfirmReason, normalizeBashToken, pathPartOfToken, PRIVILEGE_RE } from "./heuristics.ts";
+import { bashConfirmReason, normalizeBashToken, pathPartOfToken, PRIVILEGE_RE, tokenTarget } from "./heuristics.ts";
 
 const ROOT = "/home/proj";
 
@@ -72,4 +74,24 @@ test("heuristic: escaped, ANSI-C, $HOME, ~user, glued values, bare cd are escape
   }
   assert.equal(bashConfirmReason("cd src && ls", ROOT), undefined);
   assert.equal(bashConfirmReason("echo cd", ROOT), undefined);
+});
+
+test("heuristic fallback and tokenTarget: bare-word symlinks out of the project are escapes", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "perm-bare-h-"));
+  try {
+    const root = path.join(base, "proj");
+    mkdirSync(root);
+    writeFileSync(path.join(base, "secret.txt"), "x");
+    symlinkSync(path.join(base, "secret.txt"), path.join(root, "data"));
+    writeFileSync(path.join(root, "plain"), "p");
+    assert.equal(tokenTarget("data", root, true), path.join(root, "data"));
+    assert.equal(tokenTarget("data", root, false), undefined);
+    assert.equal(tokenTarget("plain", root, true), undefined);
+    assert.equal(tokenTarget("-data", root, true), undefined);
+    assert.equal(tokenTarget("da*", root, true), undefined); // globs are not resolved
+    assert.match(bashConfirmReason("cat data | wc -c", root) ?? "", /path outside project: data/);
+    assert.equal(bashConfirmReason("cat plain", root), undefined);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

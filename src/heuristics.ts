@@ -9,6 +9,7 @@
  * Pure (no `pi`/`ctx`) so the known-gap behavior can be locked down with tests.
  */
 
+import { lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { bashPathEscapes, SAFE_OUTSIDE_RE } from "./paths.ts";
@@ -49,6 +50,27 @@ export function pathPartOfToken(tok: string): string {
  * directory used to classify path tokens as in/out of project; `alsoInside`
  * lists further in-bounds roots (the sandbox-writable dirs, e.g. `/tmp`).
  */
+/**
+ * The absolute path a (normalized) bash token names, or undefined when it
+ * names none worth judging: absolute paths, `~`/`~/x`, anything with a `/`,
+ * `..`, and - with `bare` - a plain word that is a SYMLINK in the project
+ * root (`cat data` with `data -> ~/secret.txt`; a plain in-project file
+ * or directory is in-project by definition, so only links cost an lstat).
+ * Flags are never bare paths; `~user` is handled by the callers.
+ */
+export function tokenTarget(tok: string, root: string, bare: boolean): string | undefined {
+  const p = pathPartOfToken(tok);
+  if (p.startsWith("/")) return p;
+  if (p === "~" || p.startsWith("~/")) return path.join(os.homedir(), p.slice(1));
+  if (p.includes("/") || p === "..") return path.resolve(root, p);
+  if (!bare || !p || p.startsWith("-") || p === "." || /[*?[\]{}$`\0]/.test(p)) return undefined;
+  try {
+    return lstatSync(path.join(root, p)).isSymbolicLink() ? path.resolve(root, p) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function bashConfirmReason(command: string, root: string, alsoInside: readonly string[] = []): string | undefined {
   if (PRIVILEGE_RE.test(command)) return "privilege escalation";
   if (/(^|[;&|(]\s*)(cd|pushd)(\s+-)?\s*($|[;&|)])/.test(command)) return "path outside project: cd";
@@ -56,13 +78,8 @@ export function bashConfirmReason(command: string, root: string, alsoInside: rea
     const tok = normalizeBashToken(raw);
     if (!tok) continue;
     if (/^~[^/]/.test(tok)) return `path outside project: ${raw}`;
-    const p = pathPartOfToken(tok);
-    let target: string | undefined;
-    if (p.startsWith("/")) target = p;
-    else if (p === "~" || p.startsWith("~/")) target = path.join(os.homedir(), p.slice(1));
-    else if (p.includes("/") || p === "..") target = path.resolve(root, p);
-    else continue;
-    if (SAFE_OUTSIDE_RE.test(target)) continue;
+    const target = tokenTarget(tok, root, true);
+    if (target === undefined || SAFE_OUTSIDE_RE.test(target)) continue;
     if (bashPathEscapes(root, target, alsoInside)) return `path outside project: ${raw}`;
   }
   return undefined;

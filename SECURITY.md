@@ -156,13 +156,13 @@ you can rely on it appropriately.
   name instead, or list them in the repository's `.git/info/exclude`), and a
   tool that stats them sees a device, not a missing file. Harmless for
   containment; noted so nobody files it as a leak.
-- **A bare-word symlink out of the project is not seen by the bash prompt
-  layer.** The escape detector looks at tokens that look like paths (a `/`,
-  `~`, or `..`), so for an in-project `data -> ~/secret.txt`, `cat data` is
-  judged in-project and runs sandboxed without a prompt; the sandbox then
-  allows the read unless `denyRead` covers the target. `cat ./data` is
-  caught, and the file tools follow the link and prompt. Keep secrets in
-  `denyRead` (or use a strict-home mode) rather than relying on the prompt.
+- **Symlinks reached through a glob or a changed directory are not resolved
+  by the bash prompt layer.** A bare name that is a symlink out of the
+  project (`cat data` with `data -> ~/secret.txt`) is an escape and prompts,
+  but `cat *` or `cd sub && cat data` are judged by the names as written.
+  The sandbox then allows the read unless `denyRead` covers the target;
+  keep secrets in `denyRead` (or use a strict-home mode) rather than
+  relying on the prompt.
 - **Violation reports are best effort.** The `<sandbox_violations>` block is
   diagnostic output for the model, gathered by observers that run beside the
   sandbox (a seccomp write observer on Linux, the system sandbox log on
