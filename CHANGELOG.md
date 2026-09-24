@@ -6,6 +6,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- The npm package no longer ships the test files (`src/*.test.ts`).
+
 ## [2.4.0]
 
 ### Security

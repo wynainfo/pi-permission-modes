@@ -33,6 +33,7 @@
   },
   "files": [
     "src/",
+    "!src/**/*.test.ts",
     "schemas/",
     "permission-mode.defaults.json",
     "defaults-history.json",
