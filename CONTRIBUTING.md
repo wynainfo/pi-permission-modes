@@ -2,10 +2,23 @@
 
 Thanks for your interest in improving `permission-mode`!
 
+## Branches
+
+- **`dev`** is where development happens. Open pull requests against `dev`.
+- **`main`** holds the latest release, the same code npm serves. It moves
+  only when a release is cut (or for an urgent fix, released right away).
+
+To run the development version yourself:
+
+```bash
+pi install git:github.com/wynainfo/pi-permission-modes@dev
+pi update --extensions   # later: pull the latest dev commits
+```
+
 ## Dev setup
 
 ```bash
-git clone https://github.com/wynainfo/pi-permission-modes.git
+git clone -b dev https://github.com/wynainfo/pi-permission-modes.git
 cd pi-permission-modes
 npm install            # installs @anthropic-ai/sandbox-runtime + dev tooling
 ```
