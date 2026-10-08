@@ -19,6 +19,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#11](https://github.com/wynainfo/pi-permission-modes/issues/11) /
   [#12](https://github.com/wynainfo/pi-permission-modes/pull/12).
 
+### Fixed
+- **A configured `defaultMode` is the start mode.** The engine boots on the
+  stock defaults before `session_start` loads `permission-mode.json`, and the
+  start mode was only rebased onto the loaded `defaultMode` when the stock
+  one was not a valid mode, which it always is. So `"defaultMode": "build"`
+  still started in Default. The `--perm` flag, a persisted session entry,
+  and a forwarded `PI_PERMISSION_MODE` keep their precedence. Note: a global
+  `"defaultMode": "yolo"` now really starts unsandboxed, as configured.
+  Fixed by [@lukegood](https://github.com/lukegood) in
+  [#10](https://github.com/wynainfo/pi-permission-modes/pull/10).
+
 ## [2.4.1]
 
 ### Security

@@ -448,7 +448,8 @@ export default async function (pi: ExtensionAPI) {
    *   3. PI_PERMISSION_MODE env (forwarded from a parent / user-set),
    *   4. headless child with none of the above → most restrictive (never YOLO),
    *      flagged as `fallback` (policy applies, systemPrompt is not injected),
-   *   5. the current/default mode.
+   *   5. the current mode: config.defaultMode at session_start (rebased
+   *      there after the config loads), the mode in effect on session_tree.
    */
   const pickMode = (ctx: ExtensionContext, useFlag: boolean): { name: string; fallback: boolean } => {
     let resolved: string | undefined;
@@ -807,7 +808,12 @@ export default async function (pi: ExtensionAPI) {
       warn(`permission-mode: could not load configuration, keeping the previous one: ${e instanceof Error ? e.message : String(e)}`);
     }
     auditGlobalConfig(ctx);
-    if (!hasMode(config.modes, modeName)) modeName = config.defaultMode;
+    // Every session_start runs in a fresh extension runtime (startup, /new,
+    // /resume, /fork, /reload), so modeName still holds the STOCK default here.
+    // Rebase it onto the loaded config's defaultMode: otherwise pickMode's
+    // last fallback would ignore a configured defaultMode whenever the stock
+    // one ("default") is also a valid mode.
+    modeName = config.defaultMode;
     // Resolve the start mode BEFORE init so the sandbox initializes with the
     // right profile, then setMode reconciles status (applyProfile is a no-op).
     const picked = pickMode(ctx, true);

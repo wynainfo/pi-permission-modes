@@ -182,6 +182,8 @@ async function setup(
     /** Simulate a parent-forwarded PI_PERMISSION_MODE. */
     envMode?: string;
     entries?: Array<{ type: string; customType?: string; data?: unknown }>;
+    /** Global permission-mode.json written before the first session_start. */
+    globalConfig?: Record<string, unknown>;
   } = {},
 ): Promise<Harness> {
   const base = mkdtempSync(path.join(tmpdir(), "perm-idx-"));
@@ -189,6 +191,10 @@ async function setup(
   const agentDir = path.join(base, "agent");
   mkdirSync(path.join(root, "src"), { recursive: true });
   mkdirSync(agentDir, { recursive: true });
+  if (opts.globalConfig) {
+    mkdirSync(path.join(agentDir, "permission-mode"), { recursive: true });
+    writeFileSync(path.join(agentDir, "permission-mode", "permission-mode.json"), JSON.stringify(opts.globalConfig));
+  }
 
   const scratchBase = path.join(base, "scratch");
 
@@ -730,6 +736,41 @@ test("startup: --perm flag wins; a persisted session entry restores the mode", {
     assert.match(resumed.ctx.status, /^Build /);
   } finally {
     resumed.cleanup();
+  }
+});
+
+test("startup: a global defaultMode is the start mode; flag, session entry, and env still win", { skip }, async () => {
+  // The engine boots on the stock default ("default", itself a valid mode)
+  // before session_start loads the config; the configured defaultMode must
+  // still be what an interactive session starts in.
+  const globalConfig = { defaultMode: "build" };
+  const plain = await setup({ globalConfig });
+  try {
+    assert.match(plain.ctx.status, /^Build /);
+    assert.equal(process.env.PI_PERMISSION_MODE, "build"); // forwarded to children
+  } finally {
+    plain.cleanup();
+  }
+
+  const flagged = await setup({ globalConfig, permFlag: "plan" });
+  try {
+    assert.match(flagged.ctx.status, /^Plan Mode /);
+  } finally {
+    flagged.cleanup();
+  }
+
+  const resumed = await setup({ globalConfig, entries: [{ type: "custom", customType: "perm-mode", data: { mode: "yolo" } }] });
+  try {
+    assert.match(resumed.ctx.status, /^YOLO /);
+  } finally {
+    resumed.cleanup();
+  }
+
+  const forwarded = await setup({ globalConfig, envMode: "default" });
+  try {
+    assert.match(forwarded.ctx.status, /^Default /);
+  } finally {
+    forwarded.cleanup();
   }
 });
 
