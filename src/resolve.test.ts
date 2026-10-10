@@ -13,6 +13,40 @@ test("matchPattern: * spans path separators, ? is one char", () => {
   assert.ok(!matchPattern("file?.txt", "file12.txt"));
 });
 
+test("matchPattern: **/ matches zero or more directories (bare relative paths)", () => {
+  // `**/exemple.js` used to require a literal `/`, so a bare relative path
+  // like `exemple.js` never matched and a `deny` rule was silently skipped in
+  // favor of `"*": "allow"` (last-match-wins).
+  assert.ok(matchPattern("**/exemple.js", "exemple.js"));
+  assert.ok(matchPattern("**/exemple.js", "./exemple.js"));
+  assert.ok(matchPattern("**/exemple.js", "sub/exemple.js"));
+  assert.ok(matchPattern("**/exemple.js", "a/b/exemple.js"));
+  assert.ok(matchPattern("**/exemple.js", "/abs/proj/exemple.js"));
+  assert.ok(!matchPattern("**/exemple.js", "src/app.ts"));
+  assert.ok(matchPattern("**/.env", ".env"));
+  assert.ok(matchPattern("~/**/.env", "~/.env"));
+  // Interior **/ also matches zero directories: `a/**/b` matches `a/b`.
+  assert.ok(matchPattern("a/**/b", "a/b"));
+  assert.ok(matchPattern("a/**/b", "a/x/b"));
+  assert.ok(matchPattern("a/**/b", "a/x/y/b"));
+  assert.ok(!matchPattern("a/**/b", "a/x/c"));
+  // Only a whole `**/` segment is special: inside a name `**` stays `.*`, so
+  // `foo**/bar` still needs the slash and does not match `foobar`.
+  assert.ok(!matchPattern("foo**/bar", "foobar"));
+  assert.ok(matchPattern("foo**/bar", "foo/bar"));
+  assert.ok(matchPattern("foo**/bar", "fooX/y/bar"));
+  // A bare `**` (no slash) keeps the classic `.*` meaning.
+  assert.ok(matchPattern("**.js*", "exemple.js"));
+  assert.ok(matchPattern("**", "anything/at/all"));
+});
+
+test("decide: a **/ deny rule catches a bare relative path", () => {
+  const m = mode({ path: { "*": "allow", "**/exemple.js": "deny" }, read: "allow" });
+  assert.equal(decide(m, "read", "exemple.js"), "deny"); // was "allow" before the fix
+  assert.equal(decide(m, "read", "sub/exemple.js"), "deny");
+  assert.equal(decide(m, "read", "src/app.ts"), "allow");
+});
+
 test("matchPattern: regex metacharacters in the pattern are literal", () => {
   assert.ok(matchPattern("a.b+c", "a.b+c"));
   assert.ok(!matchPattern("a.b+c", "aXbbbc")); // '.' and '+' must be literal

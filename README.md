@@ -443,8 +443,9 @@ Modes are data, layered in this order:
 
 **Actions:** `allow` (pass through), `ask` (prompt), `deny` (block). A surface is
 either a single action or a `{ "<glob>": <action> }` map where **`*` matches any
-characters incl. `/`**, `?` matches one, `~`/`$HOME` expand, **the last matching
-pattern wins** (put `"*"` first as the default), and across the `path` /
+characters incl. `/`**, a whole `**/` segment matches zero or more directories
+(`**/.env` also matches a bare `.env`), `?` matches one, `~`/`$HOME` expand,
+**the last matching pattern wins** (put `"*"` first as the default), and across the `path` /
 `external_directory` / per-surface layers the **most restrictive wins**.
 
 ### Keeping your global config current

@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **`**/` patterns match paths without a directory part.** `*` became `.*`
+  while `/` stayed literal, so a rule written as `**/.env` required a slash:
+  a `read` of a bare `.env` (or `cat .env` in bash) never matched it, and
+  last-match-wins fell through to `"*": "allow"`. A user-written deny or ask
+  rule of that shape was silently skipped. A `**/` at the start of a pattern
+  or right after a `/` now matches zero or more directories (`a/**/b` also
+  matches `a/b`); any other `*` keeps its meaning. The shipped defaults use
+  no `**/` patterns. Reported and fixed by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#11](https://github.com/wynainfo/pi-permission-modes/issues/11) /
+  [#12](https://github.com/wynainfo/pi-permission-modes/pull/12).
+
 ## [2.4.1]
 
 ### Security
