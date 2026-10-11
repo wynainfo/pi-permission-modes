@@ -38,6 +38,13 @@ export interface BashGate {
  *                       undefined when the heuristic finds nothing concerning
  * @param sandboxEnabled the active mode's `sandbox.enabled`
  * @param sandboxReady   whether the OS sandbox is initialized and usable
+ * @param policyReason   optional per-rule reason attached to the winning policy
+ *                       rule: overrides the block reason on deny, and the refusal
+ *                       reason when an ask is refused on policy grounds (never
+ *                       shown on approval). Prompts caused by an escape or an
+ *                       unavailable sandbox report their own cause instead, so
+ *                       the model is never told a policy story about a
+ *                       non-policy block.
  *
  * Parity with the old decideBash:
  *   - sandbox disabled, action=allow     → allow (runs unsandboxed via execPlan)
@@ -53,6 +60,7 @@ export function bashGate(
   outsideReason: string | undefined,
   sandboxEnabled: boolean,
   sandboxReady: boolean,
+  policyReason?: string,
 ): BashGate {
   const gate = (kind: BashGateKind, title: string, reason: string, onApproveUnsandboxed: boolean): BashGate => ({
     kind,
@@ -62,27 +70,28 @@ export function bashGate(
   });
 
   // A hard deny blocks regardless of sandbox state.
-  if (action === "deny") return gate("block", "", `bash command denied by policy (see ${docRef("bash")})`, false);
+  if (action === "deny") return gate("block", "", policyReason ?? `bash command denied by policy (see ${docRef("bash")})`, false);
 
   // Disabling containment must not silently disable the policy layer. YOLO
   // still passes here because its explicit bash policy resolves to `allow`;
   // a custom unsandboxed mode with `ask` continues to require confirmation.
   if (!sandboxEnabled) {
     if (action === "ask") {
-      return gate("prompt", "Allow bash? (sandbox disabled; command will run unsandboxed)", "bash blocked", true);
+      return gate("prompt", "Allow bash? (sandbox disabled; command will run unsandboxed)", policyReason ?? "bash blocked", true);
     }
     return gate("allow", "", "", false);
   }
 
   // Out-of-project / privilege escalation: prompt, run unsandboxed once approved
-  // (the sandbox would block a genuine escape anyway).
-  if (outsideReason) return gate("prompt", `Allow bash? (${outsideReason})`, "bash blocked", true);
+  // (the sandbox would block a genuine escape anyway). A refusal here is about
+  // the escape, not the policy - report its cause, not the rule's reason.
+  if (outsideReason) return gate("prompt", `Allow bash? (${outsideReason})`, `bash blocked (${outsideReason})`, true);
 
   // In-project but the sandbox is unavailable: never run silently unprotected.
-  if (!sandboxReady) return gate("prompt", "Allow bash? (sandbox unavailable)", "bash blocked", true);
+  if (!sandboxReady) return gate("prompt", "Allow bash? (sandbox unavailable)", "bash blocked (sandbox unavailable)", true);
 
   // In-project, sandbox ready: the policy action drives it.
-  if (action === "ask") return gate("prompt", "Allow bash?", "bash blocked", false);
+  if (action === "ask") return gate("prompt", "Allow bash?", policyReason ?? "bash blocked", false);
   return gate("allow", "", "", false);
 }
 

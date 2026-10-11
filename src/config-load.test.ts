@@ -15,7 +15,7 @@ import {
   readOnlyOverride,
   stockDefaultsFile,
 } from "./config-load.ts";
-import { decide } from "./resolve.ts";
+import { decide, decideDetailed } from "./resolve.ts";
 
 /** Build a temp agentDir + cwd, optionally seeding the global/project JSON. */
 function sandbox(opts: { global?: unknown; project?: unknown } = {}): {
@@ -486,6 +486,83 @@ test("global: invalid action inside a pattern map is coerced to deny, not droppe
   const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
   assert.equal(decide(c.modes.build, "bash", "sudo rm -rf /"), "deny");
   assert.match(s.errors.join("\n"), /treating as deny/);
+  s.cleanup();
+});
+
+test("global: pattern entries accept { action, reason } objects; reasons surface on block", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: {
+          permission: {
+            bash: { "*": "allow", "grep *": { action: "deny", reason: "use the grep tool instead" } },
+            tool: { "*": "allow", "legacy-tool": { action: "ask", reason: "prefer the new tool" } },
+          },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(s.errors.length, 0, s.errors.join("; "));
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "grep foo"), { action: "deny", reason: "use the grep tool instead" });
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "ls"), { action: "allow" });
+  // An ask rule carries its reason too (used only when the prompt is refused).
+  assert.deepEqual(decideDetailed(c.modes.build, "tool", "legacy-tool"), { action: "ask", reason: "prefer the new tool" });
+  s.cleanup();
+});
+
+test("global: malformed rule objects fail safe (deny, reason dropped) with warnings", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: {
+          permission: {
+            bash: {
+              "*": "allow",
+              "sudo *": { action: "denny", reason: "typo keeps deny" },
+              "rm *": { action: "deny", reason: 42 },
+              "halt *": { reason: "missing action" },
+              "x *": { action: "deny", reason: "  " },
+              "y *": { action: "deny", reason: ` ${"r".repeat(600)} ` },
+              "z *": { action: "deny", reasn: "typo'd key" },
+              "w *": { action: "deny", message: "not an alias of reason" },
+            },
+          },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(decide(c.modes.build, "bash", "sudo id"), "deny");
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "sudo id"), { action: "deny", reason: "typo keeps deny" });
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "rm -rf /").action, "deny");
+  assert.equal(decideDetailed(c.modes.build, "bash", "rm -rf /").reason, undefined);
+  assert.equal(decide(c.modes.build, "bash", "halt now"), "deny"); // missing action → deny
+  assert.equal(decideDetailed(c.modes.build, "bash", "x 1").reason, undefined); // empty reason dropped
+  const long = decideDetailed(c.modes.build, "bash", "y 1").reason ?? "";
+  assert.equal(long.length, 500); // over-long reasons truncate
+  assert.equal(decide(c.modes.build, "bash", "z 1"), "deny"); // unknown key ignored, action kept
+  assert.equal(decideDetailed(c.modes.build, "bash", "z 1").reason, undefined);
+  assert.equal(decide(c.modes.build, "bash", "w 1"), "deny"); // `message` is not accepted, action kept
+  assert.equal(decideDetailed(c.modes.build, "bash", "w 1").reason, undefined);
+  assert.match(s.errors.join("\n"), /unknown key "message"/);
+  assert.match(s.errors.join("\n"), /treating as deny/);
+  assert.match(s.errors.join("\n"), /non-string reason/);
+  assert.match(s.errors.join("\n"), /empty reason/);
+  assert.match(s.errors.join("\n"), /truncating/);
+  assert.match(s.errors.join("\n"), /unknown key "reasn"/);
+  s.cleanup();
+});
+
+test("project overlay: the tightening applies, its reason is dropped with a warning (text for the model is global-only)", () => {
+  const s = sandbox({
+    project: { modes: { build: { permission: { bash: { "curl *": { action: "deny", reason: "no network fetches here" } } } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.match(s.errors.join("\n"), /project config cannot set rule reasons.*bash\.curl \*.*docs\/configuration\.md#project-config/);
+  // Stock build allows bash "*"; the overlay tightens curl to deny, without the repo's words.
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "curl https://x"), { action: "deny" });
+  assert.equal(decide(c.modes.build, "bash", "ls"), "allow"); // untouched commands stay allowed
   s.cleanup();
 });
 

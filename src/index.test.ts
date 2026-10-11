@@ -594,6 +594,56 @@ test("our tools carry a promptSnippet (listed in the system prompt's Available t
   }
 });
 
+test("per-rule reasons: file-tool deny surfaces the reason; read-only Markdown message keeps priority", { skip }, async () => {
+  const h = await setup();
+  try {
+    const dir = path.join(h.agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      JSON.stringify({
+        modes: {
+          strict: {
+            label: "Strict",
+            color: "accent",
+            sandbox: { enabled: true, writable: true },
+            permission: {
+              read: "allow",
+              bash: "allow",
+              write: { "*": "allow", "src/*.ts": { action: "deny", reason: "generated files - edit src/*.tmpl instead" } },
+            },
+          },
+          frozen: {
+            label: "Frozen",
+            color: "mdLink",
+            sandbox: { enabled: true, writable: false },
+            permission: {
+              read: "allow",
+              bash: "allow",
+              write: { "*": "allow", "src/*.ts": { action: "deny", reason: "custom reason must not hide the mode constraint" } },
+            },
+          },
+        },
+      }),
+    );
+    await h.pi.emit("session_start", {}, h.ctx);
+
+    await h.perm("strict");
+    const denied = await h.call("write", { path: "src/app.ts" });
+    assert.equal(denied?.block, true);
+    assert.equal(denied?.reason, "generated files - edit src/*.tmpl instead");
+
+    // In a read-only mode the mode constraint is the pertinent explanation:
+    // the Markdown-only message wins over the pattern's reason.
+    await h.perm("frozen");
+    const frozen = await h.call("write", { path: "src/app.ts" });
+    assert.equal(frozen?.block, true);
+    assert.match(frozen?.reason ?? "", /Markdown/);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("web_search: ask in Default, session-wide grant", { skip }, async () => {
   const h = await setup();
   try {

@@ -44,13 +44,28 @@
       "enum": ["allow", "ask", "deny"],
       "description": "allow = pass through; ask = prompt; deny = block."
     },
-    "surfaceValue": {
-      "description": "An action, or a glob pattern→action map (last match wins; '*' is the catch-all).",
+    "rule": {
+      "description": "A bare action, or an action plus an optional human-readable reason shown to the agent when the rule blocks (deny) or when an ask is refused. Global config only: a project config's reasons are ignored.",
       "oneOf": [
         { "$ref": "#/$defs/action" },
         {
           "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/action" }
+          "additionalProperties": false,
+          "required": ["action"],
+          "properties": {
+            "action": { "$ref": "#/$defs/action" },
+            "reason": { "type": "string", "maxLength": 500, "description": "Why this is blocked and what to do instead." }
+          }
+        }
+      ]
+    },
+    "surfaceValue": {
+      "description": "An action, or a glob pattern→rule map (last match wins; '*' is the catch-all).",
+      "oneOf": [
+        { "$ref": "#/$defs/action" },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/rule" }
         }
       ]
     },

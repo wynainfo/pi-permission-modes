@@ -17,8 +17,25 @@ import type { PlanApprovalConfig } from "./plan-approval.ts";
 /** Three-state permission outcome (opencode-compatible semantics). */
 export type Action = "allow" | "ask" | "deny";
 
+/** Maximum length of a per-rule reason/message (loader truncates beyond this). */
+export const MAX_RULE_REASON = 500;
+
+/**
+ * A single pattern-map entry: either a bare action, or an object carrying the
+ * action plus an optional human-readable reason shown to the agent when the
+ * rule blocks (deny) or when an ask is refused. A reason never loosens
+ * anything, it only explains the decision; only the global config may set one.
+ */
+export interface PatternRuleObject {
+  action: Action;
+  reason?: string;
+}
+
+/** A pattern-map value: a bare action or an action-plus-reason object. */
+export type PatternValue = Action | PatternRuleObject;
+
 /** A glob pattern → action map. The `"*"` key is the universal fallback. */
-export type PatternMap = Record<string, Action>;
+export type PatternMap = Record<string, PatternValue>;
 
 /** A surface value is either a shorthand action or a pattern-map. */
 export type SurfaceValue = Action | PatternMap;

@@ -14,7 +14,7 @@
  */
 
 import os from "node:os";
-import { FILE_SURFACES, type Action, type ModeDef, type Surface, type SurfaceValue } from "./schema.ts";
+import { FILE_SURFACES, type Action, type ModeDef, type PatternValue, type Surface, type SurfaceValue } from "./schema.ts";
 
 const RANK: Record<Action, number> = { allow: 0, ask: 1, deny: 2 };
 
@@ -61,19 +61,62 @@ export function matchPattern(pattern: string, target: string): boolean {
 }
 
 /**
+ * Resolve one surface value against a target, with the winning rule's reason.
+ * String shorthand returns the action with no reason; a pattern-map returns the
+ * action AND reason of the LAST matching pattern (definition order, via
+ * Object.entries - keep pattern keys non-numeric to preserve order).
+ * Returns undefined when the surface is absent or nothing matches.
+ */
+export function resolveSurfaceDetailed(value: SurfaceValue | undefined, target: string): Decision | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return { action: value };
+  let result: Decision | undefined;
+  for (const [pattern, rule] of Object.entries(value)) {
+    if (matchPattern(pattern, target)) {
+      const action = ruleAction(rule);
+      const reason = ruleReason(rule);
+      result = reason === undefined ? { action } : { action, reason };
+    }
+  }
+  return result;
+}
+
+/**
  * Resolve one surface value against a target. String shorthand returns directly;
- * a pattern-map returns the action of the LAST matching pattern (definition
- * order, via Object.entries — keep pattern keys non-numeric to preserve order).
+ * a pattern-map returns the action of the LAST matching pattern (the winning
+ * rule's reason is dropped - see resolveSurfaceDetailed to keep it).
  * Returns undefined when the surface is absent or nothing matches.
  */
 export function resolveSurface(value: SurfaceValue | undefined, target: string): Action | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "string") return value;
-  let result: Action | undefined;
-  for (const [pattern, action] of Object.entries(value)) {
-    if (matchPattern(pattern, target)) result = action;
+  return resolveSurfaceDetailed(value, target)?.action;
+}
+
+/**
+ * Most-restrictive of the given detailed layers. The winning action is decided
+ * exactly as `mostRestrictive` (deny > ask > allow, single source of truth);
+ * on a tie the LAST layer carrying the winning action wins (so a project
+ * overlay's reason beats the base policy's, and a surface-specific reason beats
+ * the cross-cutting `path` gate's). When that layer carries no reason, the
+ * nearest earlier tied layer with one is used.
+ */
+function mostRestrictiveDetailed(layers: (Decision | undefined)[]): Decision | undefined {
+  const best = mostRestrictive(...layers.map((l) => l?.action));
+  if (best === undefined) return undefined;
+  let reason: string | undefined;
+  for (const l of layers) {
+    if (l !== undefined && l.action === best && l.reason !== undefined) reason = l.reason;
   }
-  return result;
+  return reason === undefined ? { action: best } : { action: best, reason };
+}
+
+/** The action carried by a pattern-map entry (bare string or `{ action, … }` object). */
+export function ruleAction(rule: PatternValue): Action {
+  return typeof rule === "string" ? rule : rule.action;
+}
+
+/** The human-readable reason carried by a pattern-map entry, if any. */
+export function ruleReason(rule: PatternValue): string | undefined {
+  return typeof rule === "string" ? undefined : rule.reason;
 }
 
 /** Most-restrictive of the given actions (deny > ask > allow); undefined ignored. */
@@ -92,6 +135,37 @@ export function mostRestrictive(...actions: (Action | undefined)[]): Action | un
 
 const isFileSurface = (s: Surface): boolean => FILE_SURFACES.includes(s);
 
+/** The decided action plus the winning rule's reason, if it carries one. */
+export interface Decision {
+  action: Action;
+  reason?: string;
+}
+
+/**
+ * Decide the action AND winning reason for a (surface, target) under a mode.
+ * Same layer composition as `decide`; the reason travels with the winning
+ * rule (a reason never loosens anything). `decide` is `decideDetailed(...).action`.
+ */
+export function decideDetailed(
+  mode: ModeDef,
+  surface: Surface,
+  target: string,
+  opts: { isOutside?: boolean; fallback?: Action } = {},
+): Decision {
+  const layers: (Decision | undefined)[] = [];
+
+  // The base policy and the project tighten-only overlay are independent sources;
+  // composing both with most-restrictive means the overlay can only tighten.
+  const sources = mode.projectOverlay ? [mode.permission, mode.projectOverlay] : [mode.permission];
+  for (const perm of sources) {
+    if (isFileSurface(surface)) layers.push(resolveSurfaceDetailed(perm.path, target));
+    if (opts.isOutside) layers.push(resolveSurfaceDetailed(perm.external_directory, target));
+    layers.push(resolveSurfaceDetailed(perm[surface], target));
+  }
+
+  return mostRestrictiveDetailed(layers) ?? { action: opts.fallback ?? "ask" };
+}
+
 /**
  * Decide the action for a (surface, target) under a mode. Folds the cross-cutting
  * `path` gate (file surfaces only) and the `external_directory` gate (when the
@@ -108,18 +182,38 @@ export function decide(
   target: string,
   opts: { isOutside?: boolean; fallback?: Action } = {},
 ): Action {
-  const layers: (Action | undefined)[] = [];
+  return decideDetailed(mode, surface, target, opts).action;
+}
 
-  // The base policy and the project tighten-only overlay are independent sources;
-  // composing both with most-restrictive means the overlay can only tighten.
+/**
+ * Decide the action AND winning reason for ONE extracted bash command.
+ * Same layer composition as `decideBashCommand`; the reason travels with the
+ * winning rule. Returns undefined when no layer matches at all.
+ */
+export function decideBashCommandDetailed(
+  mode: ModeDef,
+  name: string,
+  args: string[],
+  aliases: readonly string[] = [],
+  pathTokens: readonly string[] = [],
+): Decision | undefined {
+  const tokens = [name, ...args, ...pathTokens];
+  const joined = tokens.join(" ").trim();
+  const layers: (Decision | undefined)[] = [];
   const sources = mode.projectOverlay ? [mode.permission, mode.projectOverlay] : [mode.permission];
+  // Layer order is load-bearing for the reason (not the action): the
+  // cross-cutting `path` gate goes first so that on a tie the bash-surface
+  // reason wins - the same contract `decideDetailed` keeps (surface-specific
+  // beats `path`; project overlay beats base policy).
   for (const perm of sources) {
-    if (isFileSurface(surface)) layers.push(resolveSurface(perm.path, target));
-    if (opts.isOutside) layers.push(resolveSurface(perm.external_directory, target));
-    layers.push(resolveSurface(perm[surface], target));
+    layers.push(resolveSurfaceDetailed(perm.path, joined));
+    for (const tok of tokens) layers.push(resolveSurfaceDetailed(perm.path, tok));
+    layers.push(resolveSurfaceDetailed(perm.bash, joined));
+    // Alternative spellings (basename of a path head, the command a wrapper
+    // runs): a `"sudo*": "deny"` must catch `/usr/bin/sudo id` and `time sudo id`.
+    for (const alt of aliases) layers.push(resolveSurfaceDetailed(perm.bash, alt));
   }
-
-  return mostRestrictive(...layers) ?? opts.fallback ?? "ask";
+  return mostRestrictiveDetailed(layers);
 }
 
 /**
@@ -144,19 +238,25 @@ export function decideBashCommand(
   aliases: readonly string[] = [],
   pathTokens: readonly string[] = [],
 ): Action | undefined {
-  const tokens = [name, ...args, ...pathTokens];
-  const joined = tokens.join(" ").trim();
-  const layers: (Action | undefined)[] = [];
-  const sources = mode.projectOverlay ? [mode.permission, mode.projectOverlay] : [mode.permission];
-  for (const perm of sources) {
-    layers.push(resolveSurface(perm.bash, joined));
-    // Alternative spellings (basename of a path head, the command a wrapper
-    // runs): a `"sudo*": "deny"` must catch `/usr/bin/sudo id` and `time sudo id`.
-    for (const alt of aliases) layers.push(resolveSurface(perm.bash, alt));
-    layers.push(resolveSurface(perm.path, joined));
-    for (const tok of tokens) layers.push(resolveSurface(perm.path, tok));
+  return decideBashCommandDetailed(mode, name, args, aliases, pathTokens)?.action;
+}
+
+/**
+ * Decide the action AND winning reason for a whole parsed bash line: every
+ * extracted command is judged with `decideBashCommandDetailed` and the chain
+ * takes the most restrictive result, carrying its reason.
+ */
+export function decideBashChainDetailed(
+  mode: ModeDef,
+  commands: ReadonlyArray<{ name: string; args: string[]; aliases?: readonly string[]; pathTokens?: readonly string[] }>,
+  fallback: Action = "ask",
+): Decision {
+  let result: Decision | undefined;
+  for (const c of commands) {
+    const d = decideBashCommandDetailed(mode, c.name, c.args, c.aliases ?? [], c.pathTokens ?? []) ?? { action: fallback };
+    result = mostRestrictiveDetailed([result, d]);
   }
-  return mostRestrictive(...layers);
+  return result ?? { action: fallback };
 }
 
 /**
@@ -177,9 +277,5 @@ export function decideBashChain(
   commands: ReadonlyArray<{ name: string; args: string[]; aliases?: readonly string[]; pathTokens?: readonly string[] }>,
   fallback: Action = "ask",
 ): Action {
-  let result: Action | undefined;
-  for (const c of commands) {
-    result = mostRestrictive(result, decideBashCommand(mode, c.name, c.args, c.aliases ?? [], c.pathTokens ?? []) ?? fallback);
-  }
-  return result ?? fallback;
+  return decideBashChainDetailed(mode, commands, fallback).action;
 }

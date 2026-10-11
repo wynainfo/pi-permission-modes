@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import test from "node:test";
-import { decide, decideBashChain, decideBashCommand, expandHome, matchPattern, mostRestrictive, resolveSurface } from "./resolve.ts";
+import { decide, decideBashChain, decideBashChainDetailed, decideBashCommand, decideBashCommandDetailed, decideDetailed, expandHome, matchPattern, mostRestrictive, resolveSurface, resolveSurfaceDetailed, ruleAction, ruleReason } from "./resolve.ts";
 import type { ModeDef } from "./schema.ts";
 
 test("matchPattern: * spans path separators, ? is one char", () => {
@@ -203,4 +203,77 @@ test("decideBashCommand: normalized path tokens let the path gate catch escaped 
   assert.equal(decideBashCommand(m, "cat", [".en\\v"]), "allow"); // raw spelling alone: dodged
   assert.equal(decideBashCommand(m, "cat", [".en\\v"], [], [".env"]), "deny");
   assert.equal(decideBashChain(m, [{ name: "cat", args: [".en\\v"], pathTokens: [".env"] }]), "deny");
+});
+
+test("ruleAction/ruleReason: bare strings carry no reason; objects carry theirs", () => {
+  assert.equal(ruleAction("deny"), "deny");
+  assert.equal(ruleReason("deny"), undefined);
+  assert.equal(ruleAction({ action: "deny", reason: "use X instead" }), "deny");
+  assert.equal(ruleReason({ action: "deny", reason: "use X instead" }), "use X instead");
+  assert.equal(ruleReason({ action: "ask" }), undefined);
+});
+
+test("resolveSurfaceDetailed: winning (last-matching) rule's reason travels", () => {
+  assert.deepEqual(resolveSurfaceDetailed("deny", "x"), { action: "deny" });
+  assert.equal(resolveSurfaceDetailed(undefined, "x"), undefined);
+  const map = { "*": "allow", "grep *": { action: "deny", reason: "use the grep tool instead" } } as const;
+  assert.deepEqual(resolveSurfaceDetailed(map, "ls"), { action: "allow" });
+  assert.deepEqual(resolveSurfaceDetailed(map, "grep foo"), { action: "deny", reason: "use the grep tool instead" });
+  // Bare-string form keeps working with no reason.
+  assert.deepEqual(resolveSurfaceDetailed({ "*": "allow", "*.env": "deny" }, "a.env"), { action: "deny" });
+  // resolveSurface drops the reason but keeps the action (backwards compat).
+  assert.equal(resolveSurface(map, "grep foo"), "deny");
+});
+
+test("decideDetailed: reason of the winning rule; most-restrictive still decides", () => {
+  const m = mode({
+    path: { "*": "allow" },
+    bash: { "*": "allow", "grep *": { action: "deny", reason: "use the grep tool instead" } },
+  });
+  assert.deepEqual(decideDetailed(m, "bash", "ls"), { action: "allow" });
+  assert.deepEqual(decideDetailed(m, "bash", "grep foo"), { action: "deny", reason: "use the grep tool instead" });
+  // decide() is unchanged.
+  assert.equal(decide(m, "bash", "grep foo"), "deny");
+});
+
+test("decideDetailed: ties resolve to the most specific layer's reason", () => {
+  // Surface-specific reason beats the cross-cutting path gate's on a deny/deny tie.
+  const m = mode({
+    path: { "*": { action: "deny", reason: "path reason" } },
+    write: { "*": { action: "deny", reason: "surface reason" } },
+  });
+  assert.deepEqual(decideDetailed(m, "write", "a.txt"), { action: "deny", reason: "surface reason" });
+  // A reasonless winning layer falls back to the tied layer's reason.
+  const m2 = mode({ path: { "*": { action: "deny", reason: "path reason" } }, write: "deny" });
+  assert.deepEqual(decideDetailed(m2, "write", "a.txt"), { action: "deny", reason: "path reason" });
+  // Project overlay's reason beats the base policy's on a tie (tighten-only kept).
+  const m3 = mode({ bash: { "*": { action: "deny", reason: "base reason" } } });
+  m3.projectOverlay = { bash: { "*": { action: "deny", reason: "overlay reason" } } };
+  const d3 = decideDetailed(m3, "bash", "ls");
+  assert.equal(d3.action, "deny");
+  assert.equal(d3.reason, "overlay reason");
+});
+
+test("decideBashCommandDetailed: ties resolve to the bash surface's reason, not the path gate's", () => {
+  // Same contract as decideDetailed: the path gate matches the token "grep",
+  // the bash surface matches "grep *" - the surface-specific reason wins.
+  const m = mode({
+    path: { "*": { action: "deny", reason: "path reason" } },
+    bash: { "*": "allow", "grep *": { action: "deny", reason: "bash reason" } },
+  });
+  assert.deepEqual(decideBashCommandDetailed(m, "grep", ["foo"]), { action: "deny", reason: "bash reason" });
+  // Overlay beats base here too (tighten-only kept).
+  const m2 = mode({ path: { "*": "allow" }, bash: { "*": "allow" } });
+  m2.projectOverlay = { bash: { "grep *": { action: "deny", reason: "overlay reason" } } };
+  assert.deepEqual(decideBashCommandDetailed(m2, "grep", ["foo"]), { action: "deny", reason: "overlay reason" });
+});
+
+test("decideBashChainDetailed: chain carries the strictest link's reason", () => {
+  const m = mode({ path: { "*": "allow" }, bash: { "*": "allow", "curl *": "ask", "sudo *": { action: "deny", reason: "no sudo" } } });
+  assert.deepEqual(decideBashChainDetailed(m, [{ name: "git", args: ["status"] }]), { action: "allow" });
+  assert.deepEqual(decideBashChainDetailed(m, [{ name: "curl", args: ["x"] }, { name: "sudo", args: ["id"] }]), {
+    action: "deny",
+    reason: "no sudo",
+  });
+  assert.equal(decideBashCommandDetailed(m, "sudo", ["id"])?.reason, "no sudo");
 });

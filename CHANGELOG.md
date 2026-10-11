@@ -40,6 +40,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
   [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
   tighten-only logic, tests, and security notes this takes over.
+- **Per-rule reasons: `{ "action": "deny", "reason": "..." }` on permission
+  patterns.** A pattern entry can carry a reason, so a block tells the model
+  what to do instead of only what failed: `"grep *": { "action": "deny",
+  "reason": "Use the grep tool; pipes like cmd | grep are fine" }`. The bare
+  `"pattern": "deny"` form keeps the generic message. On an `ask` rule the
+  reason is used only when the prompt is refused (or auto-refused headless);
+  an approval just proceeds. The reason travels with the winning rule and
+  never changes the decision. Reasons are text shown to the model, so only
+  the global config may set them: a project config's reasons are dropped
+  with a warning, and a cloned repository cannot put words in front of the
+  model. Proposed and implemented by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#14](https://github.com/wynainfo/pi-permission-modes/issues/14) /
+  [#15](https://github.com/wynainfo/pi-permission-modes/pull/15).
 
 ### Changed
 - **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.79.** On Linux a command's

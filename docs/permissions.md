@@ -113,6 +113,35 @@ path segment, case-insensitively, on both the literal target and its
 symlink-resolved canonical path, so a link cannot smuggle a write past the
 backstop. This matters most in Build, where the file tools do not prompt.
 
+## Rule reasons
+
+A pattern entry can carry a reason that explains the block and says what to
+do instead:
+
+```jsonc
+"bash": {
+  "*": "allow",
+  "grep *": { "action": "deny", "reason": "Use the grep tool instead of grep in bash; pipes like cmd | grep are fine" }
+}
+```
+
+- The bare `"pattern": "deny"` form keeps working and produces the generic
+  message. `{ "action": ..., "reason": ... }` is accepted on every surface;
+  the reason is trimmed and capped at 500 characters.
+- On a `deny` rule the reason replaces the generic block message. On an
+  `ask` rule it is used only when the prompt is refused, or auto-refused in
+  a headless session; an approval just proceeds and the reason is never
+  shown.
+- The reason travels with the winning rule (last match wins within a
+  surface, most restrictive across layers; on a tie the more specific layer's
+  reason wins). It never changes the decision.
+- Prompts caused by an escape or an unavailable sandbox report their own
+  cause, and Plan mode's "Markdown files only" message keeps priority over a
+  pattern reason.
+- Only the global config may set reasons. A project config's reasons are
+  dropped with a warning: a reason is text put in front of the model, and a
+  cloned repository must not get that power.
+
 ## Session approvals
 
 When a mode asks, the prompt offers **Allow once / Allow for session / Deny**

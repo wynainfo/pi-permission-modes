@@ -91,11 +91,10 @@ import {
   showPlanSucceeded,
   shownPlanPath,
 } from "./plan-approval.ts";
-import { decide, decideBashChain } from "./resolve.ts";
+import { decideBashChainDetailed, decideDetailed } from "./resolve.ts";
 import { SandboxController, commandFilesDir, networkFiltered, runtimeInstallDir, withDeniedReads } from "./sandbox.ts";
 import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
-  type Action,
   type ModeDef,
   PLAN_PROMPT_SENTINEL,
   type PermissionModeConfig,
@@ -967,15 +966,16 @@ export default async function (pi: ExtensionAPI) {
     const match = /^\/skill:([\w-]+)/.exec(event.text.trim());
     if (!match) return undefined;
     const name = match[1];
-    const action = decide(currentMode(), "skill", name);
-    if (action === "deny") {
-      if (ctx.hasUI) ctx.ui.notify(`Skill "${name}" blocked in ${currentMode().label}`, "warning");
+    const decision = decideDetailed(currentMode(), "skill", name);
+    if (decision.action === "deny") {
+      if (ctx.hasUI) ctx.ui.notify(`Skill "${name}" blocked in ${currentMode().label}${decision.reason ? `: ${decision.reason}` : ""}`, "warning");
       return { action: "handled" as const };
     }
     if (
-      action === "ask" &&
+      decision.action === "ask" &&
       !(await promptAllow(ctx, "skill", name, `Skill "${name}" — first use in ${currentMode().label}; allow?`, learnForever(ctx, "skill", name)))
     ) {
+      if (ctx.hasUI && decision.reason) ctx.ui.notify(`Skill "${name}" blocked: ${decision.reason}`, "warning");
       return { action: "handled" as const };
     }
     return undefined; // allow → continue to expansion
@@ -1020,7 +1020,8 @@ export default async function (pi: ExtensionAPI) {
       // honor their explicit bash policy. YOLO remains silent because its
       // policy is `allow`; an unsandboxed `ask` mode must still prompt.
       if (!m.sandbox.enabled) {
-        const gate = bashGate(decide(m, "bash", command), undefined, false, sandbox.ready);
+        const decision = decideDetailed(m, "bash", command);
+        const gate = bashGate(decision.action, undefined, false, sandbox.ready, decision.reason);
         if (gate.kind === "block") return { block: true, reason: gate.reason };
         if (gate.kind === "prompt") {
           // Without an AST parse, scope a session grant to the exact command.
@@ -1037,9 +1038,9 @@ export default async function (pi: ExtensionAPI) {
       // escapes/privilege.
       const analysis = await analyzeBash(command, root, docBounds);
       // A command no layer matches falls back to "ask" (see decideBashChain).
-      const action: Action =
-        analysis.commands.length > 0 ? decideBashChain(m, analysis.commands) : decide(m, "bash", command);
-      const gate = bashGate(action, analysis.outsideReason, m.sandbox.enabled, sandbox.ready);
+      const decision =
+        analysis.commands.length > 0 ? decideBashChainDetailed(m, analysis.commands) : decideDetailed(m, "bash", command);
+      const gate = bashGate(decision.action, analysis.outsideReason, m.sandbox.enabled, sandbox.ready, decision.reason);
       if (gate.kind === "block") return { block: true, reason: gate.reason };
       if (gate.kind === "prompt") {
         // Session approvals are keyed on the extracted command names, and ALL
@@ -1081,18 +1082,22 @@ export default async function (pi: ExtensionAPI) {
         return { block: true, reason: `Path "${path}" is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
       }
       const outside = isOutside(root, path, surface === "edit" || surface === "write" ? bounds : docBounds);
-      const action = decide(m, surface, path, { isOutside: outside });
-      if (action === "deny") {
+      const decision = decideDetailed(m, surface, path, { isOutside: outside });
+      if (decision.action === "deny") {
         // Friendly message for the Plan-mode "Markdown only" case (read-only mode).
+        // It wins over a per-rule reason: in a read-only mode the mode constraint
+        // is the pertinent explanation, and a pattern reason must not hide it.
         if ((surface === "edit" || surface === "write") && !m.sandbox.writable) {
           if (ctx.hasUI) ctx.ui.notify(`${m.label} allows editing Markdown files only: ${path}`, "warning");
           return { block: true, reason: `${m.label} allows editing Markdown files only` };
         }
+        // Otherwise a per-rule reason wins: it tells the model what to do instead.
+        if (decision.reason) return { block: true, reason: decision.reason };
         return { block: true, reason: `Path "${path}" is blocked by ${m.label} (see ${docRef("blockedByPolicy")})` };
       }
-      if (action === "ask") {
+      if (decision.action === "ask") {
         const title = outside ? `Outside project - allow ${toolName}? (${path})` : `Allow ${toolName}? (${path})`;
-        const reason = outside ? `Access outside project blocked (see ${docRef("blockedByPolicy")})` : "blocked";
+        const reason = decision.reason ?? (outside ? `Access outside project blocked (see ${docRef("blockedByPolicy")})` : "blocked");
         const denyAnd = outside ? denyAndBlock(ctx, [path]) : undefined;
         if (!(await promptAllow(ctx, surface, path, title, undefined, denyAnd))) return { block: true, reason };
       }
@@ -1101,11 +1106,11 @@ export default async function (pi: ExtensionAPI) {
 
     // web_search.
     if (toolName === "web_search") {
-      const action = decide(m, "web_search", String(input.query ?? "(empty)"));
-      if (action === "deny") return { block: true, reason: `web search blocked by ${m.label} (see ${docRef("blockedByPolicy")})` };
+      const decision = decideDetailed(m, "web_search", String(input.query ?? "(empty)"));
+      if (decision.action === "deny") return { block: true, reason: decision.reason ?? `web search blocked by ${m.label} (see ${docRef("blockedByPolicy")})` };
       // Session approval is surface-wide ("allow web search this session").
-      if (action === "ask" && !(await promptAllow(ctx, "web_search", "*", "Allow web search?"))) {
-        return { block: true, reason: "web search blocked" };
+      if (decision.action === "ask" && !(await promptAllow(ctx, "web_search", "*", "Allow web search?"))) {
+        return { block: true, reason: decision.reason ?? "web search blocked" };
       }
       return undefined;
     }
@@ -1113,13 +1118,13 @@ export default async function (pi: ExtensionAPI) {
     // Custom / extension tools (incl. any MCP-as-tool): gate by tool name. An
     // unknown tool prompts first-use (allow once/session/forever/deny).
     if (!BUILTIN_HANDLED.has(toolName)) {
-      const action = decide(m, "tool", toolName);
-      if (action === "deny") return { block: true, reason: `Tool "${toolName}" blocked by ${m.label} (see ${docRef("toolsAndSkills")})` };
+      const decision = decideDetailed(m, "tool", toolName);
+      if (decision.action === "deny") return { block: true, reason: decision.reason ?? `Tool "${toolName}" blocked by ${m.label} (see ${docRef("toolsAndSkills")})` };
       if (
-        action === "ask" &&
+        decision.action === "ask" &&
         !(await promptAllow(ctx, "tool", toolName, `Tool "${toolName}" — first use in ${m.label}; allow?`, learnForever(ctx, "tool", toolName)))
       ) {
-        return { block: true, reason: "tool blocked" };
+        return { block: true, reason: decision.reason ?? "tool blocked" };
       }
     }
 
