@@ -199,6 +199,47 @@ In a glob map the **last matching pattern wins** and, across layers, the
 and the outdated-default warnings: [docs/configuration.md](docs/configuration.md),
 [docs/sandbox.md](docs/sandbox.md), [docs/permissions.md](docs/permissions.md).
 
+### Groups (`groups` + `extends`)
+
+Shared blocks live once in a top-level `groups` map (same vocabulary as a
+mode, all optional); each mode composes them via `extends` (in order, later
+groups win, the mode's own fields win over all). Groups may themselves extend
+other groups. Declaring `extends` resets the group vocabulary for that mode
+(the groups supply it); an empty list (`"extends": []`) detaches the mode
+onto its own fields (missing sandbox/permission fall back to safe defaults
+with a warning instead of dropping the mode).
+
+```jsonc
+{
+  "groups": {
+    "read-tools": {
+      "permission": { "read": "allow", "grep": "allow", "find": "allow", "ls": "allow" }
+    },
+    "ask-strict": {
+      "permission": { "write": "ask", "edit": "ask", "bash": { "*": "ask" } }
+    }
+  },
+  "modes": {
+    "default": {
+      "label": "Default", "color": "muted",
+      "extends": ["read-tools", "ask-strict"]
+    }
+  }
+}
+```
+
+Unknown group names and `extends` cycles warn and are ignored. Within one
+composition chain, pattern maps (e.g. two `bash` maps) concatenate in layer
+order — parents, then listed groups, then the mode's own entries last, so
+the mode always wins; a redefined key moves to the end to preserve
+last-match-wins order. A shorthand action on either side still replaces
+wholesale, and sandbox fields/lists replace wholesale rather than unioning
+(unioning an allow-list would widen). Project configs cannot define groups
+or change `extends` (tighten-only); "allow forever"
+persistence still writes concrete values into `modes.<name>`.
+
+### Keeping your global config current
+
 ## Documentation
 
 | File | Covers |

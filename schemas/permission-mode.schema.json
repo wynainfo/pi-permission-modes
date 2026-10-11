@@ -35,6 +35,11 @@
         "$ref": "#/$defs/mode"
       }
     },
+    "groups": {
+      "type": "object",
+      "description": "Reusable permission fragments. A mode composes them via its `extends` list (in order); the mode's own fields win.",
+      "additionalProperties": { "$ref": "#/$defs/group" }
+    },
     "plan": {
       "type": "object",
       "additionalProperties": false,
@@ -271,6 +276,20 @@
         }
       }
     },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Reusable permission fragment: same vocabulary as a mode, all optional. `extends` allows a group to compose other groups.",
+      "properties": {
+        "systemPrompt": { "type": "string" },
+        "injectSandboxInfo": { "type": "boolean" },
+        "sandbox": { "$ref": "#/$defs/sandbox" },
+        "permission": { "$ref": "#/$defs/permission" },
+        "hideTools": { "type": "array", "items": { "type": "string" } },
+        "bypassProtectedPaths": { "type": "boolean" },
+        "extends": { "type": "array", "items": { "type": "string" }, "description": "Names of other groups to compose first, in order." }
+      }
+    },
     "mode": {
       "type": "object",
       "additionalProperties": false,
@@ -315,6 +334,7 @@
           "type": "boolean",
           "description": "Skip the .git/.env/dotfile write backstop (only trusted modes)."
         },
+        "extends": { "type": "array", "items": { "type": "string" }, "description": "Names of groups to compose first, in order; the mode's own fields win." },
         "classifier": {
           "description": "The Auto classifier: a model judges this mode's asks (bash escapes, out-of-project file access, network hosts, web search, first-use tools and skills) against the user's task instead of prompting. Absent: the mode prompts. false: the mode prompts as if the block were absent (a project may set it). A project may only raise strictness, switch onRefuse to ask, or add restrict.",
           "oneOf": [

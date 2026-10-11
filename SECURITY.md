@@ -93,8 +93,8 @@ you can rely on it appropriately. The reference for every setting is in
 - **Project configs can only tighten.** A `<project>/.pi/permission-mode.json` is
   applied as a most-restrictive overlay (it can add `ask`/`deny`, never loosen)
   and its sandbox is intersected/unioned stricter. It cannot change
-  `sandbox.enabled`, add modes, widen the network allowlist, or re-enable secret
-  reads. Opening an untrusted repo can't weaken your protection. A per-rule
+  `sandbox.enabled`, add modes, define groups, change `extends`, widen the
+  network allowlist, or re-enable secret reads. Opening an untrusted repo can't weaken your protection. A per-rule
   `reason` is text shown to the model, so a project config cannot set one
   (dropped with a warning): a cloned repo cannot put words in front of the
   model through the policy.

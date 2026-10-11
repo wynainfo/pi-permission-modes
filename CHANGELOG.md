@@ -7,6 +7,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+
+- **Reusable permission groups (`groups` + `extends`).** A top-level `groups`
+  map holds named permission fragments (same vocabulary as a mode, all
+  optional); each mode lists the groups it composes in `extends` (in order,
+  later groups win, the mode's own fields win over all). Pattern maps on the
+  same surface concatenate in layer order (mode-own entries last) instead of
+  the later map dropping the earlier one; shorthand actions still replace
+  wholesale and sandbox lists are never unioned. Groups may themselves
+  extend other groups. Unknown groups and `extends` cycles warn and are
+  ignored, never throw. The stock defaults now factor their duplicated
+  sandbox and read-tool blocks into `sandbox-base`, `sandbox-plan`,
+  `read-tools`, `ask-strict`, and `allow-all` groups with no behavior change.
+  Project configs cannot define groups or change `extends` (tighten-only).
 - **Auto mode.** A fifth stock mode between Build and YOLO: Build, but what
   Build would ask you about (a bash escape, a file tool outside the project,
   a host outside the allowlist, a web search, a first-use tool or skill) is
@@ -18,7 +31,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   passes; a hard floor (credentials, exfiltration, pipe-to-shell, force
   push, this extension's own configuration) never passes, and deterministic
   pre-checks refuse the obvious cases without a call (with `onRefuse:
-  "ask"` they reach you as a prompt). Every verdict is shown in the
+"ask"` they reach you as a prompt). Every verdict is shown in the
   conversation right after the tool call, a green check mark or a red
   cross, folded like tool output (click or ctrl+o expands it; verdicts
   with one outcome in a turn share a line), visible to you and not to the
@@ -37,6 +50,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Mode colors `warning` and `success` for `color`.
 
 ### Changed
+
 - The stock `cycleOrder` is `default, plan, build, auto, yolo`. A global
   config that pins its own order keeps it; the defaults audit names the
   change once.
@@ -51,6 +65,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.7.2]
 
 ### Changed
+
 - **Package description and demo video.** The npm description (the intro on
   pi.dev) describes 2.7 instead of 2.1; the demo video shows a Plan Mode
   round trip, a background shell with its link, and a refused read outside
@@ -60,6 +75,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.7.1]
 
 ### Changed
+
 - **README restructured for new users.** Quick start, Verify and Install
   lead; the intro says what the extension is and names the three supported
   platforms; a screenshot; the configuration example shrinks to one
@@ -73,6 +89,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.7.0]
 
 ### Added
+
 - **Background shells: bash with `run_in_background: true`.** A dev server,
   a watcher, a long build or a monitor runs as its own process tree that
   outlives the call, under the same sandbox, the same policy gate and the
@@ -106,6 +123,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   project may only tighten. Documented in `docs/shells.md`.
 
 ### Changed
+
 - **The mode text is written as pi prompt sections instead of replacing the
   system prompt.** The sandbox awareness block, the docs pointer and a mode's
   own `systemPrompt` become the sections `permission_mode`,
@@ -122,6 +140,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.6.0]
 
 ### Added
+
 - **Windows: the sandboxed modes contain bash on native Windows (alpha).**
   The runtime's Windows backend runs each command as a separate local
   account (`srt-sandbox`) in Git Bash, behind a firewall rule keyed on that
@@ -203,6 +222,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one you denied.
 
 ### Changed
+
 - **`@anthropic-ai/sandbox-runtime` 0.0.80 -> 0.0.81.** Every change is on
   Windows; Linux and macOS are untouched. Two ways out of the sandbox are
   closed: a sandboxed process could start an AppContainer child whose
@@ -242,6 +262,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.5.0]
 
 ### Added
+
 - **A shipped `docs/` reference, and every hint points into it.** The
   package now carries `docs/` (configuration, modes, permissions, sandbox,
   network, troubleshooting, architecture). The system prompt names the
@@ -296,7 +317,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Per-rule reasons: `{ "action": "deny", "reason": "..." }` on permission
   patterns.** A pattern entry can carry a reason, so a block tells the model
   what to do instead of only what failed: `"grep *": { "action": "deny",
-  "reason": "Use the grep tool; pipes like cmd | grep are fine" }`. The bare
+"reason": "Use the grep tool; pipes like cmd | grep are fine" }`. The bare
   `"pattern": "deny"` form keeps the generic message. On an `ask` rule the
   reason is used only when the prompt is refused (or auto-refused headless);
   an approval just proceeds. The reason travels with the winning rule and
@@ -309,6 +330,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#15](https://github.com/wynainfo/pi-permission-modes/pull/15).
 
 ### Changed
+
 - **A mode switch no longer restarts the sandbox on Linux and macOS.** When
   the new profile keeps the network filtered (or keeps it unfiltered), the
   runtime's config is swapped in place: the proxy reads its lists per
@@ -341,11 +363,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.4.3]
 
 ### Security
+
 - **Unsandboxed modes judge bash per command.** A mode with
   `sandbox.enabled: false` matched its bash rules against the whole command
   line, so a name-anchored rule such as `"sudo *": "deny"` or `"ssh *": "ask"`
   missed `cd repo && sudo id`, `VAR=1 ssh host ...`, and `echo x | ssh host
-  cat`; the `path` gate never applied to bash there at all; and quoting
+cat`; the `path` gate never applied to bash there at all; and quoting
   changed the outcome (`ssh host 'zpool status'` missed a rule written for
   `ssh host zpool status`). Such modes now run the same per-command analysis
   as sandboxed ones (every command in the chain against the `bash` rules and
@@ -358,6 +381,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#21](https://github.com/wynainfo/pi-permission-modes/issues/21).
 
 ### Fixed
+
 - **The bash prompt names the command.** `Allow bash?` and its escape,
   sandbox-unavailable, and unsandboxed variants showed only the title, so the
   command being approved was invisible whenever the last rendered tool call
@@ -369,7 +393,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `bash blocked`, `blocked`, or `tool blocked`, the same shape as a policy
   block or a failure, and tended to rephrase and retry. The reason now reads
   `The user denied this <call>. Do not retry or rephrase it; if the step
-  matters, ask the user how to proceed.`, with the escape or the unavailable
+matters, ask the user how to proceed.`, with the escape or the unavailable
   sandbox named as the cause where one applies. Policy denies keep their own
   text. Reported by [@donnielrt](https://github.com/donnielrt) in
   [#19](https://github.com/wynainfo/pi-permission-modes/issues/19).
@@ -387,19 +411,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.4.2]
 
 ### Security
-- **`**/` patterns match paths without a directory part.** `*` became `.*`
-  while `/` stayed literal, so a rule written as `**/.env` required a slash:
-  a `read` of a bare `.env` (or `cat .env` in bash) never matched it, and
-  last-match-wins fell through to `"*": "allow"`. A user-written deny or ask
-  rule of that shape was silently skipped. A `**/` at the start of a pattern
-  or right after a `/` now matches zero or more directories (`a/**/b` also
-  matches `a/b`); any other `*` keeps its meaning. The shipped defaults use
-  no `**/` patterns. Reported and fixed by
+
+- **`**/`patterns match paths without a directory part.**`_`became`._`while`/`stayed literal, so a rule written as`**/.env`required a slash:
+a`read`of a bare`.env`(or`cat .env`in bash) never matched it, and
+last-match-wins fell through to`"\*": "allow"`. A user-written deny or ask
+rule of that shape was silently skipped. A `**/`at the start of a pattern
+or right after a`/` now matches zero or more directories (`a/**/b`also
+matches`a/b`); any other `\*`keeps its meaning. The shipped defaults use
+no`**/` patterns. Reported and fixed by
   [@TheLastFix](https://github.com/TheLastFix) in
   [#11](https://github.com/wynainfo/pi-permission-modes/issues/11) /
   [#12](https://github.com/wynainfo/pi-permission-modes/pull/12).
 
 ### Fixed
+
 - **A configured `defaultMode` is the start mode.** The engine boots on the
   stock defaults before `session_start` loads `permission-mode.json`, and the
   start mode was only rebased onto the loaded `defaultMode` when the stock
@@ -435,6 +460,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.4.1]
 
 ### Security
+
 - **A bare filename that is a symlink out of the project is an escape.**
   The bash escape detector only judged tokens that look like paths (a `/`,
   `~`, or `..`), so with an in-project `data -> ~/secret.txt`, `cat data`
@@ -448,6 +474,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   names after a `cd` are still judged as written (SECURITY.md).
 
 ### Fixed
+
 - **The "connection(s) blocked" hint is per command.** Refused hosts were
   collected in one session-wide list that every sandboxed command emptied
   at start and end, so with parallel tool calls a hint went missing or
@@ -460,11 +487,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Linux monitor misreported them as denied.
 
 ### Changed
+
 - The npm package no longer ships the test files (`src/*.test.ts`).
 
 ## [2.4.0]
 
 ### Security
+
 - **Parallel sandboxed commands no longer lose their write denies.** The
   extension deleted the runtime's 0-byte mount points for absent protected
   dotfiles (`.bashrc`, `.mcp.json`, `.vscode`, ...) before and after every
@@ -480,6 +509,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the runtime, which would otherwise strip their mounts and network proxy.
 
 ### Added
+
 - **One-step plan approval.** After Plan Mode renders a plan with
   `show_plan`, an Accept / Decline prompt follows the model's handoff line
   as soon as the run ends. Accept switches to the approve mode (Build by
@@ -532,11 +562,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   while skipping paths a deny already masks.
 
 ### Fixed
+
 - `/perm <typo>` no longer cycles to the next mode: an argument that is
   neither a mode name nor a subcommand prints the usage line. A bare
   `/perm` still cycles.
 
 ### Changed
+
 - **Sandbox runtime upgraded from `@anthropic-ai/sandbox-runtime` 0.0.26 to
   0.0.77.** The runtime moved a long way in between, and several of this
   extension's workarounds became upstream fixes:
@@ -605,13 +637,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.3.1]
 
 ### Security
+
 - **File-tool guards now judge the path pi actually opens.** pi's `read`,
   `write`, `edit`, `ls`, `grep`, and `find` normalize their `path` before
   opening it: `~` and `~/…` expand to the home directory, a leading `@` is
   stripped, and `file://` URLs become paths. The extension's guards judged
   the raw string, so `read ~/.ssh/id_rsa` resolved lexically to a missing
   in-project path and was allowed while pi read the real file, and `write
-  @.env` slipped past the protected-path backstop. The dispatcher now applies
+@.env` slipped past the protected-path backstop. The dispatcher now applies
   the same normalization first; paths containing a NUL byte are blocked.
 - **A session grant never covers an escape.** "Allow for session" was keyed
   on command names, so approving an in-project `cat README.md` let a later
@@ -660,6 +693,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   links are now followed to where they point (bounded against cycles).
 
 ### Fixed
+
 - **Sandbox lifecycle hardening.** An abort that landed while the runtime was
   still wrapping a command (or a call that was already cancelled) did not
   stop it; the command ran to completion. The wrapper now refuses to spawn a
@@ -675,7 +709,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Network prompts work with an empty allowlist, and an absent one is called
   what it is.** The runtime starts its filtering proxy only for a non-empty
   `allowedDomains`, so a mode with `[]` got no proxy: the live prompts, `/net
-  allow`, `/net open`, and `request_network_access` were inert while the
+allow`, `/net open`, and `request_network_access` were inert while the
   footer said "filtered". A reserved `.invalid` placeholder now keeps the
   proxy path alive for that case. A mode with no `allowedDomains` at all is
   not filtered by the runtime; the footer, the awareness section, and the
@@ -752,6 +786,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.3.0]
 
 ### Added
+
 - **Per-session scratch directory.** Every session gets `/tmp/pi/<session-id>/`
   (Linux/macOS; `<os.tmpdir()>/pi/<session-id>/` on Windows; base overridable
   with `PI_PERMISSION_TMPDIR`). The awareness section names it, `TMPDIR`
@@ -782,6 +817,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/perm init` now stamps the copy's origin in a `$comment`.
 
 ### Changed
+
 - **Shipped `allowWrite` narrowed from `/tmp` to `/tmp/pi`** in Default, Plan,
   and Build. The sandbox no longer lets bash write anywhere under `/tmp`, only
   under the shared pi base and the session folder - so sessions can't clobber
@@ -810,6 +846,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.2.1]
 
 ### Security
+
 - **A newline inside a bash argument bypassed `ask`/`deny` bash policy.** The
   glob matcher compiled `*` to a regex `.*` without the dotAll flag, and `.`
   excludes `\n` in JavaScript - so any command whose joined `name args…`
@@ -837,6 +874,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   angle was not visible from those reports.
 
 ### Fixed
+
 - **A bash command matched by no rule now falls back to `ask`, not `allow`.**
   In the sandboxed modes each command extracted from a chain is judged
   separately, and one that matched neither a `bash` pattern nor the `path`
@@ -872,7 +910,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   profile instead. The guard is now Linux-only. Reported by
   [@pafuent](https://github.com/pafuent) in [#4](https://github.com/wynainfo/pi-permission-modes/issues/4).
 - **The extension no longer enables every built-in tool.** Tool hiding
-  rebuilt the active set from *all* registered tools minus `hideTools`, which
+  rebuilt the active set from _all_ registered tools minus `hideTools`, which
   silently re-enabled `grep`, `find`, `ls`, and `powershell` for everyone and
   overrode `defaultTools` in `settings.json`. It now starts from pi's current
   active set, remembers only what it hid, and restores only that on a mode
@@ -882,10 +920,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.2.0]
 
 ### Added
+
 - **Blocked network hosts now ask instead of silently failing.** The sandbox
   proxy consults a live callback for any host outside the domain allowlist -
-  the connection waits while you choose *Allow for session / Allow forever /
-  Deny*. Denies are remembered for the session (no prompt-storms from
+  the connection waits while you choose _Allow for session / Allow forever /
+  Deny_. Denies are remembered for the session (no prompt-storms from
   retrying installers); dismissed prompts deny without being remembered;
   headless sessions deny as before. Every blocked host is appended to the
   command output, so the model sees exactly which connection the sandbox
@@ -899,7 +938,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   global config, computed against the stock+global base so a project's
   tightened list is never baked in.
 - **`/net` command and `alt+n`**: `/net status | allow <domain…> | open |
-  restrict | reset`; `alt+n` toggles filtering for the session. The footer
+restrict | reset`; `alt+n` toggles filtering for the session. The footer
   now always shows the state and the shortcuts:
   `Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)` -
   green when filtered, orange when open.
@@ -919,6 +958,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.1.2]
 
 ### Security
+
 - **Project config could disable the sandbox and suppress bash prompts.** A
   repository-controlled `.pi/permission-mode.json` could set
   `sandbox.enabled:false` on an inherited-sandboxed mode (Default/Build);
@@ -937,6 +977,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.1.1]
 
 ### Added
+
 - Published to npm: `pi install npm:pi-permission-modes` is now the primary
   install method (README updated with pinning, project-local install, and
   update commands).
@@ -944,6 +985,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   release asset.
 
 ### Changed
+
 - README: CI + MIT badges; deduplicated mode table and protection sections;
   stale claims fixed across README/SECURITY/CONTRIBUTING (see the docs-cleanup
   commits).
@@ -953,6 +995,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Hardening release: the six findings from a full code review, each with tests.
 
 ### Added
+
 - **End-to-end dispatcher tests** (`src/index.test.ts`): a fake `pi`/`ctx`
   harness drives the real registered handlers - prompt flows and blocks per
   mode, bash session grants across chains, Plan-mode Markdown gating and
@@ -964,6 +1007,7 @@ Hardening release: the six findings from a full code review, each with tests.
   CI now runs `npm install` (tolerantly) so the harness executes there.
 
 ### Changed
+
 - **CI typecheck is now blocking.** The pi SDK peer deps resolve from the
   public npm registry, so `tsc --noEmit` failures are real regressions, not
   missing-types noise; `continue-on-error` is gone.
@@ -973,6 +1017,7 @@ Hardening release: the six findings from a full code review, each with tests.
   still loads; the warning tells the user their ordering may not be honored.
 
 ### Fixed
+
 - **The headless-child safety fallback no longer injects the fallback mode's
   system prompt.** A headless child with no forwarded mode still starts in the
   most restrictive mode (Plan, with its full policy), but Plan's planning
@@ -994,7 +1039,7 @@ Hardening release: the six findings from a full code review, each with tests.
   `timeout 5 doas …`, `xargs sudo …` unwrap to their effective command head,
   and `sh|bash|… -c '<script>'` scripts are re-parsed recursively
   (depth-limited) so their inner commands are visible to privilege/escape
-  detection *and* policy/path matching - closing the `bash -c 'sudo …'` gap the
+  detection _and_ policy/path matching - closing the `bash -c 'sudo …'` gap the
   AST path had while the regex fallback (whole-string scan) caught it. As a
   bonus, the AST path no longer false-positives on mere mentions
   (`grep sudo README.md` is not "privilege escalation").
@@ -1007,7 +1052,7 @@ Hardening release: the six findings from a full code review, each with tests.
   string.
 - **The cross-cutting `path` gate now binds bash in the tree-sitter path.** Each
   extracted command is judged against the `path` patterns - the joined
-  `name args…` string *and* every individual token - via `decideBashCommand`, so
+  `name args…` string _and_ every individual token - via `decideBashCommand`, so
   a rule like `"path": { "*.env": "deny" }` blocks `cat .env extra-arg` no matter
   where the target sits in the command. Previously the AST path only consulted
   the `bash` surface (the `path` gate applied to bash only in the regex
@@ -1021,6 +1066,7 @@ Declarative mode engine. Modes are now **data** - each a JSON bundle of a sandbo
 profile and an allow/ask/deny policy - so they can be retuned and user-defined.
 
 ### Added
+
 - **Declarative modes** in `permission-mode.json`: define your own modes (label,
   color, sandbox profile, per-surface policy, hidden tools) or retune the
   built-ins. JSON Schema at `schemas/permission-mode.schema.json`.
@@ -1051,6 +1097,7 @@ profile and an allow/ask/deny policy - so they can be retuned and user-defined.
   filesystem/network profile differs.
 
 ### Changed
+
 - **BREAKING - config format & path.** `sandbox.json` is replaced by
   `permission-mode.json`: global at `~/.pi/agent/permission-mode/permission-mode.json`,
   project (tighten-only) at `<project>/.pi/permission-mode.json`. The old
@@ -1060,14 +1107,16 @@ profile and an allow/ask/deny policy - so they can be retuned and user-defined.
 - `--perm` accepts any defined mode name.
 
 ### Fixed
+
 - **Sandbox placeholder litter.** In Default/Build, the OS sandbox left 0-byte
   read-only files in the project for every path in its mandatory write-deny set
   (`.bashrc`, `.gitconfig`, `.gitmodules`, `.vscode`, `.idea`, `.claude`,
   `.mcp.json`, `.ripgreprc`, …) when those paths were absent - not just `.git`.
   Placeholder cleanup is now generalized to the full set (removing only 0-byte
-  *files*, never real dirs/files) before and after every sandboxed run.
+  _files_, never real dirs/files) before and after every sandboxed run.
 
 ### Preserved
+
 - The four built-in modes reproduce 1.0.0 behavior (parity-tested), including the
   Plan-mode read-only sandbox + Markdown-only writes + `show_plan` flow, the
   protected-path backstop, the sandbox-unavailable degradation, and the non-git
@@ -1078,12 +1127,14 @@ profile and an allow/ask/deny policy - so they can be retuned and user-defined.
 First public release.
 
 ### Modes
+
 - Four switchable permission modes - **Default**, **Plan Mode**, **Build**,
   **YOLO** - cycled with `alt+m` or set via `/perm <mode>`; persisted per session.
 - Plain-text footer indicator with per-mode colors and a muted
   `(sandboxed in project dir)` marker.
 
 ### Sandboxing
+
 - OS-level sandbox for in-project `bash` in Default/Plan/Build via
   `@anthropic-ai/sandbox-runtime` (bubblewrap on Linux, `sandbox-exec` on macOS).
 - **Plan Mode** runs bash read-only (per-command `allowWrite: []` override) and
@@ -1094,6 +1145,7 @@ First public release.
 - Graceful degradation to prompting when the sandbox is unavailable.
 
 ### Safety
+
 - Tighten-only project config: `<project>/.pi/sandbox.json` can only make the
   sandbox stricter; overly-broad domain patterns are rejected.
 - Symlink-aware out-of-project containment; protected-path writes blocked
