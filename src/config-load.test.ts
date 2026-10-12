@@ -1336,6 +1336,224 @@ test("groups: shorthand actions still replace wholesale, sandbox lists never uni
   s.cleanup();
 });
 
+test("groups: a trailing mode `*` never flips group specifics (defaults hoist first)", () => {
+  const s = sandbox({
+    global: {
+      groups: {
+        guards: { permission: { path: { "**/.env*": "deny" }, bash: { "git push*": "deny" } } },
+      },
+      modes: {
+        review: {
+          label: "Review",
+          color: "mdLink",
+          sandbox: { enabled: true, writable: true },
+          extends: ["guards"],
+          permission: { path: { "*": "allow" }, bash: { "*": "ask" } },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(decide(c.modes.review, "path", "sub/.env"), "deny");
+  assert.equal(decide(c.modes.review, "bash", "git push x"), "deny");
+  assert.equal(decide(c.modes.review, "path", "other.ts"), "allow");
+  assert.equal(decide(c.modes.review, "bash", "ls"), "ask");
+  assert.ok(s.errors.length === 0, s.errors.join("; "));
+  s.cleanup();
+});
+
+test("groups: a deniedDomains-only layer no longer wipes the allowlist", () => {
+  const s = sandbox({
+    global: {
+      groups: {
+        net: { sandbox: { network: { deniedDomains: ["evil.example"] } } },
+      },
+      modes: {
+        review: {
+          label: "Review",
+          color: "mdLink",
+          sandbox: { enabled: true, writable: true, network: { allowedDomains: ["example.com"] } },
+          extends: ["net"],
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.review.sandbox.network, { allowedDomains: ["example.com"], deniedDomains: ["evil.example"] });
+  assert.ok(s.errors.length === 0, s.errors.join("; "));
+  s.cleanup();
+});
+
+test("groups: a pattern literally named `action` still merges instead of acting as a rule object", () => {
+  const s = sandbox({
+    global: {
+      groups: {
+        g: { permission: { bash: { "action": "deny", "git push*": "deny" } } },
+      },
+      modes: {
+        review: {
+          label: "Review",
+          color: "mdLink",
+          sandbox: { enabled: true, writable: true },
+          extends: ["g"],
+          permission: { bash: { "ls": "allow" } },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  const bash = c.modes.review.permission.bash as Record<string, string>;
+  assert.deepEqual(Object.keys(bash).sort(), ["action", "git push*", "ls"]);
+  assert.equal(decide(c.modes.review, "bash", "action"), "deny");
+  assert.equal(decide(c.modes.review, "bash", "git push x"), "deny");
+  assert.equal(decide(c.modes.review, "bash", "ls"), "allow");
+  s.cleanup();
+});
+
+test("groups: systemPrompt/bypassProtectedPaths in a group warn but still apply", () => {
+  const s = sandbox({
+    global: {
+      groups: {
+        g: { systemPrompt: "hello", bypassProtectedPaths: true },
+      },
+      modes: {
+        review: {
+          label: "Review",
+          color: "mdLink",
+          sandbox: { enabled: true, writable: true },
+          extends: ["g"],
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.modes.review.systemPrompt, "hello");
+  assert.equal(c.modes.review.bypassProtectedPaths, true);
+  assert.ok(s.errors.some((e) => /sets systemPrompt/.test(e)));
+  assert.ok(s.errors.some((e) => /sets bypassProtectedPaths/.test(e)));
+  s.cleanup();
+});
+
+test("groups: plan-prompt/hideTools contradiction warns after expansion too", () => {
+  const s = sandbox({
+    global: {
+      groups: {
+        p: { systemPrompt: "@plan", hideTools: ["show_plan"] },
+      },
+      modes: {
+        review: {
+          label: "Review",
+          color: "mdLink",
+          sandbox: { enabled: true, writable: true },
+          extends: ["p"],
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.modes.review.systemPrompt, "@plan");
+  assert.ok(s.errors.some((e) => /hides show_plan/.test(e)));
+  s.cleanup();
+});
+
+test("groups: every parameter composes per its documented rule (matrix)", () => {
+  // One shared group holds a base value for every composable field; each
+  // mode overrides exactly one of them (or nothing, for inherit paths).
+  // A single load covers the whole matrix: override wins, inherit holds.
+  const m = (over: unknown) => ({
+    label: "M",
+    color: "muted",
+    ...(over as Record<string, unknown>),
+  });
+  const s = sandbox({
+    global: {
+      groups: {
+        g: {
+          sandbox: {
+            enabled: true,
+            writable: true,
+            allowWrite: ["/x"],
+            denyWrite: ["a"],
+            denyRead: ["a"],
+            allowRead: ["a"],
+            network: { allowedDomains: ["a.example"], deniedDomains: ["d.example"] },
+          },
+          systemPrompt: "test-prompt",
+          injectSandboxInfo: false,
+          hideTools: ["a"],
+          bypassProtectedPaths: true,
+          permission: {
+            path: { p1: "deny" },
+            external_directory: { a: "ask" },
+            read: "allow",
+            write: "allow",
+            edit: "ask",
+            grep: "allow",
+            find: "deny",
+            ls: "allow",
+            web_search: "allow",
+            tool: { "a*": "allow" },
+            skill: "allow",
+          },
+        },
+      },
+      modes: {
+        m_enabled: m({ extends: ["g"], sandbox: { enabled: false } }),
+        m_writable: m({ extends: ["g"], sandbox: { writable: false } }),
+        m_allowWrite: m({ extends: ["g"], sandbox: { allowWrite: ["."] } }),
+        m_denyWrite: m({ extends: ["g"], sandbox: { denyWrite: ["b"] } }),
+        m_denyRead: m({ extends: ["g"], sandbox: { denyRead: ["b"] } }),
+        m_allowRead: m({ extends: ["g"], sandbox: { allowRead: ["b"] } }),
+        m_domains: m({ extends: ["g"] }),
+        m_path: m({ extends: ["g"], permission: { path: { p2: "deny" } } }),
+        m_external: m({ extends: ["g"], permission: { external_directory: { b: "deny" } } }),
+        m_read: m({ extends: ["g"], permission: { read: "ask" } }),
+        m_write: m({ extends: ["g"], permission: { write: "deny" } }),
+        m_edit: m({ extends: ["g"], permission: { edit: "allow" } }),
+        m_grep: m({ extends: ["g"], permission: { grep: "deny" } }),
+        m_find: m({ extends: ["g"], permission: { find: "allow" } }),
+        m_ls: m({ extends: ["g"] }),
+        m_web: m({ extends: ["g"], permission: { web_search: "deny" } }),
+        m_tool: m({ extends: ["g"], permission: { tool: { b: "deny" } } }),
+        m_skill: m({ extends: ["g"] }),
+        m_prompt: m({ extends: ["g"] }),
+        m_inject: m({ extends: ["g"] }),
+        m_hide: m({ extends: ["g"], hideTools: ["b"] }),
+        m_bypass: m({ extends: ["g"] }),
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (msg) => s.errors.push(msg));
+  const t = (n: string) => c.modes[n];
+  // Sandbox scalars and lists: override replaces.
+  assert.equal(t("m_enabled").sandbox.enabled, false);
+  assert.equal(t("m_writable").sandbox.writable, false);
+  assert.deepEqual(t("m_allowWrite").sandbox.allowWrite, ["."]);
+  assert.deepEqual(t("m_denyWrite").sandbox.denyWrite, ["b"]);
+  assert.deepEqual(t("m_denyRead").sandbox.denyRead, ["b"]);
+  assert.deepEqual(t("m_allowRead").sandbox.allowRead, ["b"]);
+  // Inherit paths (no own value): group content arrives intact.
+  assert.deepEqual(t("m_domains").sandbox.network, { allowedDomains: ["a.example"], deniedDomains: ["d.example"] });
+  assert.equal(t("m_domains").sandbox.enabled, true);
+  assert.equal(t("m_ls").permission.ls, "allow");
+  assert.equal(t("m_skill").permission.skill, "allow");
+  assert.equal(t("m_prompt").systemPrompt, "test-prompt");
+  assert.equal(t("m_inject").injectSandboxInfo, false);
+  assert.equal(t("m_bypass").bypassProtectedPaths, true);
+  // Pattern maps concatenate; shorthand and scalars replace.
+  assert.deepEqual(t("m_path").permission.path, { p1: "deny", p2: "deny" });
+  assert.deepEqual(t("m_external").permission.external_directory, { a: "ask", b: "deny" });
+  assert.deepEqual(t("m_tool").permission.tool, { "a*": "allow", b: "deny" });
+  assert.equal(t("m_read").permission.read, "ask");
+  assert.equal(t("m_write").permission.write, "deny");
+  assert.equal(t("m_edit").permission.edit, "allow");
+  assert.equal(t("m_grep").permission.grep, "deny");
+  assert.equal(t("m_find").permission.find, "allow");
+  assert.equal(t("m_web").permission.web_search, "deny");
+  assert.deepEqual(t("m_hide").hideTools, ["b"]);
+  s.cleanup();
+});
+
 test("groups: modes compose multiple groups in order, mode fields win", () => {
   const s = sandbox({
     global: {

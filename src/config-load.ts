@@ -509,50 +509,57 @@ function mergeFragment(acc: Partial<ModeDef>, over: Partial<ModeDef>): Partial<M
   return {
     ...a,
     ...o,
-    sandbox: o.sandbox ? { ...(a.sandbox ?? {}), ...o.sandbox } : a.sandbox,
-    permission: mergePermissions(a.permission, o.permission),
+    sandbox: (o.sandbox ? deepMerge(a.sandbox ?? {}, o.sandbox) : a.sandbox) as ModeDef["sandbox"],
+    permission: deepMerge(a.permission ?? {}, o.permission ?? {}) as Partial<Record<Surface, SurfaceValue>>,
     hideTools: o.hideTools ?? a.hideTools,
   };
 }
 
 /**
- * Concatenate two pattern maps in layer order (earlier first): shared blocks
- * and layer-specific rules compose instead of the later map wiping the
- * earlier one. Last-match-wins gives the later layer the final word, exactly
- * as within one map. A redefined key moves to the end — a plain spread would
- * keep its first position and silently reorder last-match-wins. Reason
- * objects ride along untouched.
+ * One merge function for all composition within an extends chain (group into
+ * group into mode-own). Same rule everywhere, by value kind:
+ * - two plain maps/objects → merge key-wise in layer order (earlier first);
+ *   a redefined key moves to the end — a plain spread would keep its first
+ *   position and silently reorder last-match-wins;
+ * - exact `"*"` entries go first: they are the documented universal fallback,
+ *   so a trailing default can never flip layer specifics;
+ * - rule objects (`{action}` values), arrays and anything else → override wins.
+ * Arrays never union: unioning an allow-list would widen it, and stock entries
+ * would become unremovable. So a `deniedDomains`-only layer no longer wipes
+ * the allowlist, while `allowWrite`/`extends`/`hideTools` keep replace
+ * semantics. Cross-config-layer merges (stock/global/project) keep their own
+ * replace/reset semantics — this is composition within one layer.
  */
-function concatPatternMaps(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const src of [a, b]) {
-    for (const [k, v] of Object.entries(src)) {
-      delete out[k];
-      out[k] = v;
+function deepMerge(a: unknown, b: unknown): unknown {
+  if (Array.isArray(a) && Array.isArray(b)) return b;
+  if (isPlainObject(a) && isPlainObject(b) && !isRuleObject(a) && !isRuleObject(b)) {
+    const out: Record<string, unknown> = {};
+    for (const src of [a, b]) {
+      if ("*" in src) out["*"] = (src as Record<string, unknown>)["*"];
     }
+    for (const src of [a, b]) {
+      for (const [k, v] of Object.entries(src)) {
+        if (k === "*") continue;
+        if (UNSAFE_KEYS.has(k)) continue; // belt and braces: sanitizers already strip these
+        // Capture before deleting: the delete moves a redefined key to the
+        // end (order matters for last-match-wins), but the merge needs it.
+        const prev = k in out ? out[k] : undefined;
+        if (k in out) delete out[k];
+        out[k] = deepMerge(prev, v);
+      }
+    }
+    return out;
   }
-  return out;
+  return b;
 }
 
-/**
- * Merge two permission layers of one composition chain (group into group into
- * mode-own). Only map-against-map concatenates; a shorthand action on either
- * side still replaces wholesale (documented shorthand semantics), and sandbox
- * lists are never unioned here (a union would widen: keep the field replace
- * in mergeFragment). Cross-config-layer merges (stock/global/project) keep
- * their own replace/reset semantics — this is composition within one layer.
- */
-function mergePermissions(
-  a: Partial<Record<Surface, SurfaceValue>> | undefined,
-  o: Partial<Record<Surface, SurfaceValue>> | undefined,
-): Partial<Record<Surface, SurfaceValue>> {
-  const out: Partial<Record<Surface, SurfaceValue>> = { ...(a ?? {}) };
-  for (const [k, v] of Object.entries(o ?? {})) {
-    const key = k as Surface;
-    const prev = out[key];
-    out[key] = isPlainObject(prev) && isPlainObject(v) ? (concatPatternMaps(prev, v) as SurfaceValue) : (v as SurfaceValue);
-  }
-  return out;
+/** A pattern-rule value object: exactly `{action}` plus only `reason`/`message`.
+ * Anything else shaped like it (e.g. a pattern literally named `action`
+ * alongside other patterns) still merges — a lone `{"action": ...}` map is
+ * indistinguishable from a rule object and stays a leaf. */
+const RULE_VALUE_KEYS = new Set(["action", "reason", "message"]);
+function isRuleObject(v: unknown): v is Record<string, unknown> {
+  return isPlainObject(v) && typeof v.action === "string" && Object.keys(v).every((k) => RULE_VALUE_KEYS.has(k));
 }
 
 /** Sanitize an `extends` list: strings only, prototype names dropped with a warning. */
@@ -581,8 +588,10 @@ function sanitizeGroup(raw: unknown, where: string, onError: OnError): GroupDef 
     return out;
   }
   if (raw.systemPrompt !== undefined) {
-    if (typeof raw.systemPrompt === "string") out.systemPrompt = raw.systemPrompt;
-    else onError(`permission-mode: ignoring systemPrompt in ${where}: must be a string`);
+    if (typeof raw.systemPrompt === "string") {
+      out.systemPrompt = raw.systemPrompt;
+      onError(`permission-mode: ${where} sets systemPrompt: prompts compose silently into modes; prefer setting it on the mode`);
+    } else onError(`permission-mode: ignoring systemPrompt in ${where}: must be a string`);
   }
   if (raw.injectSandboxInfo !== undefined) {
     if (typeof raw.injectSandboxInfo === "boolean") out.injectSandboxInfo = raw.injectSandboxInfo;
@@ -601,8 +610,10 @@ function sanitizeGroup(raw: unknown, where: string, onError: OnError): GroupDef 
     else onError(`permission-mode: ignoring hideTools in ${where}: must be a string array`);
   }
   if (raw.bypassProtectedPaths !== undefined) {
-    if (typeof raw.bypassProtectedPaths === "boolean") out.bypassProtectedPaths = raw.bypassProtectedPaths;
-    else onError(`permission-mode: ignoring bypassProtectedPaths in ${where}: must be a boolean`);
+    if (typeof raw.bypassProtectedPaths === "boolean") {
+      out.bypassProtectedPaths = raw.bypassProtectedPaths;
+      onError(`permission-mode: ${where} sets bypassProtectedPaths: the backstop removal composes silently into modes; prefer setting it on the mode`);
+    } else onError(`permission-mode: ignoring bypassProtectedPaths in ${where}: must be a boolean`);
   }
   const ext = sanitizeExtends(raw.extends, where, onError);
   if (ext !== undefined) out.extends = ext;
@@ -684,6 +695,8 @@ function expandAllModes(config: PermissionModeConfig, onError: OnError): void {
   const groups = config.groups ?? {};
   for (const name of Object.keys(config.modes)) {
     config.modes[name] = expandModeGroups(name, config.modes[name], groups, onError);
+    // Post-expansion: group-composed modes can inherit the contradiction too.
+    warnModeContradictions(name, config.modes[name], onError);
   }
 }
 
@@ -748,7 +761,6 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
         permission: m.permission ?? {},
       };
     }
-    warnModeContradictions(name, modes[name], onError);
   }
   const cycleOrder = (isStringArray(over.cycleOrder) ? over.cycleOrder : base.cycleOrder).filter((n) => hasMode(modes, n));
   let defaultMode = typeof over.defaultMode === "string" ? over.defaultMode : base.defaultMode;
