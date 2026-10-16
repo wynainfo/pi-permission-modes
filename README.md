@@ -273,6 +273,32 @@ wall - a request to a host outside the allowlist **pauses while you're asked**
 Grants, denies, and the open toggle are **session-scoped** (except "Allow
 forever") and apply instantly - no sandbox restart.
 
+### Git authentication
+
+The sandboxed modes mask `~/.ssh`, so git over SSH (`git@` remotes) cannot
+authenticate from sandboxed bash, and the model is told not to try. For fetches
+and pushes from inside the sandbox, use HTTPS with a **fine-grained personal
+access token** limited to the repositories (and permissions, e.g. Contents
+read/write) the agent needs. A leaked token then reaches only those
+repositories, and you revoke one token.
+
+1. Create the token on GitHub: Settings, Developer settings, Personal access
+   tokens, Fine-grained tokens.
+2. Let git read it from the environment for github.com (once, outside pi):
+   ```sh
+   git config --global credential.https://github.com.helper \
+     '!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"; }; f'
+   ```
+3. Start pi with the token in its environment, e.g. `GITHUB_TOKEN=github_pat_... pi`.
+   Don't store it in `~/.git-credentials` or `~/.netrc`: both are masked in
+   the sandbox.
+
+A `git@` remote then works over HTTPS without changing it:
+`git -c url."https://github.com/".insteadOf=git@github.com: fetch` (the form
+the model uses), or switch the remote to `https://github.com/<owner>/<repo>.git`.
+A step you'd rather keep out of the sandbox can run with pi's `!` prefix
+(`!git push`), which runs on the host with your own credentials.
+
 ### CLI flags
 
 - `--perm <mode>` - start in a given mode (any defined mode name).

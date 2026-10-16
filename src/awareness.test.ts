@@ -42,6 +42,21 @@ test("writable sandboxed mode: renders paths, secrets, domains, and the prompt f
   assert.doesNotMatch(out, /write-denied/); // empty denyWrite → no bullet
 });
 
+test("masked ~/.ssh: the SSH bullet rules out ssh, names HTTPS, a PAT, and the ! prefix, only when the keys are masked", () => {
+  const ssh = /SSH keys are unreadable/;
+  const out = sandboxAwarenessPrompt(mode(), { active: true })!;
+  assert.match(out, ssh);
+  assert.match(out, /do not use ssh/);
+  assert.match(out, /insteadOf=git@github\.com: fetch/);
+  assert.match(out, /fine-grained personal access token/);
+  assert.doesNotMatch(out, /\bgh\b/, "gh is not recommended while its login stays readable");
+  assert.match(out, /`!git fetch`/);
+  assert.match(sandboxAwarenessPrompt(mode({}, { denyRead: ["~"] }), { active: true })!, ssh, "a strict home masks ~/.ssh too");
+  assert.doesNotMatch(sandboxAwarenessPrompt(mode({}, { denyRead: ["~/.aws"] }), { active: true })!, ssh);
+  assert.doesNotMatch(sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.ssh"] }), { active: true })!, ssh, "readable again");
+  assert.doesNotMatch(sandboxAwarenessPrompt(mode({}, { denyRead: ["~/.ssh-other"] }), { active: true })!, ssh, "a sibling name is not a parent");
+});
+
 test("allowRead: the carve-outs are listed right after the denied paths, with '.' rendered as the project", () => {
   const out = sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: [".", "~/.cache"] }), { active: true })!;
   assert.match(out, /Reads are broadly allowed EXCEPT: ~\.\n- Readable again inside those denied paths: the project directory, ~\/\.cache\. Anything else under a denied path reads as absent\./);

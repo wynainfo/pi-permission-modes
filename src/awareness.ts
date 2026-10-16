@@ -21,7 +21,18 @@
  * host.
  */
 
+import { expandHome } from "./resolve.ts";
 import type { ModeDef } from "./schema.ts";
+
+/** Whether ~/.ssh is under a denied path and not readable again through allowRead. */
+function masksSshKeys(denyRead: string[], allowRead: string[] = []): boolean {
+  const ssh = expandHome("~/.ssh");
+  const covers = (p: string) => {
+    const d = expandHome(p).replace(/\/+$/, "");
+    return ssh === d || ssh.startsWith(`${d}/`);
+  };
+  return denyRead.some(covers) && !allowRead.some(covers);
+}
 
 export interface AwarenessOptions {
   /** Whether the OS sandbox is actually enforcing (ready and not --no-sandbox). */
@@ -95,6 +106,13 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     lines.push(`- Reads are broadly allowed EXCEPT: ${sb.denyRead.join(", ")}.`);
     if (sb.allowRead?.length) {
       lines.push(`- Readable again inside those denied paths: ${sb.allowRead.map(renderWritePath).join(", ")}. Anything else under a denied path reads as absent.`);
+    }
+    if (masksSshKeys(sb.denyRead, sb.allowRead)) {
+      lines.push(
+        "- SSH keys are unreadable, so do not use ssh or git over SSH (`git@` remotes) from bash: authentication cannot succeed, whatever the options. " +
+          "Git over HTTPS works when a credential is configured; for a `git@` remote, `git -c url.\"https://github.com/\".insteadOf=git@github.com: fetch` uses HTTPS without changing the remote. " +
+          "If that fails to authenticate, stop and tell the user: recommend a fine-grained personal access token for HTTPS (permission-mode README, Git authentication), or running the step themselves with pi's `!` prefix (for example `!git fetch`).",
+      );
     }
   }
   if (sb.network?.allowedDomains === undefined) {

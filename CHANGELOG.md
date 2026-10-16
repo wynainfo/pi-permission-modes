@@ -43,6 +43,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   restores the mode a session was last used in. `defaultMode` applies to a
   fresh session at pi start. Reported by [@lukegood](https://github.com/lukegood) in
   [#10](https://github.com/wynainfo/pi-permission-modes/pull/10).
+- **The model no longer tries SSH when `~/.ssh` is masked.** A `git fetch`
+  over a `git@` remote fails in the sandbox, and ssh's debug output still
+  lists "Trying private key" for every default key path, so a model kept
+  probing keys and ssh options. When a mode masks `~/.ssh`, the sandbox
+  section of the prompt now rules SSH out, names the HTTPS form for a `git@`
+  remote, and otherwise has the model recommend a fine-grained personal
+  access token or running the step with pi's `!` prefix. The new README
+  section "Git authentication" sets up such a token for git over HTTPS.
 
 ## [2.4.1]
 
