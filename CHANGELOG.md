@@ -29,6 +29,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `"defaultMode": "yolo"` now really starts unsandboxed, as configured.
   Fixed by [@lukegood](https://github.com/lukegood) in
   [#10](https://github.com/wynainfo/pi-permission-modes/pull/10).
+- **The bubblewrap namespace hint names both fixes.** It said the AppArmor
+  restriction also applies under WSL2, which WSL2 images usually do not
+  enable, and only pointed at the README. It now names the AppArmor profile
+  for `/usr/bin/bwrap` and the sysctl.
 
 ## [2.4.1]
 

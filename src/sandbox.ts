@@ -127,8 +127,9 @@ class StderrHead {
     if (!/^bwrap: .*(Operation not permitted|Permission denied|No permissions to create)/i.test(first)) return undefined;
     return (
       "\n[permission-mode] sandbox: bubblewrap could not set up its namespaces, so the command did not run. " +
-      "On Ubuntu 24.04+ (also under WSL2) this usually means kernel.apparmor_restrict_unprivileged_userns=1; " +
-      "see README, Install. Nothing ran unsandboxed.\n"
+      "On Ubuntu 24.04+ this usually means kernel.apparmor_restrict_unprivileged_userns=1: " +
+      "grant userns to /usr/bin/bwrap with an AppArmor profile, or set the sysctl to 0 (see README, Install). " +
+      "Nothing ran unsandboxed.\n"
     );
   }
 }

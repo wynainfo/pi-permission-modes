@@ -302,6 +302,12 @@ test("exec: a bubblewrap namespace failure gets the AppArmor hint, other failure
   const res = await ops.exec(failing, process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
   assert.equal(res.exitCode, 1);
   assert.match(out, /apparmor_restrict_unprivileged_userns/);
+  assert.match(out, /AppArmor profile/, "names both fixes");
+  assert.doesNotMatch(out, /WSL2/, "WSL2 images are usually not affected");
+  out = "";
+  // The shape seen on Ubuntu 24.04 when the network is filtered (--unshare-net).
+  await ops.exec("echo 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' >&2; exit 1", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
+  assert.match(out, /apparmor_restrict_unprivileged_userns/);
   out = "";
   await ops.exec("echo 'bwrap: something else' >&2; exit 1", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10 });
   assert.doesNotMatch(out, /apparmor/);
