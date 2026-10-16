@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.2]
+
 ### Security
 - **`**/` patterns match paths without a directory part.** `*` became `.*`
   while `/` stayed literal, so a rule written as `**/.env` required a slash:
