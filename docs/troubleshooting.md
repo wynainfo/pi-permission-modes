@@ -1,0 +1,183 @@
+# Troubleshooting
+
+One section per message you or the model can see. Each names the cause and
+the fix. Messages from the extension start with `permission-mode:` or
+`[permission-mode]`.
+
+## Bubblewrap namespaces
+
+```
+[permission-mode] sandbox: bubblewrap could not set up its namespaces, so the command did not run.
+bwrap: setting up uid map: Permission denied
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+```
+
+Ubuntu 24.04 and newer (desktop and server; WSL2 images usually do not) set
+`kernel.apparmor_restrict_unprivileged_userns=1`, which strips the
+capabilities bubblewrap and the runtime's seccomp helper need. Every
+sandboxed command then fails before it starts, and nothing runs unsandboxed.
+Two fixes; the AppArmor profile is the narrower one:
+
+```sh
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+Or disable the restriction system-wide:
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, persisted in
+`/etc/sysctl.d/60-userns.conf`. Check with
+`bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / --proc /proc --dev /dev true`,
+which must exit 0.
+
+## Sandbox unavailable
+
+```
+permission-mode: OS sandbox unavailable - protection is heuristic-only.
+sandbox-runtime missing (run npm install in the extension dir)
+sandbox dependencies: ...
+sandbox init failed: ...
+```
+
+The footer shows `(!) <reason>` and in-project bash prompts for every
+command instead of running sandboxed. Causes, in the order the extension
+checks them:
+
+- **`sandbox-runtime missing`**: the npm dependency is not installed. Run
+  `npm install` in the extension directory (the notification prints the exact
+  `cd ... && npm install`). `pi install` normally does this for you.
+- **`sandbox dependencies`**: on Linux `bubblewrap`, `socat`, or `ripgrep`
+  is missing from `PATH`: `sudo apt install -y bubblewrap socat ripgrep`
+  (the package is `bubblewrap`, the binary is `bwrap`). A root caller without
+  `CAP_SETFCAP` is reported here too.
+- **`sandbox init failed`**: the runtime threw while starting its proxy or
+  its mounts; the message carries the runtime's error.
+- **`sandbox unsupported on this platform`**: WSL1 (no user namespaces) or
+  another platform the runtime does not know. On Windows the message is
+  `sandbox unsupported on Windows (run pi under WSL2)`.
+
+`/sandbox` prints the reason as well. `pi --no-sandbox` produces the same
+degraded state on purpose.
+
+## First command network denial
+
+On runtime versions before 0.0.79 the first network call of a sandboxed
+command could be refused because the command started before the in-sandbox
+relays listened. Retrying worked. Upgrade the extension (it ships 0.0.79 or
+newer since 2.5.0).
+
+## SSH in the sandbox
+
+`ssh` and git over SSH (`git@` remotes) cannot authenticate from sandboxed
+bash: `~/.ssh` is in `denyRead`, so inside the sandbox the directory is
+empty. `ssh -v` still prints `Trying private key: ~/.ssh/id_*` for every
+default path; those lines do not mean a key was found. The model is told not
+to try. Use HTTPS with a token, or run the step with pi's `!` prefix
+([network.md, Git authentication](network.md#git-authentication)).
+
+## Blocked by policy
+
+```
+bash command denied by policy
+Path "<p>" is blocked by <mode>
+Path "<p>" is protected
+Access outside project blocked
+Tool "<name>" blocked by <mode>
+web search blocked by <mode>
+<mode> allows editing Markdown files only
+```
+
+A `deny` rule of the active mode matched, or you answered Deny to a prompt.
+`"blocked by <mode>"` comes from the mode's own `permission` block (or a
+project overlay); `"is protected"` is the protected-path backstop, which no
+rule can lift except `bypassProtectedPaths`; the Markdown-only message is
+Plan mode's read-only sandbox. Which rule matched: compare the target with
+the surface's patterns and the `path` gate, remembering last-match-wins and
+most-restrictive-across-layers ([permissions.md, Resolution](permissions.md#resolution)).
+One denied command does not mean the surface is off; the model should try
+the intended step another way or ask.
+
+```
+Path <p> is blocked for this session (Deny and block); /perm unblock lifts it
+```
+
+You chose "Deny and block" for that path earlier in the session
+([permissions.md, Deny and block](permissions.md#deny-and-block)).
+
+## Silent failures inside the sandbox
+
+A command fails with a permission or network error and no prompt appeared:
+the sandbox refused it. Typical cases:
+
+- a write outside `allowWrite` (for example a tool that hardcodes `/tmp` and
+  ignores `TMPDIR`): use the scratch directory or add the path to
+  `allowWrite` ([sandbox.md, Temp directories per platform](sandbox.md#temp-directories-per-platform));
+- a read under `denyRead` or outside an `allowRead` carve-out: the file
+  reads as absent, no error ([modes.md, Strict home](modes.md#strict-home));
+- a host outside the allowlist with `askOnBlockedHost: false`, or a prompt
+  that was dismissed ([network.md, Requesting access](network.md#requesting-access));
+- Plan mode: every write fails, the sandbox is read-only.
+
+The `<sandbox_violations>` block at the end of the output names the path or
+host when the observer caught it ([sandbox.md, Violations reported to the model](sandbox.md#violations-reported-to-the-model)).
+
+## git add fails on masked dotfiles
+
+```
+error: .bashrc: can only add regular files
+```
+
+Inside the sandbox the absent protected dotfiles at the project root are
+character devices (the runtime's `/dev/null` masks). Add files by name, or
+list the names (`.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`,
+`.profile`, `.gitconfig`, `.gitmodules`, `.ripgreprc`, `.mcp.json`) in the
+repository's `.git/info/exclude`
+([sandbox.md, Placeholders and masked dotfiles](sandbox.md#placeholders-and-masked-dotfiles)).
+
+## EBUSY when removing a directory
+
+`mv` or `rm -rf` of a directory that holds a protected path fails with
+`EBUSY` inside the sandbox: every ancestor of a protected path is a mount
+point on Linux. Run the removal outside the sandbox; it prompts.
+
+## Author identity unknown
+
+`git commit` inside a strict-home mode fails with "Author identity unknown":
+`~/.gitconfig` is masked. Add it to `allowRead`
+([modes.md, Strict home](modes.md#strict-home)).
+
+## Outdated defaults notice
+
+```
+permission-mode: N value(s) in ~/.pi/agent/permission-mode/permission-mode.json still hold an outdated default:
+permission-mode: updated X -> Y; the stock defaults changed for ...
+```
+
+Your global config carries a value that an older release shipped as its
+default and the current release changed. Update the value, delete it so the
+shipped default applies, or set `"acknowledgeDefaults": "<version>"` to keep
+it knowingly ([configuration.md, Keeping your global config current](configuration.md#keeping-your-global-config-current)).
+
+## Loader warnings
+
+```
+permission-mode: project config cannot ...
+permission-mode: ignoring unknown sandbox field "..."
+permission-mode: invalid action "..." for ...; treating as deny
+```
+
+A config value was dropped or coerced. Project warnings list what a project
+config may not do ([configuration.md, Project config](configuration.md#project-config));
+the others name the key and file. Fix the file and `/reload`.
+
+## The sandbox became unavailable after this command was approved
+
+The runtime failed between the prompt and the run (a `/reload` or a mode
+switch in between). Run the command again.

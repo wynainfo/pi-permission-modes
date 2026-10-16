@@ -2,7 +2,8 @@
 
 `permission-mode` gates the agent's filesystem/bash access and adds an OS-level
 sandbox. This document states what it does and does **not** protect against, so
-you can rely on it appropriately.
+you can rely on it appropriately. The reference for every setting is in
+[`docs/`](docs/index.md); this file is the threat model.
 
 ## Two layers
 

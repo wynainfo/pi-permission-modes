@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { docsDir } from "./docs.ts";
 
 type SetupExtension = (pi: unknown) => Promise<void>;
 
@@ -1103,7 +1104,7 @@ test("injectSandboxInfo:false opts a mode out of the awareness injection", { ski
     const before = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
     assert.match(before.systemPrompt, /Sandbox & permissions \(Default\)/);
 
-    // … until the global config opts it out; then nothing is injected at all.
+    // … until the global config opts it out; then only the docs pointer remains.
     const dir = path.join(h.agentDir, "permission-mode");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
@@ -1111,9 +1112,36 @@ test("injectSandboxInfo:false opts a mode out of the awareness injection", { ski
       JSON.stringify({ modes: { default: { injectSandboxInfo: false } } }),
     );
     await h.pi.emit("session_start", {}, h.ctx);
-    assert.equal(await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx), undefined);
+    const after = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.doesNotMatch(after.systemPrompt, /Sandbox & permissions/);
+    assert.match(after.systemPrompt, /## permission-mode documentation/);
   } finally {
     h.cleanup();
+  }
+});
+
+test("docs pointer: every mode names the shipped docs folder; the headless fallback does not", { skip }, async () => {
+  const h = await setup();
+  try {
+    for (const mode of ["default", "plan", "build", "yolo"]) {
+      await h.perm(mode);
+      const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+      assert.match(res.systemPrompt, /## permission-mode documentation/, mode);
+      assert.ok(res.systemPrompt.includes(docsDir()), `${mode} names the absolute docs dir`);
+      assert.doesNotMatch(res.systemPrompt, /README/, "the prompt points at docs/, not the README");
+    }
+  } finally {
+    h.cleanup();
+  }
+  // A headless child with no forwarded mode runs on the safety fallback: the
+  // factual awareness stays, steering and the docs pointer are skipped.
+  const headless = await setup({ hasUI: false });
+  try {
+    const res = (await headless.pi.emit("before_agent_start", { systemPrompt: "BASE" }, headless.ctx)) as { systemPrompt: string };
+    assert.match(res.systemPrompt, /Sandbox & permissions/);
+    assert.doesNotMatch(res.systemPrompt, /## permission-mode documentation/);
+  } finally {
+    headless.cleanup();
   }
 });
 

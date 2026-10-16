@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { docRef } from "./docs.ts";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
 import { gitDirsOf } from "./paths.ts";
 import { expandHome } from "./resolve.ts";
@@ -128,7 +129,7 @@ class StderrHead {
     return (
       "\n[permission-mode] sandbox: bubblewrap could not set up its namespaces, so the command did not run. " +
       "On Ubuntu 24.04+ this usually means kernel.apparmor_restrict_unprivileged_userns=1: " +
-      "grant userns to /usr/bin/bwrap with an AppArmor profile, or set the sysctl to 0 (see README, Install). " +
+      `grant userns to /usr/bin/bwrap with an AppArmor profile, or set the sysctl to 0 (see ${docRef("namespaces")}). ` +
       "Nothing ran unsandboxed.\n"
     );
   }
@@ -215,7 +216,7 @@ export function createSandboxedBashOps(
           onData(
             Buffer.from(
               `\n[permission-mode] network: connection(s) blocked by the sandbox allowlist: ${grantableHosts.join(", ")}. ` +
-                "Request access with the request_network_access tool, or ask the user (/net allow <domain>).\n",
+                `Request access with the request_network_access tool, or ask the user (/net allow <domain>); see ${docRef("networkAccess")}.\n`,
             ),
           );
         }
@@ -522,7 +523,7 @@ export class SandboxController {
   /** Install instructions shown when the runtime is missing or fails to init. */
   private static installHint(): string {
     const linux = process.platform === "linux" ? "  (Linux also needs: bubblewrap, socat, ripgrep)" : "";
-    return `Fix: cd ${EXTENSION_DIR} && npm install${linux}`;
+    return `Fix: cd ${EXTENSION_DIR} && npm install${linux}; see ${docRef("sandboxUnavailable")}`;
   }
 
   async init({ cwd, noSandbox, hasUI, notify, profile, askHost }: InitOptions): Promise<void> {
@@ -587,7 +588,7 @@ export class SandboxController {
       this.warn = `sandbox unsupported on this platform${process.platform === "linux" ? " (WSL1?)" : ""}`;
       this.degraded = true;
       this.profile = profile;
-      if (hasUI) notify(`permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${this.warn}`);
+      if (hasUI) notify(`permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${this.warn}\nSee ${docRef("sandboxUnavailable")}`);
       return;
     }
 
@@ -693,7 +694,7 @@ export class SandboxController {
       if (this.hasUI) {
         this.notifyFn(
           `permission-mode: sandbox failed to initialize - protection is heuristic-only.\n${this.warn}` +
-            `${process.platform === "linux" ? "\nLinux requires: bubblewrap, socat, ripgrep" : ""}`,
+            `${process.platform === "linux" ? "\nLinux requires: bubblewrap, socat, ripgrep" : ""}\nSee ${docRef("sandboxUnavailable")}`,
         );
       }
     }

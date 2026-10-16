@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **A shipped `docs/` reference, and every hint points into it.** The
+  package now carries `docs/` (configuration, modes, permissions, sandbox,
+  network, troubleshooting, architecture). The system prompt names the
+  folder in every mode, like pi does for its own docs, and each message that
+  explains a limit (a blocked path, a refused host, bubblewrap failing to
+  start, an unavailable sandbox, an outdated default) ends with
+  `see docs/<file>#<section>`, so the model reads the explanation instead of
+  guessing. Reading the shipped docs is not an out-of-project escape in the
+  sandboxed modes (writing to them still is). A test keeps every reference
+  pointing at an existing heading and every schema key documented. The
+  README is the short version now.
+
 ### Changed
 - **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.79.** On Linux a command's
   first network call was sometimes refused because the command could start

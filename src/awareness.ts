@@ -21,6 +21,7 @@
  * host.
  */
 
+import { docRef } from "./docs.ts";
 import { expandHome } from "./resolve.ts";
 import type { ModeDef } from "./schema.ts";
 
@@ -79,7 +80,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       "",
       `This mode normally runs bash inside an OS sandbox, but the sandbox is unavailable here${opts.reason ? ` (${opts.reason})` : ""}.`,
       "Bash commands run with full user permissions and ask for the user's confirmation instead — issue them normally",
-      "and let the prompt do the gating.",
+      `and let the prompt do the gating. See ${docRef("sandboxUnavailable")}.`,
     ];
     if (opts.scratchDir) lines.push("", scratchSentence(opts.scratchDir));
     return lines.join("\n");
@@ -111,7 +112,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       lines.push(
         "- SSH keys are unreadable, so do not use ssh or git over SSH (`git@` remotes) from bash: authentication cannot succeed, whatever the options. " +
           "Git over HTTPS works when a credential is configured; for a `git@` remote, `git -c url.\"https://github.com/\".insteadOf=git@github.com: fetch` uses HTTPS without changing the remote. " +
-          "If that fails to authenticate, stop and tell the user: recommend a fine-grained personal access token for HTTPS (permission-mode README, Git authentication), or running the step themselves with pi's `!` prefix (for example `!git fetch`).",
+          "If that fails to authenticate, stop and tell the user: recommend a fine-grained personal access token for HTTPS (see " + docRef("gitAuth") + "), or running the step themselves with pi's `!` prefix (for example `!git fetch`).",
       );
     }
   }
@@ -129,8 +130,8 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       : "- No domains are allowlisted for bash network access.";
     lines.push(
       sb.askOnBlockedHost === false
-        ? `${scope} Other hosts are silently unreachable — request access with the request_network_access tool.`
-        : `${scope} A request to any other host pauses while the user is asked to allow it — if they approve, simply retry the command. To get domains approved up front (e.g. before an install that hits several hosts), call the request_network_access tool.`,
+        ? `${scope} Other hosts are silently unreachable - request access with the request_network_access tool (see ${docRef("networkAccess")}).`
+        : `${scope} A request to any other host pauses while the user is asked to allow it - if they approve, simply retry the command. To get domains approved up front (e.g. before an install that hits several hosts), call the request_network_access tool (see ${docRef("networkAccess")}).`,
     );
   }
   lines.push(
@@ -138,9 +139,9 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     "- Commands beyond these boundaries (out-of-project paths, sudo/doas) are fine to issue: the user is asked for permission automatically, and approved commands run outside the sandbox.",
     mode.bypassProtectedPaths
       ? "- File tools (read/edit/write/…) are policy-gated rather than OS-sandboxed."
-      : "- File tools (read/edit/write/…) are policy-gated rather than OS-sandboxed; writes to protected paths (.git/, .env*, dotfiles) are blocked.",
+      : `- File tools (read/edit/write/…) are policy-gated rather than OS-sandboxed; writes to protected paths (.git/, .env*, dotfiles) are blocked (see ${docRef("protectedPaths")}).`,
     "",
-    "If a command fails with a permission or network error without a prompt having appeared, the sandbox blocked it silently — ask the user for that step instead of retrying variants.",
+    `If a command fails with a permission or network error without a prompt having appeared, the sandbox blocked it silently - ask the user for that step instead of retrying variants (see ${docRef("silentFailures")}).`,
   );
   return lines.join("\n");
 }

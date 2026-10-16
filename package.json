@@ -35,6 +35,7 @@
     "src/",
     "!src/**/*.test.ts",
     "schemas/",
+    "docs/",
     "permission-mode.defaults.json",
     "defaults-history.json",
     "README.md",

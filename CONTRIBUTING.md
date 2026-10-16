@@ -45,26 +45,14 @@ The pure-module tests run without any install. The dispatcher harness
 registry via `npm install`; without it the harness self-skips. CI runs both on
 Node 22, and **typecheck is blocking**.
 
-## Code layout (`src/`)
+## Code layout
 
-| File | Role |
-|---|---|
-| `index.ts` | Wiring: flags, commands, shortcuts, `tool_call` dispatcher, `input`/skill, lifecycle |
-| `index.test.ts` | End-to-end dispatcher tests (fake `pi`/`ctx` harness; self-skips without the SDK) |
-| `schema.ts` | Mode schema types + Plan-mode prompt (the shipped defaults are data: `permission-mode.defaults.json`) |
-| `resolve.ts` | Pure resolution engine: `matchPattern`, `resolveSurface`, `mostRestrictive`, `decide` |
-| `bash-enforce.ts` | Pure bash gate + exec plan (sandbox composition) |
-| `bash-parse.ts` | tree-sitter command extraction (pure core) + lazy WASM parser + heuristic fallback |
-| `config-load.ts` | Layered `permission-mode.json` loader (global full-authority, project tighten-only) |
-| `config-audit.ts` | Outdated-default detection against `defaults-history.json` + the once-per-upgrade notice |
-| `approvals.ts` | Session-scoped "Allow for session" store + prompt |
-| `paths.ts` | Pure path predicates (containment, protected, markdown, `.git` helpers) |
-| `heuristics.ts` | Regex bash scan - the tree-sitter fallback |
-| `sandbox.ts` | `SandboxController` - runtime lifecycle, per-mode profile, placeholder cleanup |
-| `show-plan.ts` / `plan-render.ts` | `show_plan` tool + its (testable) renderer |
-| `status.ts` | Footer indicator |
-| `modes.ts` | Persisted session state (`PermState`) |
-| `util.ts` | Tiny SDK-free helpers |
+The module table, the decision flow, the invariants, and how to add a config
+key are in [docs/architecture.md](docs/architecture.md). The user-facing
+reference is the rest of `docs/`; it ships with the package, and every hint
+the extension prints points at a section in it (`src/docs.ts`, guarded by
+`src/docs.test.ts`), so a change in behavior usually comes with a change in
+`docs/`.
 
 ## Changing the shipped defaults
 

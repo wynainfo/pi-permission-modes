@@ -303,6 +303,7 @@ test("exec: a bubblewrap namespace failure gets the AppArmor hint, other failure
   assert.equal(res.exitCode, 1);
   assert.match(out, /apparmor_restrict_unprivileged_userns/);
   assert.match(out, /AppArmor profile/, "names both fixes");
+  assert.match(out, /see docs\/troubleshooting\.md#bubblewrap-namespaces/, "points at the docs section");
   assert.doesNotMatch(out, /WSL2/, "WSL2 images are usually not affected");
   out = "";
   // The shape seen on Ubuntu 24.04 when the network is filtered (--unshare-net).

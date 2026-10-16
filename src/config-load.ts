@@ -23,6 +23,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { docRef } from "./docs.ts";
 import type { PlanApprovalConfig } from "./plan-approval.ts";
 import {
   type Action,
@@ -392,7 +393,7 @@ function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, o
   // incomplete runtime configuration. Repeating the inherited value is a
   // harmless no-op; changing it is ignored with a warning.
   if (over.enabled !== undefined && over.enabled !== base.enabled) {
-    onError(`permission-mode: project config cannot change sandbox.enabled; ignoring sandbox.enabled=${over.enabled}`);
+    onError(`permission-mode: project config cannot change sandbox.enabled; ignoring sandbox.enabled=${over.enabled} (see ${docRef("projectConfig")})`);
   }
   if (over.writable === false) result.writable = false; // can force read-only, never re-enable writes
   if (over.askOnBlockedHost === false) result.askOnBlockedHost = false; // silent-deny is stricter than asking
@@ -424,10 +425,10 @@ function applyProject(config: PermissionModeConfig, project: unknown, onError: O
     return;
   }
   if (project.defaultMode !== undefined || project.cycleOrder !== undefined) {
-    onError("permission-mode: project config cannot change defaultMode/cycleOrder; ignoring");
+    onError(`permission-mode: project config cannot change defaultMode/cycleOrder; ignoring (see ${docRef("projectConfig")})`);
   }
   if (project.plan !== undefined) {
-    onError("permission-mode: project config cannot set plan (approval settings are global); ignoring");
+    onError(`permission-mode: project config cannot set plan (approval settings are global); ignoring (see ${docRef("projectConfig")})`);
   }
   if (project.modes !== undefined && !isPlainObject(project.modes)) {
     onError("permission-mode: project config modes must be an object; ignoring");
@@ -435,7 +436,7 @@ function applyProject(config: PermissionModeConfig, project: unknown, onError: O
   }
   for (const [name, raw] of modeEntries(project.modes, "project config", onError)) {
     if (!hasMode(config.modes, name)) {
-      onError(`permission-mode: project config cannot add new mode "${name}"; ignoring`);
+      onError(`permission-mode: project config cannot add new mode "${name}"; ignoring (see ${docRef("projectConfig")})`);
       continue;
     }
     const where = `project mode "${name}"`;

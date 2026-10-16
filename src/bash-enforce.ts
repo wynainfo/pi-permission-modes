@@ -14,6 +14,7 @@
  *                      read-only?), recomputed at run time from the active mode.
  */
 
+import { docRef } from "./docs.ts";
 import type { Action } from "./schema.ts";
 
 export type BashGateKind = "allow" | "prompt" | "block";
@@ -61,7 +62,7 @@ export function bashGate(
   });
 
   // A hard deny blocks regardless of sandbox state.
-  if (action === "deny") return gate("block", "", "bash command denied by policy", false);
+  if (action === "deny") return gate("block", "", `bash command denied by policy (see ${docRef("bash")})`, false);
 
   // Disabling containment must not silently disable the policy layer. YOLO
   // still passes here because its explicit bash policy resolves to `allow`;

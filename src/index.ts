@@ -47,6 +47,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { docRef, docsDir, docsPromptBlock } from "./docs.ts";
 import { askWithSession, BlockedPaths, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate } from "./bash-enforce.ts";
@@ -788,7 +789,7 @@ export default async function (pi: ExtensionAPI) {
               [
                 `permission-mode: ${stale.length} value(s) in ${globalConfigFile(agentDir)} still hold an outdated default:`,
                 ...stale.map((f) => `  - ${describeStale(f)}`),
-                `Update them, or set "acknowledgeDefaults": "${current.version}" to keep them knowingly.`,
+                `Update them, or set "acknowledgeDefaults": "${current.version}" to keep them knowingly. See ${docRef("outdatedDefaults")}.`,
               ].join("\n"),
             );
           }
@@ -799,7 +800,7 @@ export default async function (pi: ExtensionAPI) {
             warn(
               `permission-mode: updated ${state.lastVersion} -> ${current.version}; the stock defaults changed for ` +
                 `${changed.join(", ")}. Compare your global config with ${stockDefaultsFile()} so you don't miss ` +
-                "security or behavior improvements.",
+                `security or behavior improvements (see ${docRef("outdatedDefaults")}).`,
             );
           }
         }
@@ -944,6 +945,8 @@ export default async function (pi: ExtensionAPI) {
       scratchDir,
     });
     if (aware) parts.push(aware);
+    // Where the reference lives, in every mode: config questions arise in YOLO too.
+    if (!fallbackMode) parts.push(docsPromptBlock(docsDir()));
     const sp = m.systemPrompt;
     if (sp && !fallbackMode) {
       parts.push(sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp);
@@ -990,6 +993,9 @@ export default async function (pi: ExtensionAPI) {
     // sandbox already permits is not an escape, so it must neither prompt as
     // "outside project" nor — worse — run unsandboxed once the user approves.
     const bounds = sandboxAllowedRoots(root, effectiveSandbox(m));
+    // The shipped docs are read-only reference material the prompt points at:
+    // reading them is not an escape (writing to them still is).
+    const docBounds = [...bounds, docsDir()];
 
     // Hard backstop: never write to protected paths (file tools aren't sandboxed),
     // unless the mode explicitly trusts everything (YOLO). Matched lexically AND
@@ -997,7 +1003,7 @@ export default async function (pi: ExtensionAPI) {
     if (!m.bypassProtectedPaths && (toolName === "edit" || toolName === "write") && inPath !== undefined) {
       if (isProtectedWrite(root, inPath)) {
         if (ctx.hasUI) ctx.ui.notify(`Blocked write to protected path: ${inPath}`, "warning");
-        return { block: true, reason: `Path "${inPath}" is protected` };
+        return { block: true, reason: `Path "${inPath}" is protected (see ${docRef("protectedPaths")})` };
       }
     }
 
@@ -1023,7 +1029,7 @@ export default async function (pi: ExtensionAPI) {
       // bash surface AND the cross-cutting path gate (joined string + each token,
       // see decideBashCommand), most-restrictive across the chain; detect
       // escapes/privilege.
-      const analysis = await analyzeBash(command, root, bounds);
+      const analysis = await analyzeBash(command, root, docBounds);
       // A command no layer matches falls back to "ask" (see decideBashChain).
       const action: Action =
         analysis.commands.length > 0 ? decideBashChain(m, analysis.commands) : decide(m, "bash", command);
@@ -1049,10 +1055,10 @@ export default async function (pi: ExtensionAPI) {
         const targets = analysis.outsideReason?.startsWith("path outside project")
           ? analysis.usedFallback
             ? [escapeTargetFromReason(analysis.outsideReason, root)].filter((t): t is string => t !== undefined)
-            : escapingPaths(analysis.commands, root, bounds)
+            : escapingPaths(analysis.commands, root, docBounds)
           : [];
         const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
-        if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it` };
+        if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
         if (!(await promptAllow(ctx, "bash", keys, gate.title, undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }
@@ -1066,9 +1072,9 @@ export default async function (pi: ExtensionAPI) {
       // A path blocked for the session ("Deny and block") is denied outright:
       // the file tools are not sandboxed, so the kernel mask alone would not cover them.
       if (blocked.covers(canonicalPath(root, path))) {
-        return { block: true, reason: `Path "${path}" is blocked for this session (Deny and block); /perm unblock lifts it` };
+        return { block: true, reason: `Path "${path}" is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
       }
-      const outside = isOutside(root, path, bounds);
+      const outside = isOutside(root, path, surface === "edit" || surface === "write" ? bounds : docBounds);
       const action = decide(m, surface, path, { isOutside: outside });
       if (action === "deny") {
         // Friendly message for the Plan-mode "Markdown only" case (read-only mode).
@@ -1076,11 +1082,11 @@ export default async function (pi: ExtensionAPI) {
           if (ctx.hasUI) ctx.ui.notify(`${m.label} allows editing Markdown files only: ${path}`, "warning");
           return { block: true, reason: `${m.label} allows editing Markdown files only` };
         }
-        return { block: true, reason: `Path "${path}" is blocked by ${m.label}` };
+        return { block: true, reason: `Path "${path}" is blocked by ${m.label} (see ${docRef("blockedByPolicy")})` };
       }
       if (action === "ask") {
         const title = outside ? `Outside project - allow ${toolName}? (${path})` : `Allow ${toolName}? (${path})`;
-        const reason = outside ? "Access outside project blocked" : "blocked";
+        const reason = outside ? `Access outside project blocked (see ${docRef("blockedByPolicy")})` : "blocked";
         const denyAnd = outside ? denyAndBlock(ctx, [path]) : undefined;
         if (!(await promptAllow(ctx, surface, path, title, undefined, denyAnd))) return { block: true, reason };
       }
@@ -1090,7 +1096,7 @@ export default async function (pi: ExtensionAPI) {
     // web_search.
     if (toolName === "web_search") {
       const action = decide(m, "web_search", String(input.query ?? "(empty)"));
-      if (action === "deny") return { block: true, reason: `web search blocked by ${m.label}` };
+      if (action === "deny") return { block: true, reason: `web search blocked by ${m.label} (see ${docRef("blockedByPolicy")})` };
       // Session approval is surface-wide ("allow web search this session").
       if (action === "ask" && !(await promptAllow(ctx, "web_search", "*", "Allow web search?"))) {
         return { block: true, reason: "web search blocked" };
@@ -1102,7 +1108,7 @@ export default async function (pi: ExtensionAPI) {
     // unknown tool prompts first-use (allow once/session/forever/deny).
     if (!BUILTIN_HANDLED.has(toolName)) {
       const action = decide(m, "tool", toolName);
-      if (action === "deny") return { block: true, reason: `Tool "${toolName}" blocked by ${m.label}` };
+      if (action === "deny") return { block: true, reason: `Tool "${toolName}" blocked by ${m.label} (see ${docRef("toolsAndSkills")})` };
       if (
         action === "ask" &&
         !(await promptAllow(ctx, "tool", toolName, `Tool "${toolName}" — first use in ${m.label}; allow?`, learnForever(ctx, "tool", toolName)))
