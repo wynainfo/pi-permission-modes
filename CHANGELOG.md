@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.79.** On Linux a command's
+  first network call was sometimes refused because the command could start
+  before the in-sandbox relays listened; it now starts once they do.
+  bubblewrap 0.4 works again (one mount per destination). A `denyRead` or
+  `allowWrite` entry whose name contains glob characters (`[wip] app`) now
+  also matches that literal path. The proxy answers 502 instead of
+  crashing on an upstream that sends an invalid status line. Node 22.12 or
+  newer is required (pi itself needs 22.19).
+
 ## [2.4.2]
 
 ### Security
