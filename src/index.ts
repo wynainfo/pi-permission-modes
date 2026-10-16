@@ -442,8 +442,23 @@ export default async function (pi: ExtensionAPI) {
     await setMode(order[(idx + 1) % order.length], ctx);
   };
 
+  /** The mode the session's last perm-mode entry records, if it is still defined. */
+  const persistedMode = (ctx: ExtensionContext): string | undefined => {
+    let found: string | undefined;
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type === "custom" && entry.customType === "perm-mode") {
+        const data = entry.data as PermState | undefined;
+        if (hasMode(config.modes, data?.mode)) found = data.mode;
+      }
+    }
+    return found;
+  };
+
   /**
-   * Resolve which mode to start in:
+   * Resolve which mode to start in. With `carry` (a session replaced inside
+   * the same pi process: /new, /resume, /fork, /reload) the mode the user last
+   * had stays: setMode exported it to PI_PERMISSION_MODE, which outlives the
+   * extension runtime pi rebuilds for the new session. Otherwise:
    *   1. explicit --perm flag, then 2. persisted session entry (resume),
    *   3. PI_PERMISSION_MODE env (forwarded from a parent / user-set),
    *   4. headless child with none of the above → most restrictive (never YOLO),
@@ -451,21 +466,18 @@ export default async function (pi: ExtensionAPI) {
    *   5. the current mode: config.defaultMode at session_start (rebased
    *      there after the config loads), the mode in effect on session_tree.
    */
-  const pickMode = (ctx: ExtensionContext, useFlag: boolean): { name: string; fallback: boolean } => {
+  const pickMode = (ctx: ExtensionContext, useFlag: boolean, carry = false): { name: string; fallback: boolean } => {
     let resolved: string | undefined;
+    if (carry) {
+      const env = process.env.PI_PERMISSION_MODE;
+      if (hasMode(config.modes, env)) return { name: env, fallback: false };
+    }
     if (useFlag) {
       const flag = String(pi.getFlag("perm") ?? "").toLowerCase();
       if (hasMode(config.modes, flag)) resolved = flag;
     }
-    if (!resolved) {
-      // An explicit --perm flag wins over the persisted entry (resume with a flag).
-      for (const entry of ctx.sessionManager.getEntries()) {
-        if (entry.type === "custom" && entry.customType === "perm-mode") {
-          const data = entry.data as PermState | undefined;
-          if (hasMode(config.modes, data?.mode)) resolved = data.mode;
-        }
-      }
-    }
+    // An explicit --perm flag wins over the persisted entry (resume with a flag).
+    if (!resolved) resolved = persistedMode(ctx);
     if (!resolved) {
       const env = process.env.PI_PERMISSION_MODE;
       if (hasMode(config.modes, env)) resolved = env;
@@ -797,7 +809,7 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     uiCtx = ctx;
     const warn = (m: string) => (ctx.hasUI ? ctx.ui.notify(m, "warning") : console.error(m));
     try {
@@ -816,7 +828,11 @@ export default async function (pi: ExtensionAPI) {
     modeName = config.defaultMode;
     // Resolve the start mode BEFORE init so the sandbox initializes with the
     // right profile, then setMode reconciles status (applyProfile is a no-op).
-    const picked = pickMode(ctx, true);
+    // A fresh pi process (or a harness that sends no reason) resolves from
+    // scratch; a session replaced inside the process keeps the current mode,
+    // and the --perm flag only applies to the process start.
+    const carry = event.reason !== undefined && event.reason !== "startup";
+    const picked = pickMode(ctx, !carry, carry);
     modeName = picked.name;
     pendingPlan = restorePendingPlan(sessionBranch(ctx));
     planShownThisRun = false;
@@ -849,7 +865,12 @@ export default async function (pi: ExtensionAPI) {
       // outside the allowlist; unknown hosts prompt via askNetHost.
       askHost: (host, port) => net.decide(host, port, askNetHost),
     });
-    await setMode(picked.name, ctx, false, picked.fallback);
+    // Record the start mode when the session does not already end on it (a
+    // carried mode, a --perm flag, a new session), so resuming it in a later
+    // pi process restores the mode it was last used in. The headless fallback
+    // is never recorded, like any implicit choice.
+    const record = !picked.fallback && persistedMode(ctx) !== picked.name;
+    await setMode(picked.name, ctx, record, picked.fallback);
   });
   pi.on("session_tree", async (_event, ctx) => {
     uiCtx = ctx;

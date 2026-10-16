@@ -276,6 +276,11 @@ forever") and apply instantly - no sandbox restart.
 ### CLI flags
 
 - `--perm <mode>` - start in a given mode (any defined mode name).
+
+Which mode pi starts in: `--perm`, else the mode a resumed session was last
+used in, else a mode forwarded by a parent pi (`PI_PERMISSION_MODE`), else
+`defaultMode`. `/new`, `/resume`, `/fork`, and `/reload` keep the mode you are
+in, and it is recorded in the session it moves to.
 - `--no-sandbox` - disable the OS sandbox for the sandboxed modes (falls back to
   AST/heuristic gating + prompts).
 

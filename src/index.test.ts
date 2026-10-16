@@ -774,6 +774,39 @@ test("startup: a global defaultMode is the start mode; flag, session entry, and 
   }
 });
 
+test("startup: a session replaced in the same process keeps the last mode; the start mode is recorded", { skip }, async () => {
+  const modeEntries = (h: Harness) => h.pi.entries.filter((e) => e.customType === "perm-mode").map((e) => (e.data as { mode: string }).mode);
+  const h = await setup({ permFlag: "plan" });
+  try {
+    assert.match(h.ctx.status, /^Plan Mode /);
+    assert.deepEqual(modeEntries(h), ["plan"], "a new session records its start mode");
+    await h.perm("build");
+
+    // /new: no entry in the new session, the --perm flag no longer applies.
+    const fresh = makeCtx(h.root);
+    await h.pi.emit("session_start", { type: "session_start", reason: "new" }, fresh);
+    assert.match(fresh.status, /^Build /);
+
+    // /resume of a session last used in YOLO: the user's current mode wins
+    // and is recorded, so a later `pi -c` of that session restores Build.
+    const before = modeEntries(h).length;
+    const resumed = makeCtx(h.root, { entries: [{ type: "custom", customType: "perm-mode", data: { mode: "yolo" } }] });
+    await h.pi.emit("session_start", { type: "session_start", reason: "resume" }, resumed);
+    assert.match(resumed.status, /^Build /);
+    assert.deepEqual(modeEntries(h).slice(before), ["build"]);
+
+    // A process start resolves from scratch: without a flag the session's entry wins.
+    h.pi.flags.delete("perm");
+    const started = makeCtx(h.root, { entries: [{ type: "custom", customType: "perm-mode", data: { mode: "yolo" } }] });
+    const count = modeEntries(h).length;
+    await h.pi.emit("session_start", { type: "session_start", reason: "startup" }, started);
+    assert.match(started.status, /^YOLO /);
+    assert.equal(modeEntries(h).length, count, "a session already ending on its mode gets no new entry");
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("/perm: a bare call cycles, an unknown argument prints usage without switching", { skip }, async () => {
   const h = await setup();
   try {

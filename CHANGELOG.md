@@ -33,6 +33,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   restriction also applies under WSL2, which WSL2 images usually do not
   enable, and only pointed at the README. It now names the AppArmor profile
   for `/usr/bin/bwrap` and the sysctl.
+- **`/new`, `/resume`, `/fork`, and `/reload` keep the current mode.** pi
+  rebuilds the extension for each session, and the start mode was resolved
+  as at a process start: a resumed session switched to the mode it was last
+  used in, and the `--perm` flag applied again, so `pi --perm plan`, a switch
+  to Build, then `/new` landed back in Plan. A session replaced inside the
+  same pi process now keeps the mode you are in. The start mode is also
+  recorded in the session when it does not already end on it, so `pi -c`
+  restores the mode a session was last used in. `defaultMode` applies to a
+  fresh session at pi start. Reported by [@lukegood](https://github.com/lukegood) in
+  [#10](https://github.com/wynainfo/pi-permission-modes/pull/10).
 
 ## [2.4.1]
 
