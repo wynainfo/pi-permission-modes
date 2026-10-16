@@ -24,6 +24,8 @@ config may do with the key ([configuration.md, Project config](configuration.md#
 | `network.allowedDomains` | string[] | package registries and GitHub | Hosts bash may reach; `*.example.com` wildcards and an optional `:port` suffix are accepted. Absent means no filtering ([network.md](network.md)) | may remove entries |
 | `network.deniedDomains` | string[] | `[]` | Hosts always refused, even when the network is open for the session | may add entries |
 | `askOnBlockedHost` | boolean | true | Prompt live when bash tries a host outside the allowlist. `false` denies silently | may set `false` |
+| `macos.allowLocalBinding` | boolean | unset | macOS only. Direct loopback TCP and binding local ports from sandboxed bash, for database drivers and dev servers ([macOS](#macos)) | may set `false` |
+| `macos.enableWeakerNetworkIsolation` | boolean | unset | macOS only. Allow the `trustd` lookup Go programs need to verify TLS certificates ([macOS](#macos)) | may set `false` |
 
 Paths accept `~` and `$HOME`. The stock `denyRead`: `~/.ssh`, `~/.aws`,
 `~/.gnupg`, `~/.netrc`, `~/.git-credentials`, `~/.pypirc`,
@@ -130,12 +132,57 @@ layout git itself creates: a worktree whose git dir points back at this
 `.git` file, or a submodule whose `core.worktree` is this project. Anything
 else grants nothing. In Plan mode the git directories stay read-only.
 
+## macOS
+
+Two switches the runtime offers only on macOS, grouped under `sandbox.macos`
+with the runtime's own names. Both are off unless set, accepted but without
+effect on Linux and Windows, and settable only in the global config: a
+project may turn one off, never on. Enable them for one mode (a custom
+"Build + DB" mode, say) rather than for every sandboxed mode.
+
+```jsonc
+"sandbox": {
+  "macos": { "allowLocalBinding": true, "enableWeakerNetworkIsolation": true }
+}
+```
+
+**`allowLocalBinding`.** The macOS profile allows direct TCP only to the
+proxy's own ports; every other connection goes through the proxy, and the
+allowlist is enforced there. A raw TCP client that does not speak proxy
+protocols (`libpq`, database CLIs) therefore cannot reach a loopback service,
+and nothing can listen on a port. With the switch on, sandboxed bash may
+connect to loopback directly and bind or accept on local ports; every other
+host still goes through the allowlist. Costs: loopback services are not
+sandboxed (a Postgres with `trust` authentication on loopback, the `initdb`
+default, is passwordless superuser access for any sandboxed command, so give
+the agent its own role and password), bind and inbound are allowed on all
+interfaces (a `0.0.0.0` dev server is reachable from the LAN while it runs;
+bind `127.0.0.1`), and a process that backgrounds itself survives the
+command on macOS with its profile still applied. On Linux the sandbox's
+network namespace has its own loopback and the switch does nothing
+([troubleshooting.md, macOS loopback services](troubleshooting.md#macos-loopback-services)).
+
+**`enableWeakerNetworkIsolation`.** On macOS, Go programs verify TLS
+certificates through the system's `trustd` daemon over Mach IPC, not through
+a certificate file, so `SSL_CERT_FILE` changes nothing and the profile's
+denial of that lookup makes `gh`, `kubectl`, `terraform`, and `gcloud` fail
+with `x509: OSStatus -26276`. The switch allows the lookup. Cost: `trustd`
+fetches revocation and issuer URLs named in the certificates it is handed,
+outside the proxy and its allowlist, so a sandboxed process can move data out
+through a crafted certificate. The runtime calls the switch "weaker network
+isolation" for that reason
+([troubleshooting.md, macOS Go TLS](troubleshooting.md#macos-go-tls)).
+
+`/sandbox` shows both switches; off macOS it says "no effect here". The
+awareness section tells the model about the loopback carve-out when it is
+on, and about the Go TLS limit when the second switch is off.
+
 ## Platforms
 
 | Platform | Sandbox | Notes |
 |---|---|---|
 | Linux, WSL2 | bubblewrap plus a seccomp write observer | needs `bubblewrap`, `socat`, `ripgrep` on `PATH`; Ubuntu 24.04 and newer need an AppArmor exception ([troubleshooting.md](troubleshooting.md#bubblewrap-namespaces)) |
-| macOS | `sandbox-exec` | no extra packages; globs allowed in the path lists |
+| macOS | `sandbox-exec` | no extra packages; globs allowed in the path lists; loopback services and Go TLS verification need the [macOS](#macos) switches |
 | WSL1 | none | no user namespaces; reported as unsupported, the sandboxed modes prompt instead |
 | Windows | none | the sandboxed modes prompt only, the allowlist is not enforced, `allowWrite` only feeds the prompt bounds. Run pi under WSL2 for containment |
 

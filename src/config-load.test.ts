@@ -354,6 +354,67 @@ test("project: askOnBlockedHost can be forced off (silent deny), never back on",
   s.cleanup();
 });
 
+test("sandbox.macos: global opt-in projects to the runtime under its names; projects can only turn a switch off", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: { sandbox: { macos: { allowLocalBinding: true, enableWeakerNetworkIsolation: true } } },
+        plan: { sandbox: { macos: { allowLocalBinding: "yes", bogus: true } } },
+        yolo: { sandbox: { macos: { allowLocalBinding: true } } },
+      },
+    },
+    project: {
+      modes: {
+        build: { sandbox: { macos: { allowLocalBinding: true, enableWeakerNetworkIsolation: false } } }, // repeating true: silent; false: tightens
+        default: { sandbox: { macos: { allowLocalBinding: true } } }, // enabling: warned and ignored
+        plan: { sandbox: { macos: { allowLocalBinding: false } } }, // false over absent: stays absent, silent
+        yolo: { sandbox: { macos: { allowLocalBinding: false } } }, // real tightening
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.macos, { allowLocalBinding: true, enableWeakerNetworkIsolation: false });
+  assert.equal(c.modes.default.sandbox.macos?.allowLocalBinding, undefined);
+  assert.ok(s.errors.some((e) => /cannot enable sandbox\.macos\.allowLocalBinding/.test(e)));
+  assert.equal(c.modes.plan.sandbox.macos?.allowLocalBinding, undefined);
+  assert.equal(c.modes.yolo.sandbox.macos?.allowLocalBinding, false);
+  assert.ok(s.errors.some((e) => /sandbox\.macos\.allowLocalBinding.*wrong type/.test(e)), "wrong-typed global value dropped with a warning");
+  assert.ok(s.errors.some((e) => /unknown sandbox\.macos field "bogus"/.test(e)));
+  assert.ok(!s.errors.some((e) => /build.*macos/.test(e)), "repeating inherited true and tightening stay silent");
+  s.cleanup();
+});
+
+test("sandbox.network: unknown nested keys warn instead of silently doing nothing", () => {
+  const s = sandbox({
+    global: { modes: { build: { sandbox: { network: { allowedDomains: ["example.com"], allowLocalBinding: true } } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  // The documented path is sandbox.macos.allowLocalBinding: the runtime-shaped
+  // nested key must not silently pretend to work.
+  assert.deepEqual(c.modes.build.sandbox.network, { allowedDomains: ["example.com"] });
+  assert.ok(s.errors.some((e) => /unknown sandbox\.network field "allowLocalBinding"/.test(e)));
+  s.cleanup();
+});
+
+test("profileToConfig: the macOS switches are emitted only when true, under the runtime's names", () => {
+  const off = profileToConfig({ enabled: true, writable: true, macos: { allowLocalBinding: false } });
+  assert.ok(!("allowLocalBinding" in off.network), "false stays absent (byte-identical stock output)");
+  assert.ok(!("enableWeakerNetworkIsolation" in off));
+  const on = profileToConfig({
+    enabled: true,
+    writable: true,
+    macos: { allowLocalBinding: true, enableWeakerNetworkIsolation: true },
+    network: { allowedDomains: ["example.com"] },
+  });
+  assert.equal(on.network.allowLocalBinding, true);
+  assert.equal(on.enableWeakerNetworkIsolation, true);
+  if (runtimeSchema) {
+    assert.doesNotThrow(() =>
+      runtimeSchema.parse({ network: on.network, filesystem: on.filesystem, enableWeakerNetworkIsolation: on.enableWeakerNetworkIsolation }),
+    );
+  }
+});
+
 test("persistModeRule: converts a string surface to a map and preserves other content", () => {
   const s = sandbox({
     global: { $schema: "./x.json", modes: { default: { permission: { tool: "allow", bash: "deny" } } } },

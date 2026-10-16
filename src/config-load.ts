@@ -27,6 +27,8 @@ import { docRef } from "./docs.ts";
 import type { PlanApprovalConfig } from "./plan-approval.ts";
 import {
   type Action,
+  MACOS_KEYS,
+  type MacosOptions,
   type ModeDef,
   PLAN_PROMPT_SENTINEL,
   type PermissionModeConfig,
@@ -107,6 +109,11 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
           drop(k);
           break;
         }
+        // An unknown nested key must not silently do nothing (a runtime-shaped
+        // `network.allowLocalBinding` here belongs under `macos`).
+        for (const nk of Object.keys(v)) {
+          if (nk !== "allowedDomains" && nk !== "deniedDomains") onError(`permission-mode: ignoring unknown sandbox.network field "${nk}" in ${where}`);
+        }
         const net: NonNullable<SandboxProfile["network"]> = {};
         if (v.allowedDomains !== undefined) {
           if (isStringArray(v.allowedDomains)) net.allowedDomains = v.allowedDomains;
@@ -117,6 +124,21 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
           else drop("network.deniedDomains");
         }
         out.network = net;
+        break;
+      }
+      case "macos": {
+        if (!isPlainObject(v)) {
+          drop(k);
+          break;
+        }
+        const macos: MacosOptions = {};
+        for (const [mk, mv] of safeEntries(v)) {
+          if (!(MACOS_KEYS as readonly string[]).includes(mk)) {
+            onError(`permission-mode: ignoring unknown sandbox.macos field "${mk}" in ${where}`);
+          } else if (typeof mv === "boolean") macos[mk as keyof MacosOptions] = mv;
+          else drop(`macos.${mk}`);
+        }
+        out.macos = macos;
         break;
       }
       default:
@@ -178,15 +200,24 @@ export const FALLBACK_CONFIG: PermissionModeConfig = {
  */
 export interface SandboxConfig {
   enabled?: boolean;
-  network: { allowedDomains?: string[]; deniedDomains: string[] };
+  network: { allowedDomains?: string[]; deniedDomains: string[]; allowLocalBinding?: boolean };
   filesystem: { denyRead: string[]; allowRead?: string[]; allowWrite: string[]; denyWrite: string[] };
+  /** macOS: allow the trustd lookup Go programs need for TLS verification. */
+  enableWeakerNetworkIsolation?: boolean;
 }
 
 /** Project a mode's sandbox profile into the runtime's config shape. */
 export function profileToConfig(p: SandboxProfile): SandboxConfig {
+  // The macOS switches are emitted only when true: the runtime defaults them
+  // to false, so stock output stays byte-identical and the profile key stable.
   return {
     enabled: p.enabled,
-    network: { allowedDomains: p.network?.allowedDomains, deniedDomains: p.network?.deniedDomains ?? [] },
+    network: {
+      allowedDomains: p.network?.allowedDomains,
+      deniedDomains: p.network?.deniedDomains ?? [],
+      ...(p.macos?.allowLocalBinding === true ? { allowLocalBinding: true } : {}),
+    },
+    ...(p.macos?.enableWeakerNetworkIsolation === true ? { enableWeakerNetworkIsolation: true } : {}),
     filesystem: {
       denyRead: p.denyRead ?? [],
       ...(p.allowRead ? { allowRead: p.allowRead } : {}),
@@ -397,6 +428,20 @@ function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, o
   }
   if (over.writable === false) result.writable = false; // can force read-only, never re-enable writes
   if (over.askOnBlockedHost === false) result.askOnBlockedHost = false; // silent-deny is stricter than asking
+  if (over.macos) {
+    // Each switch opens something, so a project may only turn one OFF.
+    // Repeating the inherited value is a harmless no-op; `true` over an
+    // absent or false base is ignored with a warning.
+    const macos: MacosOptions = { ...base.macos };
+    for (const key of MACOS_KEYS) {
+      const v = over.macos[key];
+      if (v === false && base.macos?.[key] === true) macos[key] = false;
+      if (v === true && base.macos?.[key] !== true) {
+        onError(`permission-mode: project config cannot enable sandbox.macos.${key}; ignoring (see ${docRef("projectConfig")})`);
+      }
+    }
+    result.macos = macos;
+  }
   if (over.allowWrite !== undefined) result.allowWrite = intersect(base.allowWrite, over.allowWrite);
   if (over.denyRead !== undefined) result.denyRead = union(base.denyRead, over.denyRead);
   if (over.allowRead !== undefined) result.allowRead = intersect(base.allowRead, over.allowRead); // may only close carve-outs

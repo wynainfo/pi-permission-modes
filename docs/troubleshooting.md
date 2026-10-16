@@ -73,6 +73,41 @@ command could be refused because the command started before the in-sandbox
 relays listened. Retrying worked. Upgrade the extension (it ships 0.0.79 or
 newer since 2.5.0).
 
+## macOS Go TLS
+
+```
+Post "https://api.github.com/graphql": tls: failed to verify certificate: x509: OSStatus -26276
+gh: The token in keyring is invalid.
+deny(1) mach-lookup com.apple.trustd.agent
+```
+
+`gh`, `kubectl`, `terraform`, `gcloud`, and other Go programs cannot verify
+TLS certificates inside the macOS sandbox, while `curl` and `git` work in the
+same sandbox. Go on macOS asks the system's `trustd` daemon for the verdict,
+and the sandbox profile denies that lookup; `gh` then reports the token as
+invalid, which it is not. Setting `SSL_CERT_FILE` does not help: Go ignores it
+on macOS. The fix is the mode's `sandbox.macos.enableWeakerNetworkIsolation`
+switch, with the cost described in
+[sandbox.md, macOS](sandbox.md#macos). Without it, drive the API with
+`curl` and a token, or run the tool with pi's `!` prefix.
+
+## macOS loopback services
+
+```
+could not connect to server: Operation not permitted
+deny network-outbound ... 127.0.0.1:5432
+deny network-bind
+```
+
+On macOS the sandbox allows direct TCP only to its proxy, so a raw TCP client
+(a database driver, `psql`, `redis-cli`) cannot reach a service on loopback,
+and nothing can listen on a port. No allowlist entry changes that
+(`localhost` included). The fix is the mode's
+`sandbox.macos.allowLocalBinding` switch, with the costs described in
+[sandbox.md, macOS](sandbox.md#macos). On Linux this does not apply: the
+sandbox's network namespace has its own loopback, and a service on the host's
+loopback is unreachable by design.
+
 ## SSH in the sandbox
 
 `ssh` and git over SSH (`git@` remotes) cannot authenticate from sandboxed

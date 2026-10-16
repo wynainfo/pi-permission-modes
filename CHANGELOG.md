@@ -18,6 +18,28 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sandboxed modes (writing to them still is). A test keeps every reference
   pointing at an existing heading and every schema key documented. The
   README is the short version now.
+- **`sandbox.macos`: the runtime's macOS-only switches, opt-in per mode.**
+  `allowLocalBinding` lets sandboxed bash reach loopback services and bind
+  local ports (database drivers, dev servers under test); on macOS the
+  profile otherwise allows direct TCP only to the proxy, so no allowlist
+  entry could help. `enableWeakerNetworkIsolation` allows the `trustd`
+  lookup Go programs (`gh`, `kubectl`, `terraform`, `gcloud`) need to verify
+  TLS certificates, which otherwise fails with `x509: OSStatus -26276` and a
+  misleading "token invalid" from `gh`. Both are off unless set, forwarded
+  under the runtime's own names, accepted but without effect on Linux and
+  Windows, and settable only in the global config (a project may turn a
+  switch off, never on). The awareness section tells the model about the
+  loopback carve-out when it is on and about the Go TLS limit when the
+  second switch is off; `/sandbox` shows both. The costs (unsandboxed
+  loopback services, LAN exposure of `0.0.0.0` servers, the `trustd`
+  exfiltration channel) are in SECURITY.md and `docs/sandbox.md`. An unknown
+  key inside `sandbox.network` now warns instead of doing nothing. Requested
+  by [@MagneticNeedle](https://github.com/MagneticNeedle) in
+  [#18](https://github.com/wynainfo/pi-permission-modes/issues/18) and by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
+  [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
+  tighten-only logic, tests, and security notes this takes over.
 
 ### Changed
 - **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.79.** On Linux a command's

@@ -63,6 +63,9 @@ sudo apt install -y bubblewrap socat ripgrep
 > WSL1 has no user namespaces at all; the sandbox reports it as unsupported.
 
 On **macOS** the sandbox uses the built-in `sandbox-exec` - no extra packages.
+Go tools (`gh`, `kubectl`, `terraform`) and loopback services (a local
+database, a dev server) need an opt-in switch per mode:
+[docs/sandbox.md](docs/sandbox.md#macos).
 
 > **Native Windows: no sandbox.** The sandboxed modes degrade to *prompting
 > only*: every in-project `bash` command asks for confirmation and the network

@@ -73,6 +73,15 @@
             "allowedDomains": { "type": "array", "items": { "type": "string" } },
             "deniedDomains": { "type": "array", "items": { "type": "string" } }
           }
+        },
+        "macos": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "macOS-only runtime options, off unless set and without effect elsewhere. Projects may set a key to false, never true.",
+          "properties": {
+            "allowLocalBinding": { "type": "boolean", "description": "Direct loopback TCP plus binding local ports from sandboxed bash (database drivers, dev servers). Loopback services are not sandboxed; a 0.0.0.0 server is LAN-reachable." },
+            "enableWeakerNetworkIsolation": { "type": "boolean", "description": "Let Go programs (gh, kubectl, terraform, gcloud) verify TLS by allowing the trustd lookup. trustd fetches revocation and issuer URLs outside the proxy, so this is an exfiltration channel." }
+          }
         }
       }
     },

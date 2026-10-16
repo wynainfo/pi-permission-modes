@@ -28,6 +28,8 @@ export const DOC_REFS = {
   projectConfig: "configuration.md#project-config",
   outdatedDefaults: "configuration.md#keeping-your-global-config-current",
   strictHome: "modes.md#strict-home",
+  macosGoTls: "troubleshooting.md#macos-go-tls",
+  macosLoopback: "troubleshooting.md#macos-loopback-services",
 } as const;
 
 export type DocRefKey = keyof typeof DOC_REFS;

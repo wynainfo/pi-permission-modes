@@ -98,6 +98,24 @@ you can rely on it appropriately. The reference for every setting is in
   allowlist, exactly like approving an out-of-project command. "Allow forever"
   persists to the global config against the stock+global base - a project's
   tighten-only intersection is never baked in.
+- **The macOS switches widen the sandbox on purpose.** `sandbox.macos` is
+  off unless set, global-config only (a project may turn a switch off, never
+  on), and without effect elsewhere. `allowLocalBinding` lets sandboxed bash
+  dial loopback directly and bind or accept on all local interfaces: the
+  resolved-address guard above governs the proxy path, this is a separate,
+  explicit path past it. Loopback services are not sandboxed, so containment
+  becomes the weaker of the sandbox and the service's own authentication
+  (Postgres `trust` on loopback, the `initdb` default, is passwordless
+  superuser access for any sandboxed command: give the agent a role and a
+  password, never `trust`); a `0.0.0.0` server is LAN-reachable while it
+  runs (bind `127.0.0.1`); and on macOS a process that backgrounds itself
+  survives the command with its profile still applied, so a bound port does
+  not close with the command. `enableWeakerNetworkIsolation` allows the
+  `trustd` lookup Go programs need for TLS verification; `trustd` fetches
+  revocation and issuer URLs named in a certificate the sandboxed process
+  presents, outside the proxy and the allowlist, which is an exfiltration
+  channel the runtime itself warns about. Enable either for one mode and
+  only where the workflow needs it.
 - **Subagent forwarding is best-effort.** The active mode is exported as
   `PI_PERMISSION_MODE` and inherited by child `pi` processes (e.g. subagents),
   which adopt it on start. A spawner that overrides the child's environment breaks

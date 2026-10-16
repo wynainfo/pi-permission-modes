@@ -659,6 +659,11 @@ export default async function (pi: ExtensionAPI) {
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
+          ...(m.sandbox.macos || process.platform === "darwin"
+            ? [
+                `macOS options: allowLocalBinding ${c.network.allowLocalBinding ? "on" : "off"}, enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`,
+              ]
+            : []),
           `Deny read:  ${c.filesystem?.denyRead?.join(", ") || "(none)"}`,
           ...(c.filesystem.allowRead?.length ? [`Allow read: ${c.filesystem.allowRead.join(", ")} (inside the denied paths)`] : []),
           `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,
@@ -943,6 +948,7 @@ export default async function (pi: ExtensionAPI) {
       networkOpen: net.open,
       sessionDomains: net.grants(),
       scratchDir,
+      platform: process.platform,
     });
     if (aware) parts.push(aware);
     // Where the reference lives, in every mode: config questions arise in YOLO too.

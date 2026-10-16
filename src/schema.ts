@@ -96,7 +96,24 @@ export interface SandboxProfile {
    * back to true.
    */
   askOnBlockedHost?: boolean;
+  /**
+   * macOS-only runtime options, forwarded to sandbox-runtime under its own
+   * names and without effect on other platforms. Off unless set. Project
+   * configs may set a key to false, never to true.
+   */
+  macos?: MacosOptions;
 }
+
+/** The runtime's macOS-only switches a mode may opt into (`sandbox.macos`). */
+export interface MacosOptions {
+  /** Direct loopback TCP plus local bind/inbound (`network.allowLocalBinding`). */
+  allowLocalBinding?: boolean;
+  /** Let Go programs reach trustd for TLS verification (`enableWeakerNetworkIsolation`). */
+  enableWeakerNetworkIsolation?: boolean;
+}
+
+/** The keys of `sandbox.macos`, for the loader and the status line. */
+export const MACOS_KEYS = ["allowLocalBinding", "enableWeakerNetworkIsolation"] as const;
 
 /** One named mode. */
 export interface ModeDef {

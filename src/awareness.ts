@@ -46,6 +46,8 @@ export interface AwarenessOptions {
   sessionDomains?: string[];
   /** This session's scratch directory (scratch.ts); TMPDIR points there inside bash. */
   scratchDir?: string;
+  /** `process.platform`; the macOS-only lines render only on "darwin". Injected so tests cover both. */
+  platform?: string;
 }
 
 /** The one-sentence scratch-directory instruction, shared by every variant. */
@@ -125,14 +127,30 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     );
   } else {
     const domains = [...new Set([...(sb.network?.allowedDomains ?? []), ...(opts.sessionDomains ?? [])])];
-    const scope = domains.length
-      ? `- Network is limited to these domains: ${domains.join(", ")}.`
-      : "- No domains are allowlisted for bash network access.";
+    const darwin = (opts.platform ?? process.platform) === "darwin";
+    // The loopback carve-out bypasses the proxy (macOS only): say so, or the
+    // model rediscovers it through failed commands.
+    const loopback =
+      darwin && sb.macos?.allowLocalBinding
+        ? " Loopback is directly reachable and local ports can be bound (bind servers to 127.0.0.1); everything else still goes through the allowlist."
+        : "";
+    const scope = `${
+      domains.length
+        ? `- Network is limited to these domains: ${domains.join(", ")}.`
+        : "- No domains are allowlisted for bash network access."
+    }${loopback}`;
     lines.push(
       sb.askOnBlockedHost === false
         ? `${scope} Other hosts are silently unreachable - request access with the request_network_access tool (see ${docRef("networkAccess")}).`
         : `${scope} A request to any other host pauses while the user is asked to allow it - if they approve, simply retry the command. To get domains approved up front (e.g. before an install that hits several hosts), call the request_network_access tool (see ${docRef("networkAccess")}).`,
     );
+    if (darwin && !sb.macos?.enableWeakerNetworkIsolation) {
+      // Go verifies TLS through trustd on macOS, which the profile denies;
+      // gh then reports an invalid token. Name the real cause.
+      lines.push(
+        `- Go programs (gh, kubectl, terraform, gcloud) cannot verify TLS certificates here (x509: OSStatus -26276): the sandbox denies their trustd lookup. That is the sandbox, not an invalid token or a proxy problem; tell the user (see ${docRef("macosGoTls")}).`,
+      );
+    }
   }
   lines.push(
     "- Background processes do not outlive the command: each bash call runs in its own sandbox that is torn down when the command exits, so `&`, `nohup`, and `setsid` cannot start anything long-running. Run long tasks in the foreground with an adequate timeout, or ask the user.",

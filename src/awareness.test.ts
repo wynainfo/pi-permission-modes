@@ -121,6 +121,35 @@ test("askOnBlockedHost:false: silent-deny wording, tool still offered", () => {
   assert.doesNotMatch(out ?? "", /pauses while the user is asked/);
 });
 
+test("sandbox.macos: the loopback line and the Go TLS line render on darwin only", () => {
+  const loop = /Loopback is directly reachable/;
+  const go = /Go programs .* cannot verify TLS/;
+  // Linux: neither line, whatever the flags say.
+  const linux = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true } }), { active: true, platform: "linux" })!;
+  assert.doesNotMatch(linux, loop);
+  assert.doesNotMatch(linux, go);
+  // darwin, stock: no loopback line; the Go TLS line names the trustd denial and its docs section.
+  const stock = sandboxAwarenessPrompt(mode(), { active: true, platform: "darwin" })!;
+  assert.doesNotMatch(stock, loop);
+  assert.match(stock, go);
+  assert.match(stock, /docs\/troubleshooting\.md#macos-go-tls/);
+  // darwin, both on: the loopback line in both ask variants, no Go TLS line.
+  const on = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true, enableWeakerNetworkIsolation: true } }), { active: true, platform: "darwin" })!;
+  assert.match(on, loop);
+  assert.doesNotMatch(on, go);
+  const silent = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true }, askOnBlockedHost: false }), { active: true, platform: "darwin" })!;
+  assert.match(silent, loop);
+  assert.match(silent, /silently unreachable/);
+  // Both lines belong to the filtered branch only.
+  const noNet = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true }, network: undefined }), { active: true, platform: "darwin" })!;
+  assert.match(noNet, /Network is unrestricted/);
+  assert.doesNotMatch(noNet, loop);
+  assert.doesNotMatch(noNet, go);
+  const open = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true } }), { active: true, platform: "darwin", networkOpen: true })!;
+  assert.doesNotMatch(open, loop);
+  assert.doesNotMatch(open, go);
+});
+
 test("denyWrite entries are listed when present", () => {
   const out = sandboxAwarenessPrompt(mode({}, { denyWrite: ["dist", "vendor"] }), { active: true });
   assert.match(out ?? "", /write-denied: dist, vendor\./);
