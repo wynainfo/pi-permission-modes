@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { docRef } from "./docs.ts";
+import { withGitHubTokenHelper } from "./git-auth.ts";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
 import { gitDirsOf } from "./paths.ts";
 import { expandHome } from "./resolve.ts";
@@ -323,7 +324,7 @@ export function createSandboxedBashOps(
       try {
         if (signal?.aborted) throw new Error("aborted");
         const head = new StderrHead();
-        const child = spawn("bash", ["-c", wrapped], { cwd, env: env ?? process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn("bash", ["-c", wrapped], { cwd, env: withGitHubTokenHelper(env ?? process.env), detached: true, stdio: ["ignore", "pipe", "pipe"] });
         const kill = () => {
           if (child.pid) {
             try {

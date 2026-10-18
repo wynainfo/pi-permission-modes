@@ -253,6 +253,7 @@ test("windowsGitEnv: git and cargo skip the revocation check, git never prompts;
     GCM_INTERACTIVE: "never",
     GCM_PROVIDER: "generic",
   });
+  assert.match(windowsGitEnv({ GITHUB_TOKEN: "t" }).GIT_CONFIG_PARAMETERS, /'http.proxyAuthMethod=basic' 'credential\.https:\/\/github\.com\.helper=' 'credential\.https:\/\/github\.com\.helper=!f\(\) .*"\$GITHUB_TOKEN"; \}; f'$/);
   assert.equal(
     windowsGitEnv({ GIT_CONFIG_PARAMETERS: "'core.autocrlf=true'" }).GIT_CONFIG_PARAMETERS,
     "'core.autocrlf=true' 'http.schannelCheckRevoke=false' 'http.proxyAuthMethod=basic'",

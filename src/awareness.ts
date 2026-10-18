@@ -154,7 +154,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       "- SSH keys are unreadable, so do not use ssh or git over SSH (`git@` remotes) from bash: authentication cannot succeed, whatever the options. " +
         "Git over HTTPS works when a credential is configured; for a `git@` remote, `git -c url.\"https://github.com/\".insteadOf=git@github.com: fetch` uses HTTPS without changing the remote. " +
         "If git asks for a username or fails with \"terminal prompts disabled\", no credential helper could answer (a credential manager cannot prompt in here): stop and tell the user. " +
-        "Offer the user both ways in, theirs to choose (see " + docRef("gitAuth") + "): (A) autonomous access, a fine-grained personal access token for HTTPS that the user puts in pi's environment before starting pi and a credential helper reads - read that section and give the user its steps (the helper command and how to start pi with the token); " +
+        "Offer the user both ways in, theirs to choose (see " + docRef("gitAuth") + "): (A) autonomous access, a fine-grained personal access token for HTTPS that the user puts in pi's environment as GITHUB_TOKEN before starting pi; git in here then uses it for github.com by itself (read that section and give the user its steps); " +
         "(B) one-off steps on the host with pi's `!` prefix (`!git clone <url>`, later `!git push`), while you commit inside the sandbox, which needs no credential. " +
         "Do not ask for the token in chat or put one on a command line.",
     );

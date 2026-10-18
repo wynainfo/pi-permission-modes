@@ -39,6 +39,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#9](https://github.com/wynainfo/pi-permission-modes/pull/9): the path
   heuristics, the Git Bash lookup, the staged helper and the self-check
   come from there.
+- **A GitHub token in pi's environment is all git needs.** With
+  `GITHUB_TOKEN` (or `GH_TOKEN`) set when pi starts, every command the
+  extension runs, sandboxed or not, carries a credential helper for
+  github.com that hands git the token when it asks, so a private
+  repository clones, fetches and pushes without a git config change; a
+  credential manager that cannot prompt in the sandbox is no longer
+  consulted ahead of it. The token stays in the environment: never on a
+  command line, never in a file. When git still cannot authenticate, the
+  model is told to stop and offer the user the choice between that token
+  and one-off `!git clone` / `!git push` steps on the host, and never to ask
+  for the token in chat ([docs/network.md, Git authentication](docs/network.md#git-authentication)).
 - **A shipped `docs/` reference, and every hint points into it.** The
   package now carries `docs/` (configuration, modes, permissions, sandbox,
   network, troubleshooting, architecture). The system prompt names the

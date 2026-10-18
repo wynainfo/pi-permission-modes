@@ -49,6 +49,7 @@ import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
+import { withGitHubTokenHelper } from "./git-auth.ts";
 import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
@@ -299,9 +300,12 @@ export default async function (pi: ExtensionAPI) {
   // (CLAUDE_CODE_TMPDIR, set at session_start). Windows tools read TEMP/TMP.
   const localBash = createBashTool(root, {
     spawnHook: (c) => {
-      if (!scratchDir) return c;
-      const env = { ...c.env, TMPDIR: scratchDir };
-      if (process.platform === "win32") Object.assign(env, { TEMP: scratchDir, TMP: scratchDir });
+      // A GitHub token in pi's environment serves git here as in the sandbox (git-auth.ts).
+      const env: NodeJS.ProcessEnv = withGitHubTokenHelper({ ...c.env });
+      if (scratchDir) {
+        env.TMPDIR = scratchDir;
+        if (process.platform === "win32") Object.assign(env, { TEMP: scratchDir, TMP: scratchDir });
+      }
       return { ...c, env };
     },
   });

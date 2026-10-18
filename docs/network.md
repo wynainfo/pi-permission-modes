@@ -90,14 +90,25 @@ For option A:
 
 1. Create the token on GitHub: Settings, Developer settings, Personal access
    tokens, Fine-grained tokens.
-2. Let git read it from the environment for github.com (once, outside pi):
-   ```sh
-   git config --global credential.https://github.com.helper \
-     '!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"; }; f'
-   ```
-3. Start pi with the token in its environment, for example
-   `GITHUB_TOKEN=github_pat_... pi`. Do not store it in `~/.git-credentials`
-   or `~/.netrc`: both are masked in the sandbox.
+2. Start pi with the token in its environment, for example
+   `GITHUB_TOKEN=github_pat_... pi` (`$env:GITHUB_TOKEN = "github_pat_..."`
+   first, in PowerShell). `GH_TOKEN`, the GitHub CLI's name for it, works
+   too. Do not store it in `~/.git-credentials` or `~/.netrc`: both are
+   masked in the sandbox.
+
+That is all: git does not read either variable by itself, so the extension
+configures a credential helper for github.com in every command it runs
+(sandboxed or not) while the variable is set. The helper hands git the
+token when it asks; the token never appears in a command line or a config
+file, and a credential manager that cannot prompt in the sandbox is no
+longer consulted ahead of it for github.com. Git on the host, outside pi,
+keeps using whatever you configured there. Should you want the same helper
+there too:
+
+```sh
+git config --global credential.https://github.com.helper \
+  '!f() { test "$1" = get && printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"; }; f'
+```
 
 A `git@` remote then works over HTTPS without changing it:
 `git -c url."https://github.com/".insteadOf=git@github.com: fetch` (the form
@@ -106,16 +117,14 @@ the model uses), or switch the remote to
 the sandbox can run with pi's `!` prefix (`!git push`), which runs on the
 host with your own credentials.
 
-On Windows the same recipe applies. Run step 2 in Git Bash (the value is a
-shell snippet git runs through its own `sh`); inside the sandbox your
-global git config is applied from a copy, so the helper is found there, and
-`GITHUB_TOKEN` arrives with the rest of your environment. Put the token in
-the shell that starts pi (`$env:GITHUB_TOKEN = "github_pat_..."` in
-PowerShell). Git Credential Manager, which Git for Windows configures for
-every user, cannot prompt inside the sandbox: a private remote without the
-helper fails at once with `could not read Username for 'https://github.com':
-terminal prompts disabled`, and the model is told to stop and ask you for
-the setup above rather than for the token itself.
+On Windows the same applies: `GITHUB_TOKEN` arrives inside the sandbox with
+the rest of your environment, your global git config is applied there from
+a copy, and the helper runs through the `sh` Git for Windows ships. Git
+Credential Manager, which Git for Windows configures for every user, cannot
+prompt inside the sandbox: a private remote without a token fails at once
+with `could not read Username for 'https://github.com': terminal prompts
+disabled`, and the model is told to stop and offer you the two options
+above rather than to ask for the token itself.
 
 Any command inside the sandbox can read a token in its environment, so scope
 the token, not the secrecy. Other credential files are masked by `denyRead`

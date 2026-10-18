@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { docRef } from "./docs.ts";
+import { githubTokenGitParams } from "./git-auth.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isOutsideWin } from "./win-paths.ts";
 
@@ -355,7 +356,8 @@ export function withWindowsReads(profile: SandboxProfile, grants: readonly strin
  */
 export function windowsGitEnv(callerEnv: NodeJS.ProcessEnv): Record<string, string> {
   const existing = callerEnv.GIT_CONFIG_PARAMETERS?.trim();
-  const param = "'http.schannelCheckRevoke=false' 'http.proxyAuthMethod=basic'";
+  const token = githubTokenGitParams(callerEnv); // a GitHub token in pi's environment: git uses it for github.com (git-auth.ts)
+  const param = `'http.schannelCheckRevoke=false' 'http.proxyAuthMethod=basic'${token ? ` ${token}` : ""}`;
   return {
     GIT_CONFIG_PARAMETERS: existing ? `${existing} ${param}` : param,
     CARGO_HTTP_CHECK_REVOKE: "false",
