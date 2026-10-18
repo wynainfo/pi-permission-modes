@@ -1004,14 +1004,22 @@ export default async function (pi: ExtensionAPI) {
     // Bash.
     if (toolName === "bash") {
       const command = String(input.command ?? "");
-      // Fast path: non-sandboxing modes skip AST escape analysis, but still
-      // honor their explicit bash policy. YOLO remains silent because its
-      // policy is `allow`; an unsandboxed `ask` mode must still prompt.
+      // Non-sandboxing modes judge the same per-command chain as sandboxed
+      // ones (bash surface plus the path gate on every extracted command,
+      // most restrictive across the chain): a whole-line match let
+      // `cd x && sudo id` slip past `"sudo *"` and skipped the path gate
+      // entirely. Only escape detection is dropped - there is no sandbox to
+      // escape from. YOLO remains silent because its policy is `allow`; an
+      // unsandboxed `ask` mode must still prompt.
       if (!m.sandbox.enabled) {
-        const gate = bashGate(decide(m, "bash", command), undefined, false, sandbox.ready);
+        const analysis = await analyzeBash(command, root, bounds);
+        const action: Action =
+          analysis.commands.length > 0 ? decideBashChain(m, analysis.commands) : decide(m, "bash", command);
+        const gate = bashGate(action, undefined, false, sandbox.ready);
         if (gate.kind === "block") return { block: true, reason: gate.reason };
         if (gate.kind === "prompt") {
-          // Without an AST parse, scope a session grant to the exact command.
+          // Every approval here runs with full user rights, so a session grant
+          // stays scoped to the exact command string, never to command names.
           if (!(await promptAllow(ctx, "bash", command, gate.title))) {
             return { block: true, reason: gate.reason };
           }

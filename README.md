@@ -355,7 +355,9 @@ Two independent layers compose:
    with out-of-project paths and privilege escalation (even through wrappers
    like `env`/`nice`/`xargs`) detected structurally. If the tree-sitter grammar
    can't load, a whole-string token-scan heuristic stands in (see
-   [SECURITY.md](SECURITY.md) for its limits).
+   [SECURITY.md](SECURITY.md) for its limits). Modes with
+   `sandbox.enabled: false` judge the same per-command chain; only the escape
+   detection is skipped, since there is no sandbox to escape from.
 2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`): the real enforcement for
    bash. When a mode's `sandbox.enabled` is true, in-project bash runs wrapped by
    `sandbox-exec` (macOS) / `bubblewrap` (Linux), confining **writes** to the

@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Unsandboxed modes judge bash per command.** A mode with
+  `sandbox.enabled: false` matched its bash rules against the whole command
+  line, so a name-anchored rule such as `"sudo *": "deny"` or `"ssh *": "ask"`
+  missed `cd repo && sudo id`, `VAR=1 ssh host ...`, and `echo x | ssh host
+  cat`; the `path` gate never applied to bash there at all; and quoting
+  changed the outcome (`ssh host 'zpool status'` missed a rule written for
+  `ssh host zpool status`). Such modes now run the same per-command analysis
+  as sandboxed ones (every command in the chain against the `bash` rules and
+  the `path` gate, most restrictive wins), skipping only the escape detection
+  that has no sandbox to protect. Session grants in these modes stay keyed on
+  the exact command. The stock modes are unaffected (YOLO allows everything);
+  user-defined unsandboxed modes with `ask` or `deny` rules were bypassed.
+  Reported by [@donnielrt](https://github.com/donnielrt) in
+  [#26](https://github.com/wynainfo/pi-permission-modes/issues/26) and
+  [#21](https://github.com/wynainfo/pi-permission-modes/issues/21).
+
 ## [2.4.2]
 
 ### Security
