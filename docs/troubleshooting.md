@@ -288,9 +288,13 @@ for your user only (`%LOCALAPPDATA%\Programs`, Scoop, nvm or fnm Node,
 `pip install --user`, `winget` without `--scope machine`) is on the
 inherited `PATH` but fails with "command not found" or "Access is denied"
 unless the mode's profile lets the sandbox account read it. The stock
-profiles grant `%USERPROFILE%` read access (`allowRead: ["~"]`), so this
-concerns custom modes that drop it: add the tool's folder to `allowRead`,
-or install the tool for all users.
+profiles grant the common per-user tool roots that exist on the machine
+([sandbox.md, Windows](sandbox.md#windows) lists them; `/sandbox` shows the
+ones in effect). For a tool elsewhere, add its folder to the mode's
+`allowRead` (which then replaces the stock list, so repeat the roots you
+need), or install the tool for all users. Toolchains that need a writable
+home of their own (rustup, cargo's registry) run from the sandbox account's
+profile, not yours.
 
 ## Mapped drive or UNC project on Windows
 

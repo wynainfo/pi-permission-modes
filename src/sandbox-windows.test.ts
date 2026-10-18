@@ -110,7 +110,7 @@ const baseInit = (
   c: SandboxController,
   fake: ReturnType<typeof fakeWindowsRuntime>,
   notes: string[],
-  profile = { enabled: true, writable: true, allowWrite: ["."] },
+  profile: { enabled: boolean; writable: boolean; allowWrite: string[]; denyRead?: string[]; denyWrite?: string[] } = { enabled: true, writable: true, allowWrite: ["."] },
   cwd = process.cwd(),
 ) =>
   c.init({
@@ -148,13 +148,16 @@ test("controller (win32): provisioned, probe passes; read-only is applied at ini
   const fake = fakeWindowsRuntime({ argv: passing });
   const c = new SandboxController();
   const notes: string[] = [];
-  await baseInit(c, fake, notes);
+  await baseInit(c, fake, notes, { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh", "./.env", "C:\\Users\\me\\.aws"], denyWrite: ["~/.gitconfig"] });
   assert.equal(c.ready, true, notes.join("\n"));
   assert.equal(c.windowsBackend, true);
-  const init = fake.inits[0] as { windows: { srtWin: { path: string } }; filesystem: { allowWrite: string[] } };
+  const init = fake.inits[0] as { windows: { srtWin: { path: string } }; filesystem: { allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
   const sidLength = "*S-1-5-21-1-2-3-1001".length;
   assert.equal(init.windows.srtWin.path, `C:\\Users\\me\\AppData\\Local\\pi-permission-modes\\srt-win-${sidLength}\\srt-win.exe`, "the staged helper, granted to the sandbox user's SID");
   assert.ok(init.filesystem.allowWrite.includes("."));
+  assert.deepEqual(init.filesystem.denyRead, ["./.env"], "denies outside every grant are dropped (they would walk the profile); the kept one is passed as written");
+  assert.deepEqual(init.filesystem.denyWrite, []);
+  assert.ok(typeof c.lastInitMs === "number");
   // The probe ran inside the sandbox and only the probe so far.
   assert.equal(fake.wraps.length, 1);
   assert.match(fake.wraps[0].script, /PI-SRT-PROBE/);
@@ -163,12 +166,17 @@ test("controller (win32): provisioned, probe passes; read-only is applied at ini
   const r = await exec(ops, "echo \"$GIT_AUTHOR_NAME $GIT_COMMITTER_EMAIL $GIT_CONFIG_PARAMETERS $CARGO_HTTP_CHECK_REVOKE\"", { PATH: process.env.PATH });
   assert.equal(r.out, "Ann ann@x.io 'http.schannelCheckRevoke=false' false\n");
   await assert.rejects(c.bashOps({ readOnly: true })!.exec("true", process.cwd(), { onData: () => {} }), /re-initialized for this mode/);
+  // A session block outside the grants is dropped per command too; one inside rides along.
+  const blocked = c.bashOps({ readOnly: false, extraDenyRead: ["~/secret", path.join(process.cwd(), "src", "x.ts")] })!;
+  await exec(blocked, "true", { PATH: process.env.PATH });
+  const perExec = fake.wraps.at(-1)!.cfg as { filesystem: { denyRead: string[] } };
+  assert.deepEqual(perExec.filesystem.denyRead, [path.join(process.cwd(), "src", "x.ts")]);
   // Plan: the runtime is re-initialized with only the scratch dir writable, no second probe.
   await c.applyProfile({ enabled: true, writable: false, allowWrite: ["."] });
   assert.equal(c.ready, true);
   const ro = fake.inits[1] as { filesystem: { allowWrite: string[] } };
   assert.deepEqual(ro.filesystem.allowWrite, ["C:\\t\\pi\\s"]);
-  assert.equal(fake.wraps.length, 2, "no second probe after the first passed");
+  assert.equal(fake.wraps.length, 3, "no second probe after the first passed (probe, two commands)");
   await assert.rejects(c.bashOps({ readOnly: false })!.exec("true", process.cwd(), { onData: () => {} }), /re-initialized/);
   assert.ok(c.bashOps({ readOnly: true }));
   assert.deepEqual(fake.calls.filter((x) => x === "initialize" || x === "reset"), ["initialize", "reset", "initialize"]);

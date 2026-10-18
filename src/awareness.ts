@@ -126,7 +126,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     lines.push(
       `- This is the native Windows sandbox: commands run in Git Bash as a separate local account (srt-sandbox). Readable: ${readable.join(", ")}` +
         `${sb.denyRead?.length ? `, EXCEPT ${sb.denyRead.join(", ")}` : ""}. Anything else reads as absent or "Access is denied"` +
-        `${home ? "" : `, including programs installed for the user only (under the profile); a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
+        `${home ? "" : `, including programs installed for the user only whose folder is not listed; a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
         ` (see ${docRef("windowsSandbox")}).`,
       `- TLS revocation checks cannot leave the sandbox: git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke, and CRYPT_E_REVOCATION_OFFLINE (0x80092013) from another schannel tool means the same. PowerShell's Invoke-WebRequest, gh, Node and Python are unaffected (see ${docRef("windowsRevocation")}).`,
     );

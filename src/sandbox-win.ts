@@ -88,14 +88,14 @@ export function stageSrtWin(bundledExe: string, grantee = USERS_SID, env: NodeJS
  * Locate a Git Bash `bash.exe` the sandbox user can run. Candidates come from
  * `git.exe` directories on PATH (`<Git>\cmd`, `<Git>\bin`, `<Git>\mingw64\bin`),
  * then the Program Files defaults. Installs under the user profile count only
- * when `profileReadable` says the applied profile grants the profile read
- * access; otherwise the sandbox user cannot open them. System32's WSL
- * `bash.exe` is never a candidate.
+ * when they sit inside one of `readableRoots` (the applied profile's read and
+ * write grants, absolute); otherwise the sandbox user cannot open them.
+ * System32's WSL `bash.exe` is never a candidate.
  */
 export function findGitBash(
   env: NodeJS.ProcessEnv = process.env,
   exists: (p: string) => boolean = existsSync,
-  profileReadable = false,
+  readableRoots: readonly string[] = [],
 ): string | undefined {
   const candidates: string[] = [];
   for (const dir of (env.PATH ?? env.Path ?? "").split(";")) {
@@ -107,7 +107,7 @@ export function findGitBash(
     if (pf) candidates.push(path.win32.join(pf, "Git", "bin", "bash.exe"));
   }
   const profile = env.USERPROFILE;
-  const usable = (c: string): boolean => profileReadable || !profile || isOutsideWin(profile, c);
+  const usable = (c: string): boolean => !profile || isOutsideWin(profile, c) || readableRoots.some((r) => !isOutsideWin(r, c));
   return candidates.find((c) => exists(c) && usable(c));
 }
 
@@ -209,22 +209,67 @@ export function windowsEnvFile(exports: readonly string[]): string {
   return exports.map((t) => `export ${t}`).join("\n") + "\n";
 }
 
-/** True for a profile entry that names the user profile itself (`~`, `$HOME`, `~/`). */
-const isHomeEntry = (p: string): boolean => p === "~" || p === "$HOME" || /^~[\\/]$/.test(p);
+/**
+ * Per-user tool roots the stock profiles grant read access to on Windows,
+ * as `%VAR%` templates. The sandbox user has no rights on the caller's
+ * files, and an entry on the profile root itself is out of the question:
+ * the runtime writes inheriting permission entries, which NTFS copies onto
+ * every file below, and a whole profile exceeds the runtime's 60 s limit.
+ * So reads are a short list of folders that hold programs installed for the
+ * user only. Configuration files in the profile are not listed: HOME inside
+ * the sandbox is the sandbox account's, so git, npm and friends would not
+ * read them anyway (the git identity travels as environment instead).
+ */
+export const WINDOWS_TOOL_ROOTS = [
+  "%LOCALAPPDATA%\\Programs",
+  "%APPDATA%\\npm",
+  "%LOCALAPPDATA%\\pnpm",
+  "%LOCALAPPDATA%\\Volta",
+  "%LOCALAPPDATA%\\fnm_multishells",
+  "%LOCALAPPDATA%\\fnm",
+  "%APPDATA%\\fnm",
+  "%APPDATA%\\nvm",
+  "%USERPROFILE%\\scoop",
+  "%LOCALAPPDATA%\\Microsoft\\WinGet",
+  "%APPDATA%\\Python",
+  "%USERPROFILE%\\.pyenv",
+  "%LOCALAPPDATA%\\uv",
+  "%APPDATA%\\uv",
+  "%USERPROFILE%\\.local\\bin",
+  "%USERPROFILE%\\go\\bin",
+  "%USERPROFILE%\\.dotnet\\tools",
+  "%USERPROFILE%\\.bun\\bin",
+  "%USERPROFILE%\\.deno\\bin",
+  "%USERPROFILE%\\.cargo\\bin",
+];
+
+/** `%VAR%` references expanded from `env` (names compared case-insensitively, as Windows does); unknown ones stay. */
+export function expandWinEnv(p: string, env: NodeJS.ProcessEnv): string {
+  return p.replace(/%([^%]+)%/g, (whole, name: string) => {
+    const key = Object.keys(env).find((k) => k.toLowerCase() === name.toLowerCase());
+    return key !== undefined && env[key] !== undefined ? env[key] : whole;
+  });
+}
+
+/** The tool roots that exist on this machine, expanded and deduplicated. */
+export function windowsReadGrants(env: NodeJS.ProcessEnv = process.env, exists: (p: string) => boolean = existsSync): string[] {
+  const out: string[] = [];
+  for (const t of WINDOWS_TOOL_ROOTS) {
+    const p = expandWinEnv(t, env);
+    if (p.includes("%") || out.some((o) => o.toLowerCase() === p.toLowerCase())) continue;
+    if (exists(p)) out.push(p);
+  }
+  return out;
+}
 
 /**
- * The Windows default for reads: the sandbox user has no rights on the
- * caller's files, so without a grant nothing of the user profile is readable
- * (no `~/.gitconfig`, no `~/.npmrc`, no per-user tool). Granting `~` read
- * access with the credential `denyRead` list on top gives the Linux result:
- * home readable, secrets masked. Left alone when an `allowRead` entry already
- * names the profile, or when a `denyRead` entry does (the strict-home shape,
- * whose carve-outs are listed explicitly).
+ * The Windows default for reads: `grants` (see `windowsReadGrants`) become
+ * the profile's `allowRead` when the mode sets none. A mode with its own
+ * `allowRead` keeps it as written (the strict shape, or a longer list).
  */
-export function withHomeRead(profile: SandboxProfile): SandboxProfile {
-  if (!profile.enabled) return profile;
-  if ((profile.allowRead ?? []).some(isHomeEntry) || (profile.denyRead ?? []).some(isHomeEntry)) return profile;
-  return { ...profile, allowRead: ["~", ...(profile.allowRead ?? [])] };
+export function withWindowsReads(profile: SandboxProfile, grants: readonly string[]): SandboxProfile {
+  if (!profile.enabled || profile.allowRead?.length || grants.length === 0) return profile;
+  return { ...profile, allowRead: [...grants] };
 }
 
 /**

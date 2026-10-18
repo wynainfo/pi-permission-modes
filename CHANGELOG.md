@@ -12,9 +12,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   account (`srt-sandbox`) in Git Bash, behind a firewall rule keyed on that
   account; the mode's profile becomes NTFS permission entries for it. One
   elevated `/sandbox install` per machine (`/sandbox uninstall` removes it).
-  The stock profiles grant the user profile read access with the credential
-  `denyRead` list on top, so the result matches Linux: home readable,
-  secrets masked, the project writable, the allowlist enforced. Before
+  Reads are what the profile grants there: the stock profiles grant the
+  project and the per-user tool roots that exist on the machine (per-user
+  Python, Git, npm, pnpm, fnm, Scoop, WinGet and friends), nothing else of
+  the profile, so the credential list holds by construction; a mode's own
+  `allowRead` replaces that list. Before
   trusting the sandbox the extension probes the project's parent and the
   drive root from inside it and prompts instead when they are writable (a
   folder created at a drive root grants every local user Modify) or the

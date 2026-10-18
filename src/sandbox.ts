@@ -28,6 +28,7 @@ import {
   probeTargets,
   readGitIdentity,
   stageSrtWin,
+  expandWinEnv,
   windowsEnvExports,
   windowsEnvFile,
   windowsRevocationEnv,
@@ -622,8 +623,8 @@ export interface InitOptions {
 export interface WindowsHooks {
   /** Environment to read `USERPROFILE`, `LOCALAPPDATA` and PATH from. */
   env?: NodeJS.ProcessEnv;
-  /** Locates Git Bash; `profileReadable` says whether the applied profile lets the sandbox user read the user profile. */
-  findBash?: (profileReadable: boolean) => string | undefined;
+  /** Locates Git Bash; `readableRoots` are the profile's read and write grants (absolute), the only profile paths the sandbox user can open. */
+  findBash?: (readableRoots: string[]) => string | undefined;
   /** Copies `srt-win.exe` where `grantee` can run it; returns the path. */
   stageHelper?: (bundledExe: string, grantee: string) => string;
   /** The host git identity as seen from `cwd`. */
@@ -642,6 +643,8 @@ interface WindowsBackend {
   /** `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from the host's git config, plus the revocation knobs. */
   extraEnv: Record<string, string>;
   commandDir: string | undefined;
+  /** The applied profile's read and write grants, absolute: the only trees a deny can matter in. */
+  grants: string[];
   /** The in-sandbox self-check passed for this init. */
   probed: boolean;
   /** The runtime is initialized without project writes (read-only is per session on Windows). */
@@ -660,18 +663,26 @@ function windowsCommandDir(grantee: string): string | undefined {
   }
 }
 
-/** A profile path as an absolute Windows path (`~` is the user profile). */
-function winAbs(p: string, cwd: string, home: string | undefined): string {
-  let e = p;
-  if (home && (p === "~" || p.startsWith("~/") || p.startsWith("~\\"))) e = home + p.slice(1);
+/** A profile path as an absolute Windows path (`~` is the user profile, `%VAR%` comes from `env`). */
+function winAbs(p: string, cwd: string, env: NodeJS.ProcessEnv): string {
+  const home = env.USERPROFILE;
+  let e = expandWinEnv(p, env);
+  if (home && (e === "~" || e.startsWith("~/") || e.startsWith("~\\"))) e = home + e.slice(1);
   return path.win32.resolve(cwd, e);
 }
 
-/** True when the profile grants the sandbox user read access to the whole user profile (then per-user tool installs are usable). */
-function profileGrantsHome(profile: SandboxProfile, cwd: string, home: string | undefined): boolean {
-  if (!home) return false;
-  const grants = [...(profile.allowRead ?? []), ...(profile.allowWrite ?? [])].map((p) => winAbs(p, cwd, home));
-  return grants.some((g) => !isOutsideWin(g, home));
+/**
+ * The denies that can matter: those at or under a grant. The sandbox user
+ * has no rights elsewhere, so a deny there changes nothing, and the runtime
+ * stamps every deny with an inheriting entry on the denied path's PARENT,
+ * which NTFS copies over the parent's whole tree: a deny of `~/.ssh` would
+ * walk the entire user profile, past the runtime's 60 s limit.
+ */
+function deniesInsideGrants(denies: readonly string[], grants: readonly string[], cwd: string, env: NodeJS.ProcessEnv): string[] {
+  return denies.filter((d) => {
+    const abs = winAbs(d, cwd, env);
+    return grants.some((g) => !isOutsideWin(g, abs));
+  });
 }
 
 const errMsg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -727,9 +738,12 @@ export class SandboxController {
   }
 
   /** What the Windows backend runs with, for `/sandbox`; undefined off Windows or while degraded. */
-  windowsStatus(): { bash: string; srtWinPath: string; readOnly: boolean } | undefined {
-    return this.win ? { bash: this.win.bash, srtWinPath: this.win.srtWinPath, readOnly: this.win.readOnly } : undefined;
+  windowsStatus(): { bash: string; srtWinPath: string; readOnly: boolean; grants: string[] } | undefined {
+    return this.win ? { bash: this.win.bash, srtWinPath: this.win.srtWinPath, readOnly: this.win.readOnly, grants: this.win.grants } : undefined;
   }
+
+  /** Wall time of the last successful runtime initialize, in milliseconds (the permission-entry walks on Windows show here). */
+  lastInitMs: number | undefined;
 
   /**
    * Wrap a fresh BashOperations around the active runtime, or null when
@@ -753,13 +767,15 @@ export class SandboxController {
           },
         };
       }
+      const env = this.lastInit?.windows?.env ?? process.env;
       return createWindowsSandboxedBashOps(
         this.manager,
         {
           bash: this.win.bash,
           extraEnv: this.win.extraEnv,
           tmpdir: opts.tmpdir,
-          extraDenyRead: opts.extraDenyRead,
+          // A block outside every grant is moot and would walk its parent's tree per command.
+          extraDenyRead: deniesInsideGrants(opts.extraDenyRead ?? [], this.win.grants, this.cwd, env),
           commandDir: this.win.commandDir,
           parseError: this.rt?.parseWindowsSandboxError,
         },
@@ -956,7 +972,7 @@ export class SandboxController {
     this.dependencyWarnings = deps.warnings;
     if (deps.warnings.length > 0 && hasUI) notify(`permission-mode: sandbox dependency warning(s): ${deps.warnings.join("; ")}`);
 
-    const readable = profileGrantsHome(profile, cwd, env.USERPROFILE);
+    const readable = [...(profile.allowRead ?? []), ...(profile.allowWrite ?? [])].map((p) => winAbs(p, cwd, env));
     const bash = hooks.findBash ? hooks.findBash(readable) : findGitBash(env, existsSync, readable);
     if (!bash) {
       return this.degrade(
@@ -981,7 +997,7 @@ export class SandboxController {
     }
     this.manager = rt.SandboxManager;
     const extraEnv = { ...gitIdentityEnv(id.name, id.email), ...windowsRevocationEnv(env) };
-    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, probed: false, readOnly: !profile.writable };
+    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, grants: readable, probed: false, readOnly: !profile.writable };
     await this.applyProfile(profile);
   }
 
@@ -992,8 +1008,8 @@ export class SandboxController {
    * the runtime down and degrades.
    */
   private async probeWindows(win: WindowsBackend, manager: SandboxManagerType, cfg: SandboxConfig, profile: SandboxProfile): Promise<boolean> {
-    const home = this.lastInit?.windows?.env?.USERPROFILE ?? process.env.USERPROFILE;
-    const writable = (cfg.filesystem.allowWrite ?? []).map((p) => winAbs(p, this.cwd, home));
+    const env = this.lastInit?.windows?.env ?? process.env;
+    const writable = (cfg.filesystem.allowWrite ?? []).map((p) => winAbs(p, this.cwd, env));
     const targets = probeTargets(this.cwd, win.srtWinPath).filter((t) => !writable.some((w) => !isOutsideWin(w, t)));
     let out = "";
     try {
@@ -1069,6 +1085,19 @@ export class SandboxController {
     // read-only mode (Plan) is applied here: the session runs without project
     // writes until the next mode switch re-initializes.
     if (win && !profile.writable) cfg = readOnlyOverride(cfg, this.keepWritable);
+    if (win) {
+      const env = this.lastInit?.windows?.env ?? process.env;
+      const fs = cfg.filesystem;
+      win.grants = [...(fs.allowRead ?? []), ...fs.allowWrite].map((p) => winAbs(p, this.cwd, env));
+      cfg = {
+        ...cfg,
+        filesystem: {
+          ...fs,
+          denyRead: deniesInsideGrants(fs.denyRead, win.grants, this.cwd, env),
+          denyWrite: deniesInsideGrants(fs.denyWrite, win.grants, this.cwd, env),
+        },
+      };
+    }
     const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem });
     if (this.ready && key === this.appliedKey) return;
 
@@ -1095,11 +1124,13 @@ export class SandboxController {
       // so a Plan-mode (per-wrap read-only) refusal is not reported; the
       // block is best effort, the refusal itself is not.
       const runtimeCfg = win ? { ...cfg, windows: { srtWin: { path: win.srtWinPath } } } : cfg;
+      const started = Date.now();
       await this.manager.initialize(
         runtimeCfg as never,
         ask ? (p: { host: string; port?: number }) => ask(p.host, p.port) : undefined,
         true,
       );
+      this.lastInitMs = Date.now() - started;
       this.runtimeInitialized = true;
       if (win) {
         win.readOnly = !profile.writable;

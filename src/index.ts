@@ -93,7 +93,7 @@ import {
 } from "./plan-approval.ts";
 import { decideBashChainDetailed, decideDetailed } from "./resolve.ts";
 import { SandboxController, commandFilesDir, networkFiltered, runtimeInstallDir, withDeniedReads } from "./sandbox.ts";
-import { withHomeRead } from "./sandbox-win.ts";
+import { windowsReadGrants, withWindowsReads } from "./sandbox-win.ts";
 import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
   type ModeDef,
@@ -161,10 +161,11 @@ export default async function (pi: ExtensionAPI) {
   // dir. The session's "Deny and block" paths are NOT part of it - they ride
   // along per command (sandbox.bashOps extraDenyRead), so a block never
   // restarts the runtime or its network proxy.
-  // On Windows the sandbox account reads only what the profile grants, so
-  // the user profile is granted read access unless the mode says otherwise
-  // (sandbox-win.ts withHomeRead): the Linux result, home readable, secrets masked.
-  const platformProfile = (p: SandboxProfile): SandboxProfile => (process.platform === "win32" ? withHomeRead(p) : p);
+  // On Windows the sandbox account reads only what the profile grants: the
+  // stock profiles get the per-user tool roots that exist on this machine
+  // (sandbox-win.ts, WINDOWS_TOOL_ROOTS) unless the mode sets allowRead itself.
+  const winGrants = process.platform === "win32" ? windowsReadGrants() : [];
+  const platformProfile = (p: SandboxProfile): SandboxProfile => (process.platform === "win32" ? withWindowsReads(p, winGrants) : p);
   const runtimeProfile = (m: ModeDef): SandboxProfile => withScratchDir(platformProfile(m.sandbox), scratchDir);
   // What bash effectively runs under, for the bounds, the awareness prompt, and /sandbox.
   const effectiveSandbox = (m: ModeDef): SandboxProfile => withDeniedReads(runtimeProfile(m), blocked.list());
@@ -676,7 +677,10 @@ export default async function (pi: ExtensionAPI) {
           "",
           `Scratch dir: ${scratchDir ?? "(none)"}`,
           ...(sandbox.windowsStatus()
-            ? [`Windows: commands run as srt-sandbox in ${sandbox.windowsStatus()!.bash}; helper ${sandbox.windowsStatus()!.srtWinPath}; self-check passed`]
+            ? [
+                `Windows: commands run as srt-sandbox in ${sandbox.windowsStatus()!.bash}; helper ${sandbox.windowsStatus()!.srtWinPath}; self-check passed`,
+                `Last initialize: ${((sandbox.lastInitMs ?? 0) / 1000).toFixed(1)} s (permission entries are copied over every granted tree)`,
+              ]
             : []),
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,

@@ -13,9 +13,11 @@ import {
   stagedSrtWinPath,
   windowsEnvExports,
   windowsEnvFile,
+  expandWinEnv,
+  windowsReadGrants,
   windowsRevocationEnv,
   windowsScript,
-  withHomeRead,
+  withWindowsReads,
 } from "./sandbox-win.ts";
 
 const existsIn = (files: string[]) => (p: string) => files.map((f) => f.toLowerCase()).includes(p.toLowerCase());
@@ -33,12 +35,13 @@ test("findGitBash: falls back to Program Files", () => {
   assert.equal(findGitBash({ PATH: "", ProgramFiles: "C:\\Program Files" }, existsIn([bash])), bash);
 });
 
-test("findGitBash: per-user installs count only when the profile is readable", () => {
+test("findGitBash: per-user installs count only inside a readable root", () => {
   const userGit = "C:\\Users\\me\\AppData\\Local\\Programs\\Git";
   const env = { PATH: `${userGit}\\cmd`, USERPROFILE: "C:\\Users\\me" };
   const exists = existsIn([`${userGit}\\cmd\\git.exe`, `${userGit}\\bin\\bash.exe`]);
   assert.equal(findGitBash(env, exists), undefined);
-  assert.equal(findGitBash(env, exists, true), `${userGit}\\bin\\bash.exe`);
+  assert.equal(findGitBash(env, exists, ["C:\\Users\\me\\scoop"]), undefined);
+  assert.equal(findGitBash(env, exists, ["C:\\Users\\me\\AppData\\Local\\Programs"]), `${userGit}\\bin\\bash.exe`);
 });
 
 test("findGitBash: never picks System32's WSL bash.exe", () => {
@@ -159,16 +162,23 @@ test("windowsScript: sources the env file and runs the command file in a bash -c
   assert.equal(windowsEnvFile(["A='1'", "B='2'"]), "export A='1'\nexport B='2'\n");
 });
 
-test("withHomeRead: grants ~ read access unless the profile names the profile itself in allowRead or denyRead", () => {
+test("windowsReadGrants: the tool roots that exist, expanded from the environment, deduplicated", () => {
+  const env = { USERPROFILE: "C:\\Users\\me", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local", AppData: "C:\\Users\\me\\AppData\\Roaming" };
+  const present = ["C:\\Users\\me\\AppData\\Local\\Programs", "C:\\Users\\me\\AppData\\Roaming\\npm", "C:\\Users\\me\\scoop"];
+  assert.deepEqual(windowsReadGrants(env, existsIn(present)), present);
+  assert.deepEqual(windowsReadGrants({}, () => true), [], "an unexpanded %VAR% is never granted");
+  assert.equal(expandWinEnv("%localappdata%\\x", env), "C:\\Users\\me\\AppData\\Local\\x");
+});
+
+test("withWindowsReads: the grants become allowRead unless the mode sets its own", () => {
   const p = { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh"] };
-  assert.deepEqual(withHomeRead(p).allowRead, ["~"]);
-  assert.deepEqual(withHomeRead({ ...p, allowRead: ["~/.ssh/known_hosts"] }).allowRead, ["~", "~/.ssh/known_hosts"]);
-  const explicit = { ...p, allowRead: ["$HOME"] };
-  assert.equal(withHomeRead(explicit), explicit);
-  const strict = { ...p, denyRead: ["~"], allowRead: ["~/.gitconfig"] };
-  assert.equal(withHomeRead(strict), strict);
+  const grants = ["C:\\Users\\me\\AppData\\Local\\Programs"];
+  assert.deepEqual(withWindowsReads(p, grants).allowRead, grants);
+  const own = { ...p, allowRead: ["~/.gitconfig"] };
+  assert.equal(withWindowsReads(own, grants), own);
+  assert.equal(withWindowsReads(p, []), p);
   const yolo = { enabled: false, writable: true };
-  assert.equal(withHomeRead(yolo), yolo);
+  assert.equal(withWindowsReads(yolo, grants), yolo);
 });
 
 test("windowsRevocationEnv: git and cargo skip the revocation check; the caller's git parameters stay ahead", () => {

@@ -183,9 +183,11 @@ you can rely on it appropriately. The reference for every setting is in
   machine: before trusting it the extension probes the project's parent and
   the drive root from inside the sandbox and prompts instead when they are
   writable (a folder created at a drive root grants every local user
-  Modify). Reads are allow-listed by the OS there; the stock profiles grant
-  your user profile read access with the credential `denyRead` list on top,
-  so the result matches Linux. Known gaps, all inherited from the runtime:
+  Modify). Reads are allow-listed by the OS there: the stock profiles grant
+  the project and the per-user tool roots that exist, nothing else of your
+  profile (an entry on the profile itself would make NTFS rewrite every file
+  below it), so the credential list holds by construction and denies outside
+  the grants are dropped. Known gaps, all inherited from the runtime:
   the proxy token is visible to local principals that can inspect the
   runner's command line, DNS lookups are not fenced (connections are),
   revocation checks cannot leave the fence (git and cargo are told to skip

@@ -256,13 +256,22 @@ bubblewrap and `sandbox-exec`, with the same profile keys on top:
   Modify, `allowRead` grants Read and Execute, `denyRead` and `denyWrite`
   add Deny entries that win over a grant above them. The account has no
   rights of its own on your files, so on Windows reads are what the profile
-  grants, not "everything but the denies". The stock profiles therefore
-  grant your user profile read access (`allowRead: ["~"]` is added unless
-  the mode names the profile itself in `allowRead` or `denyRead`) with the
-  credential `denyRead` list on top: home readable, secrets masked, the
-  Linux result. A strict allowlist is the same shape as on Linux,
-  `denyRead: ["~"]` plus `allowRead` carve-outs
-  ([modes.md, Strict home](modes.md#strict-home)).
+  grants, not "everything but the denies". Granting the whole user profile
+  is not an option: NTFS copies an inheriting entry onto every file below,
+  and a whole profile exceeds the runtime's 60 s limit for one grant. The
+  stock profiles therefore grant read access to the per-user tool roots
+  that exist on the machine (`AppData\Local\Programs`, npm, pnpm, Volta,
+  fnm, nvm, Scoop, WinGet, pip's user scripts, pyenv, uv, `.local\bin`,
+  `go\bin`, `.dotnet\tools`, `.bun\bin`, `.deno\bin`, `.cargo\bin`), so
+  tools installed for your user only still run; a mode that sets
+  `allowRead` itself replaces that list. Configuration files in your profile
+  are not granted and would not be read anyway: HOME inside the sandbox is
+  the sandbox account's (your git identity travels as environment, see
+  below). Denies outside every grant are dropped before they reach the
+  runtime: the account cannot read there in the first place, and the
+  runtime stamps each deny's parent folder too, so `~/.ssh` would walk the
+  whole profile. The credential list still holds: nothing of your profile
+  is readable but the tool roots.
 
 **Install.** Git for Windows (for all users, under Program Files, or the
 profile must grant the per-user install read access) and one elevated
