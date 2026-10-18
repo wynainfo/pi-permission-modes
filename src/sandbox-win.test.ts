@@ -189,6 +189,7 @@ test("windowsGitEnv: git and cargo skip the revocation check, git never prompts;
     CARGO_HTTP_CHECK_REVOKE: "false",
     GIT_TERMINAL_PROMPT: "0",
     GCM_INTERACTIVE: "never",
+    GCM_PROVIDER: "generic",
   });
   assert.equal(
     windowsGitEnv({ GIT_CONFIG_PARAMETERS: "'core.autocrlf=true'" }).GIT_CONFIG_PARAMETERS,

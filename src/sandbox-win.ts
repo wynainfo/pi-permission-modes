@@ -286,7 +286,10 @@ export function withWindowsReads(profile: SandboxProfile, grants: readonly strin
  * credentials: there is no terminal, and Git Credential Manager runs as the
  * sandbox account, whose store is empty and which cannot show a window, so
  * interactive prompts are turned off (the model is told to recommend a
- * token, as on Linux).
+ * token, as on Linux). Its host-provider detection is off as well: after a
+ * request through the authenticated proxy git hands the proxy credentials
+ * to the helper to store, and detecting a provider for localhost costs two
+ * seconds per git command.
  */
 export function windowsGitEnv(callerEnv: NodeJS.ProcessEnv): Record<string, string> {
   const existing = callerEnv.GIT_CONFIG_PARAMETERS?.trim();
@@ -296,6 +299,7 @@ export function windowsGitEnv(callerEnv: NodeJS.ProcessEnv): Record<string, stri
     CARGO_HTTP_CHECK_REVOKE: "false",
     GIT_TERMINAL_PROMPT: "0",
     GCM_INTERACTIVE: "never",
+    GCM_PROVIDER: "generic",
   };
 }
 

@@ -284,10 +284,12 @@ cargo work; for System32 curl pass `--ssl-no-revoke`. Git is also set to
 `http.proxyAuthMethod=basic`: its libcurl otherwise sends the first CONNECT
 to the sandbox proxy without credentials, gets a 407 and a closed
 connection, and fails with "Proxy CONNECT aborted". Git also runs with
-`GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never` there: a remote that
-wants credentials fails at once instead of waiting on a prompt the sandbox
-account cannot show (use a token, see
-[network.md, Git authentication](network.md#git-authentication)). `gh`, PowerShell's
+`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never` and `GCM_PROVIDER=generic`
+there: a remote that wants credentials fails at once instead of waiting on
+a prompt the sandbox account cannot show (use a token, see
+[network.md, Git authentication](network.md#git-authentication)), and Git
+Credential Manager does not spend two seconds detecting a host provider
+for the proxy when git hands it the proxy credentials to store. `gh`, PowerShell's
 `Invoke-WebRequest` and .NET do not check revocation by default, and tools
 on OpenSSL (Node, Python, cargo's own TLS) are unaffected.
 
