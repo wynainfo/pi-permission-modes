@@ -269,6 +269,8 @@ test("default mode: reads free, writes prompt, protected paths hard-block", { sk
     const denied = await h.call("write", { path: "notes.txt" });
     assert.equal(denied?.block, true);
     assert.equal(h.ctx.prompts.length, 2);
+    // The reason names the user's decision, not a policy or a failure (#19).
+    assert.equal(denied?.reason, 'The user denied this write of "notes.txt". Do not retry or rephrase it; if the step matters, ask the user how to proceed.');
   } finally {
     h.cleanup();
   }
@@ -445,6 +447,7 @@ test("bash: a session grant never covers an escape, and an approved escape cover
     h.ctx.answers.push("Deny");
     const escape = await h.call("bash", { command: "cat ~/.ssh/id_rsa" });
     assert.equal(escape?.block, true);
+    assert.match(escape?.reason ?? "", /^The user denied this bash command \(path outside project: /);
     assert.equal(h.ctx.prompts.length, 2);
     assert.match(h.ctx.prompts[1].title, /path outside project/);
     // Both prompts name the command they are about (#25).
@@ -1048,6 +1051,7 @@ test("unsandboxed modes judge bash per command: chains, prefixes, quoting, the p
       h.ctx.answers.push("Deny");
       const res = await h.call("bash", { command });
       assert.equal(res?.block, true, command);
+      assert.match(res?.reason ?? "", /^The user denied this bash command\./, command);
       assert.match(h.ctx.prompts.at(-1)?.title ?? "", /will run unsandboxed/, command);
     }
     assert.equal(h.ctx.prompts.length, 3);

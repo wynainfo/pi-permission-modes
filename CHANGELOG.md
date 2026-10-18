@@ -31,6 +31,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   line, cut at 80 characters. Reported by
   [@donnielrt](https://github.com/donnielrt) in
   [#25](https://github.com/wynainfo/pi-permission-modes/issues/25).
+- **A refused prompt says the user denied it.** After Deny, the model saw
+  `bash blocked`, `blocked`, or `tool blocked`, the same shape as a policy
+  block or a failure, and tended to rephrase and retry. The reason now reads
+  `The user denied this <call>. Do not retry or rephrase it; if the step
+  matters, ask the user how to proceed.`, with the escape or the unavailable
+  sandbox named as the cause where one applies. Policy denies keep their own
+  text. Reported by [@donnielrt](https://github.com/donnielrt) in
+  [#19](https://github.com/wynainfo/pi-permission-modes/issues/19).
 
 ## [2.4.2]
 

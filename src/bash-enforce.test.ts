@@ -68,3 +68,12 @@ test("titleWithCommand: one line, whitespace collapsed, cut at 80 characters", (
   assert.equal(title, "Allow bash? `" + long.slice(0, 77) + "...`");
   assert.equal(titleWithCommand("Allow bash?", "echo " + "x".repeat(75)), "Allow bash? `echo " + "x".repeat(75) + "`");
 });
+
+test("bashGate: a refused prompt reports the user's decision, with the escape or degradation as its cause", () => {
+  const user = /^The user denied this bash command/;
+  assert.match(bashGate("ask", undefined, false, true).reason, user);
+  assert.match(bashGate("ask", undefined, true, true).reason, user);
+  assert.match(bashGate("allow", OUTSIDE, true, true).reason, /^The user denied this bash command \(path outside project: \/etc\/passwd\)\./);
+  assert.match(bashGate("allow", undefined, true, false).reason, /^The user denied this bash command \(sandbox unavailable\)\./);
+  assert.doesNotMatch(bashGate("deny", undefined, true, true).reason, user);
+});

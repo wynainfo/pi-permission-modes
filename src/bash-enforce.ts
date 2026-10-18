@@ -14,6 +14,7 @@
  *                      read-only?), recomputed at run time from the active mode.
  */
 
+import { deniedByUser } from "./approvals.ts";
 import type { Action } from "./schema.ts";
 
 export type BashGateKind = "allow" | "prompt" | "block";
@@ -68,20 +69,20 @@ export function bashGate(
   // a custom unsandboxed mode with `ask` continues to require confirmation.
   if (!sandboxEnabled) {
     if (action === "ask") {
-      return gate("prompt", "Allow bash? (sandbox disabled; command will run unsandboxed)", "bash blocked", true);
+      return gate("prompt", "Allow bash? (sandbox disabled; command will run unsandboxed)", deniedByUser("bash command"), true);
     }
     return gate("allow", "", "", false);
   }
 
   // Out-of-project / privilege escalation: prompt, run unsandboxed once approved
   // (the sandbox would block a genuine escape anyway).
-  if (outsideReason) return gate("prompt", `Allow bash? (${outsideReason})`, "bash blocked", true);
+  if (outsideReason) return gate("prompt", `Allow bash? (${outsideReason})`, deniedByUser(`bash command (${outsideReason})`), true);
 
   // In-project but the sandbox is unavailable: never run silently unprotected.
-  if (!sandboxReady) return gate("prompt", "Allow bash? (sandbox unavailable)", "bash blocked", true);
+  if (!sandboxReady) return gate("prompt", "Allow bash? (sandbox unavailable)", deniedByUser("bash command (sandbox unavailable)"), true);
 
   // In-project, sandbox ready: the policy action drives it.
-  if (action === "ask") return gate("prompt", "Allow bash?", "bash blocked", false);
+  if (action === "ask") return gate("prompt", "Allow bash?", deniedByUser("bash command"), false);
   return gate("allow", "", "", false);
 }
 

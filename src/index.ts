@@ -47,7 +47,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { askWithSession, BlockedPaths, type DenyOption, SessionApprovals } from "./approvals.ts";
+import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
@@ -1088,7 +1088,7 @@ export default async function (pi: ExtensionAPI) {
       }
       if (action === "ask") {
         const title = outside ? `Outside project - allow ${toolName}? (${path})` : `Allow ${toolName}? (${path})`;
-        const reason = outside ? "Access outside project blocked" : "blocked";
+        const reason = deniedByUser(outside ? `${toolName} of "${path}" outside the project` : `${toolName} of "${path}"`);
         const denyAnd = outside ? denyAndBlock(ctx, [path]) : undefined;
         if (!(await promptAllow(ctx, surface, path, title, undefined, denyAnd))) return { block: true, reason };
       }
@@ -1101,7 +1101,7 @@ export default async function (pi: ExtensionAPI) {
       if (action === "deny") return { block: true, reason: `web search blocked by ${m.label}` };
       // Session approval is surface-wide ("allow web search this session").
       if (action === "ask" && !(await promptAllow(ctx, "web_search", "*", "Allow web search?"))) {
-        return { block: true, reason: "web search blocked" };
+        return { block: true, reason: deniedByUser("web search") };
       }
       return undefined;
     }
@@ -1115,7 +1115,7 @@ export default async function (pi: ExtensionAPI) {
         action === "ask" &&
         !(await promptAllow(ctx, "tool", toolName, `Tool "${toolName}" — first use in ${m.label}; allow?`, learnForever(ctx, "tool", toolName)))
       ) {
-        return { block: true, reason: "tool blocked" };
+        return { block: true, reason: deniedByUser(`tool "${toolName}" call`) };
       }
     }
 
