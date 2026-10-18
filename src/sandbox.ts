@@ -710,6 +710,8 @@ export class SandboxController {
   private runtimeInitialized = false;
   /** applyProfile calls are serialized: the runtime ignores a second initialize while one is in flight. */
   private applying: Promise<void> = Promise.resolve();
+  /** applyProfile requests not yet settled (queued or running). */
+  private pendingApplies = 0;
   /** Platform or dependency issue - never (re)initialize the runtime. */
   private degraded = false;
   private hasUI = false;
@@ -745,6 +747,16 @@ export class SandboxController {
 
   /** Wall time of the last successful runtime initialize, in milliseconds (the permission-entry walks on Windows show here). */
   lastInitMs: number | undefined;
+
+  /** True while a profile switch is queued or running (the footer marks it). */
+  get switching(): boolean {
+    return this.pendingApplies > 0;
+  }
+
+  /** Resolves once every requested profile switch has settled. */
+  settled(): Promise<void> {
+    return this.applying;
+  }
 
   /**
    * Wrap a fresh BashOperations around the active runtime, or null when
@@ -1073,13 +1085,18 @@ export class SandboxController {
    */
   async applyProfile(profile: SandboxProfile): Promise<void> {
     this.profile = profile;
-    const run = this.applying.then(() => this.applyProfileNow(profile));
+    this.pendingApplies++;
+    const run = this.applying.then(() => this.applyProfileNow(profile)).finally(() => this.pendingApplies--);
     this.applying = run.catch(() => {});
     return run;
   }
 
   private async applyProfileNow(profile: SandboxProfile): Promise<void> {
     if (this.degraded || !this.manager) return;
+    // Superseded: a later applyProfile call holds the profile that counts
+    // (cycling past a mode must not pay for the modes in between; on
+    // Windows each switch re-stamps permission entries over whole trees).
+    if (profile !== this.profile) return;
     if (!profile.enabled) return; // non-sandboxing mode (e.g. YOLO): keep prior init
 
     const win = this.win;
@@ -1110,6 +1127,7 @@ export class SandboxController {
       // for the running ones (the switch completes when they finish).
       if (this.hasUI) this.notifyFn(`permission-mode: waiting for ${this.inflight} running sandboxed command(s) before applying the new sandbox profile`);
       await this.whenIdle();
+      if (profile !== this.profile) return; // superseded while waiting
     }
     try {
       if (this.runtimeInitialized) {

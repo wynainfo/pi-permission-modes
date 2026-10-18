@@ -225,3 +225,21 @@ test("controller (win32): a folder the profile grants write access to is not pro
   assert.doesNotMatch(fake.wraps[0].script, new RegExp(`: > '${base}/`));
   assert.match(fake.wraps[0].script, /: > '\/\.pi-srt-probe-/);
 });
+
+test("controller: cycling past a mode skips its switch; `switching` is set while one is in flight", async () => {
+  const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+  const fake = fakeWindowsRuntime({ argv: passing });
+  const c = new SandboxController();
+  await baseInit(c, fake, [], { enabled: true, writable: true, allowWrite: ["."] });
+  const before = fake.calls.filter((x) => x === "initialize").length;
+  // Build -> Plan -> Build in quick succession: the Plan switch is superseded before it runs.
+  const plan = c.applyProfile({ enabled: true, writable: false, allowWrite: ["."] });
+  const build = c.applyProfile({ enabled: true, writable: true, allowWrite: [".", "./extra"] });
+  assert.equal(c.switching, true);
+  await Promise.all([plan, build]);
+  await c.settled();
+  assert.equal(c.switching, false);
+  assert.equal(fake.calls.filter((x) => x === "initialize").length - before, 1, "one re-init for the switch that counts");
+  assert.deepEqual((fake.inits.at(-1) as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite, [".", "./extra"]);
+  assert.ok(c.bashOps({ readOnly: false }));
+});

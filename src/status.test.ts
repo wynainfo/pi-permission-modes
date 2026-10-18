@@ -14,6 +14,15 @@ const ctx = () => {
 };
 const mode = (sandbox: ModeDef["sandbox"]): ModeDef => ({ label: "Build", color: "accent", sandbox, permission: {} });
 
+test("updateStatus: a switch in flight is marked while the sandbox enforces", () => {
+  const c = ctx();
+  updateStatus(c as never, mode({ enabled: true, writable: true, network: { allowedDomains: ["a.com"] } }), { ready: true, warn: undefined, disabled: false, switching: true }, false);
+  assert.match(c.status, /\(applying sandbox profile\.\.\.\)/);
+  assert.doesNotMatch(c.status, /sandboxed in project dir/);
+  updateStatus(c as never, mode({ enabled: true, writable: true }), { ready: false, warn: "x", disabled: false, switching: true }, false);
+  assert.doesNotMatch(c.status, /applying sandbox profile/);
+});
+
 test("updateStatus: filtered / open / unrestricted / degraded", () => {
   const ready = { ready: true, warn: undefined, disabled: false };
   let c = ctx();

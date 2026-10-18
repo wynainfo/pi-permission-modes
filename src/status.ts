@@ -21,13 +21,17 @@ import { networkFiltered, type SandboxController } from "./sandbox.ts";
 export function updateStatus(
   ctx: Pick<ExtensionContext, "ui">,
   mode: ModeDef,
-  sandbox: Pick<SandboxController, "ready" | "warn" | "disabled">,
+  sandbox: Pick<SandboxController, "ready" | "warn" | "disabled"> & { switching?: boolean },
   networkOpen: boolean,
 ): void {
   const t = ctx.ui.theme;
   const enforcing = mode.sandbox.enabled && sandbox.ready;
   let status = t.fg(mode.color, mode.label);
-  status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");
+  // A profile switch in flight (the runtime re-initializes; on Windows it
+  // re-stamps permission entries over the project) is marked: the mode has
+  // changed, the sandbox follows in a moment.
+  if (enforcing && sandbox.switching) status += " " + t.fg("warning", "(applying sandbox profile...)");
+  else status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");
   if (mode.sandbox.enabled && sandbox.warn && !sandbox.disabled) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
   if (enforcing && networkFiltered(mode.sandbox)) {
     status +=

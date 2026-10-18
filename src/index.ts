@@ -350,10 +350,19 @@ export default async function (pi: ExtensionAPI) {
     // derives the same safe fallback itself (and skips the systemPrompt too).
     if (!viaFallback) process.env.PI_PERMISSION_MODE = modeName;
     const m = currentMode();
-    await sandbox.applyProfile(runtimeProfile(m)); // re-init runtime if the profile changed
     applyToolVisibility();
+    // The runtime re-initializes when the profile changed, which can take a
+    // moment (on Windows it re-stamps permission entries over the project
+    // tree): the footer changes at once and marks the switch in flight, then
+    // settles when it has landed. Cycling past a mode skips its switch (the
+    // controller drops superseded requests). Bash in the meantime is refused
+    // with "run it again" rather than run under the previous profile.
+    const applied = sandbox.applyProfile(runtimeProfile(m)).catch(() => {});
     updateStatus(ctx, m, sandbox, net.open);
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
+    void applied.then(() => {
+      if (modeName === name) updateStatus(ctx, currentMode(), sandbox, net.open);
+    });
     if (persist) pi.appendEntry<PermState>("perm-mode", { mode: modeName });
     // B: a manual switch into the approve mode while a plan is pending (alt+m,
     // /perm <mode>). Not on session_start/resume (persist=false) and not for
@@ -398,7 +407,10 @@ export default async function (pi: ExtensionAPI) {
     const target = approveModeName();
     approvingPlan = true;
     try {
-      if (modeName !== target) await setMode(target, ctx);
+      if (modeName !== target) {
+        await setMode(target, ctx);
+        await sandbox.settled(); // the model starts building right away: the profile must have landed
+      }
     } finally {
       approvingPlan = false;
     }
