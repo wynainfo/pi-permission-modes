@@ -10,6 +10,8 @@
  * Pure and SDK-free.
  */
 
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Reference key -> `<file>#<github-heading-slug>` under `docs/`. */
@@ -60,6 +62,52 @@ export const DOC_FILES = [
 /** Absolute path of the shipped `docs/` folder (next to `src/`). */
 export function docsDir(): string {
   return fileURLToPath(new URL("../docs", import.meta.url));
+}
+
+/**
+ * pi's own reference material (docs, examples, README), which pi's system
+ * prompt names by absolute path: from the SDK's `getDocsPath` family where
+ * the running pi exports it (1.x), else by walking up from pi's entry script
+ * to its package root. Empty when neither works; reads then prompt as any
+ * out-of-project path does.
+ */
+export function piReferencePaths(
+  sdk: Record<string, unknown>,
+  entry: string | undefined = process.argv[1],
+  fs: { exists: (p: string) => boolean; realpath: (p: string) => string; readJson: (p: string) => unknown } = {
+    exists: existsSync,
+    realpath: realpathSync,
+    readJson: (p) => JSON.parse(readFileSync(p, "utf8")),
+  },
+): string[] {
+  const fromSdk = ["getDocsPath", "getExamplesPath", "getReadmePath"]
+    .map((n) => sdk[n])
+    .filter((f): f is () => string => typeof f === "function")
+    .flatMap((f) => {
+      try {
+        const p = f();
+        return typeof p === "string" && p ? [p] : [];
+      } catch {
+        return [];
+      }
+    });
+  if (fromSdk.length > 0) return fromSdk;
+  if (!entry) return [];
+  try {
+    let dir = path.dirname(fs.realpath(entry));
+    for (let i = 0; i < 8; i++) {
+      const pkg = path.join(dir, "package.json");
+      if (fs.exists(pkg) && (fs.readJson(pkg) as { name?: string })?.name === "@earendil-works/pi-coding-agent") {
+        return [path.join(dir, "docs"), path.join(dir, "examples"), path.join(dir, "README.md")];
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // unreadable entry: no reference paths
+  }
+  return [];
 }
 
 /**

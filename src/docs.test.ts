@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { DOC_FILES, DOC_REFS, docRef, docsDir, docsPromptBlock } from "./docs.ts";
+import { DOC_FILES, DOC_REFS, docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 
 const dir = docsDir();
 
@@ -100,4 +100,19 @@ test("docs: the prompt block names the directory and every file", () => {
   assert.ok(block.includes("/x/docs"));
   for (const f of DOC_FILES) assert.ok(block.includes(f), `prompt mentions ${f}`);
   assert.ok(block.split("\n").length <= 4, "stays short: it is on every turn");
+});
+
+test("piReferencePaths: the SDK's path functions when exported, else pi's package root from its entry script", () => {
+  const sdk = { getDocsPath: () => "/pi/docs", getExamplesPath: () => "/pi/examples", getReadmePath: () => "/pi/README.md" };
+  assert.deepEqual(piReferencePaths(sdk, "/elsewhere/bin/pi"), ["/pi/docs", "/pi/examples", "/pi/README.md"]);
+  const tree: Record<string, unknown> = { "/opt/pi/node_modules/@earendil-works/pi-coding-agent/package.json": { name: "@earendil-works/pi-coding-agent" } };
+  const fs = {
+    exists: (p: string) => p in tree,
+    realpath: (p: string) => (p === "/usr/local/bin/pi" ? "/opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" : p),
+    readJson: (p: string) => tree[p],
+  };
+  const root = "/opt/pi/node_modules/@earendil-works/pi-coding-agent";
+  assert.deepEqual(piReferencePaths({}, "/usr/local/bin/pi", fs), [`${root}/docs`, `${root}/examples`, `${root}/README.md`]);
+  assert.deepEqual(piReferencePaths({}, "/usr/bin/node", fs), [], "an entry outside pi's package yields nothing");
+  assert.deepEqual(piReferencePaths({ getDocsPath: 42 }, undefined, fs), []);
 });

@@ -284,6 +284,13 @@ test("sandbox-writable temp dirs are in-bounds: no 'outside project' prompt, no 
     // in-bounds too, so the external_directory ask does not fold in. /etc still does.
     assert.equal(await h.call("read", { path: "/tmp/pi/scratch/out.txt" }), undefined);
     assert.equal(h.ctx.prompts.length, 0);
+    // The shipped docs are reference material: read without a prompt, never written (pi's own docs join them, see docs.test.ts).
+    assert.equal(await h.call("read", { path: path.join(docsDir(), "network.md") }), undefined);
+    assert.equal(h.ctx.prompts.length, 0);
+    h.ctx.answers.push("Deny");
+    assert.equal((await h.call("write", { path: path.join(docsDir(), "network.md"), content: "x" }))?.block, true);
+    assert.match(h.ctx.prompts[0]?.title ?? "", /Outside project/);
+    h.ctx.prompts.length = 0;
     h.ctx.answers.push("Deny");
     assert.equal((await h.call("read", { path: "/etc/hostname" }))?.block, true);
     assert.match(h.ctx.prompts[0]?.title ?? "", /Outside project/);

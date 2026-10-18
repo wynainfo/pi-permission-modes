@@ -50,6 +50,12 @@ Every decision is the most restrictive of all layers that apply
 
 A surface with no matching rule at all falls back to `ask`.
 
+The boundary has read-only exceptions for the reference material the system
+prompt points at: the mode's sandbox-writable directories, this extension's
+shipped `docs/`, and pi's own docs, examples and README (pi names them by
+absolute path in its prompt). Reading them is not an out-of-project access
+and does not prompt; writing to them still does.
+
 ## Bash
 
 The command line is parsed with tree-sitter into a real AST. Every command it

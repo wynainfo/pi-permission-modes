@@ -47,7 +47,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   start, an unavailable sandbox, an outdated default) ends with
   `see docs/<file>#<section>`, so the model reads the explanation instead of
   guessing. Reading the shipped docs is not an out-of-project escape in the
-  sandboxed modes (writing to them still is). A test keeps every reference
+  sandboxed modes, nor is reading pi's own docs, examples and README, which
+  pi's prompt points the model at (writing to them still is). A test keeps every reference
   pointing at an existing heading and every schema key documented. The
   README is the short version now.
 - **`sandbox.macos`: the runtime's macOS-only switches, opt-in per mode.**

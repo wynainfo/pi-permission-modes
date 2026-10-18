@@ -44,10 +44,11 @@
 
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import * as piSdk from "@earendil-works/pi-coding-agent";
 import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { docRef, docsDir, docsPromptBlock } from "./docs.ts";
+import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
@@ -165,6 +166,8 @@ export default async function (pi: ExtensionAPI) {
   // stock profiles get the per-user tool roots that exist on this machine
   // (sandbox-win.ts, WINDOWS_TOOL_ROOTS) unless the mode sets allowRead itself.
   const winGrants = process.platform === "win32" ? windowsReadGrants() : [];
+  // pi's docs, examples and README: read-only in-bounds, see the tool_call gate.
+  const piReference = piReferencePaths(piSdk as unknown as Record<string, unknown>);
   const platformProfile = (p: SandboxProfile): SandboxProfile => (process.platform === "win32" ? withWindowsReads(p, winGrants) : p);
   const runtimeProfile = (m: ModeDef): SandboxProfile => withScratchDir(platformProfile(m.sandbox), scratchDir);
   // What bash effectively runs under, for the bounds, the awareness prompt, and /sandbox.
@@ -1049,9 +1052,11 @@ export default async function (pi: ExtensionAPI) {
     // sandbox already permits is not an escape, so it must neither prompt as
     // "outside project" nor — worse — run unsandboxed once the user approves.
     const bounds = sandboxAllowedRoots(root, effectiveSandbox(m));
-    // The shipped docs are read-only reference material the prompt points at:
-    // reading them is not an escape (writing to them still is).
-    const docBounds = [...bounds, docsDir()];
+    // Reference material the system prompt points at is read-only in-bounds:
+    // our shipped docs, and pi's own docs, examples and README, which pi's
+    // prompt names by absolute path. Reading them is not an escape (writing
+    // to them still is: edit and write judge against `bounds`).
+    const docBounds = [...bounds, docsDir(), ...piReference];
     // Bash only: the mode's insideRoots (remote paths named in ssh commands,
     // say) are not escapes, so the command runs sandboxed instead of prompting
     // and then running unsandboxed. File tools do not get them.
