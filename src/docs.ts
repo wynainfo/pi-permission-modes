@@ -30,6 +30,7 @@ export const DOC_REFS = {
   strictHome: "modes.md#strict-home",
   macosGoTls: "troubleshooting.md#macos-go-tls",
   macosLoopback: "troubleshooting.md#macos-loopback-services",
+  linuxNamespaces: "troubleshooting.md#nested-sandboxes-on-linux",
 } as const;
 
 export type DocRefKey = keyof typeof DOC_REFS;

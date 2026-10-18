@@ -108,6 +108,29 @@ and nothing can listen on a port. No allowlist entry changes that
 sandbox's network namespace has its own loopback, and a service on the host's
 loopback is unreachable by design.
 
+## Nested sandboxes on Linux
+
+```
+Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted
+browserType.launch: Target page, context or browser has been closed
+Error: cannot clone: Operation not permitted
+unshare: unshare failed: Operation not permitted
+```
+
+Chromium and Electron (Playwright, Puppeteer), rootless podman and buildah,
+a nested bubblewrap, or `unshare -r` fail inside a sandboxed mode while the
+same command works outside it. Since sandbox-runtime 0.0.80 a sandboxed
+command cannot create a user namespace or a mount namespace of its own, so a
+program that builds its own sandbox that way is refused. Two ways out: run
+the program without its own sandbox where it offers that (`chromium
+--no-sandbox`, Playwright's `chromiumSandbox: false`, podman is not among
+them), since the OS sandbox contains it either way; or set the mode's
+`sandbox.linux.allowNestedUserNamespaces` switch, with the cost described
+in [sandbox.md, Linux](sandbox.md#linux). The restriction needs the
+runtime's seccomp helper or a bubblewrap 0.8 or newer that is not setuid;
+where neither applies, nothing limits namespaces and the runtime says so
+under `SRT_DEBUG=1`.
+
 ## SSH in the sandbox
 
 `ssh` and git over SSH (`git@` remotes) cannot authenticate from sandboxed

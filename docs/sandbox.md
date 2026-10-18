@@ -18,7 +18,7 @@ config may do with the key ([configuration.md, Project config](configuration.md#
 | `enabled` | boolean | true (false in YOLO) | Run bash inside the OS sandbox. `false` runs it unsandboxed; the mode's bash policy still applies | cannot change |
 | `writable` | boolean | true (false in Plan) | `false` makes the sandbox read-only: writes fail everywhere, including the project. The session scratch directory stays writable | may set `false` |
 | `allowWrite` | string[] | `[".", "/tmp/pi"]` | Writable roots. `.` is the project. The session scratch directory and the runtime's `/tmp/claude` are always added | may remove entries |
-| `denyWrite` | string[] | `[]` | Write-denied paths inside the writable roots | may add entries |
+| `denyWrite` | string[] | `[]` | Write-denied paths; a `denyWrite` entry wins over `allowWrite` however the two are nested (a project under a denied home is read-only) | may add entries |
 | `denyRead` | string[] | credential paths, see below | Unreadable inside the sandbox. Linux masks a file with `/dev/null` and a directory with an empty tmpfs; macOS returns a permission error | may add entries |
 | `allowRead` | string[] | `[]` | Readable again inside a `denyRead` region (deny-then-allow; [modes.md, Strict home](modes.md#strict-home)). A more specific `denyRead` or a session block inside a carve-out still wins | may remove entries |
 | `network.allowedDomains` | string[] | package registries and GitHub | Hosts bash may reach; `*.example.com` wildcards and an optional `:port` suffix are accepted. Absent means no filtering ([network.md](network.md)) | may remove entries |
@@ -26,6 +26,7 @@ config may do with the key ([configuration.md, Project config](configuration.md#
 | `askOnBlockedHost` | boolean | true | Prompt live when bash tries a host outside the allowlist. `false` denies silently | may set `false` |
 | `macos.allowLocalBinding` | boolean | unset | macOS only. Direct loopback TCP and binding local ports from sandboxed bash, for database drivers and dev servers ([macOS](#macos)) | may set `false` |
 | `macos.enableWeakerNetworkIsolation` | boolean | unset | macOS only. Allow the `trustd` lookup Go programs need to verify TLS certificates ([macOS](#macos)) | may set `false` |
+| `linux.allowNestedUserNamespaces` | boolean | unset | Linux only. Let a sandboxed command create user and mount namespaces of its own, for Chromium, Electron, rootless podman ([Linux](#linux)) | may set `false` |
 
 Paths accept `~` and `$HOME`. The stock `denyRead`: `~/.ssh`, `~/.aws`,
 `~/.gnupg`, `~/.netrc`, `~/.git-credentials`, `~/.pypirc`,
@@ -177,11 +178,42 @@ isolation" for that reason
 awareness section tells the model about the loopback carve-out when it is
 on, and about the Go TLS limit when the second switch is off.
 
+## Linux
+
+One switch the runtime offers only on Linux, under `sandbox.linux` with the
+runtime's own name, same rules as the macOS block: off unless set, accepted
+but without effect elsewhere, global config only (a project may turn it off,
+never on).
+
+```jsonc
+"sandbox": {
+  "linux": { "allowNestedUserNamespaces": true }
+}
+```
+
+**`allowNestedUserNamespaces`.** Since runtime 0.0.80 a sandboxed command
+stays in the namespaces made for it: it cannot create a user namespace or a
+mount namespace of its own. Programs that sandbox themselves that way stop
+working inside the sandbox: Chromium and Electron (so Playwright and
+Puppeteer with the bundled browsers), rootless podman and buildah, a nested
+bubblewrap, `unshare -r`. They fail with `EPERM` on the `unshare` or
+`clone` call, and the message rarely names the cause. The switch lifts the
+restriction for the mode. Cost: a process that can build its own user and
+mount namespaces has more of the kernel's attack surface available to it; the
+bubblewrap profile, the write bounds, the masked reads and the network
+allowlist still apply. Where the program offers it, running it without its
+own sandbox (`chromium --no-sandbox`, Playwright's `chromiumSandbox:
+false`) needs no switch; the OS sandbox contains it either way. The
+restriction is enforced by the seccomp helper, or by bubblewrap 0.8 and
+newer when it is not installed setuid; where neither applies nothing limits
+namespaces and the runtime says so under `SRT_DEBUG`
+([troubleshooting.md, nested sandboxes on Linux](troubleshooting.md#nested-sandboxes-on-linux)).
+
 ## Platforms
 
 | Platform | Sandbox | Notes |
 |---|---|---|
-| Linux, WSL2 | bubblewrap plus a seccomp write observer | needs `bubblewrap`, `socat`, `ripgrep` on `PATH`; Ubuntu 24.04 and newer need an AppArmor exception ([troubleshooting.md](troubleshooting.md#bubblewrap-namespaces)) |
+| Linux, WSL2 | bubblewrap plus a seccomp write observer | needs `bubblewrap`, `socat`, `ripgrep` on `PATH`; Ubuntu 24.04 and newer need an AppArmor exception ([troubleshooting.md](troubleshooting.md#bubblewrap-namespaces)); programs that sandbox themselves need the [Linux](#linux) switch |
 | macOS | `sandbox-exec` | no extra packages; globs allowed in the path lists; loopback services and Go TLS verification need the [macOS](#macos) switches |
 | WSL1 | none | no user namespaces; reported as unsupported, the sandboxed modes prompt instead |
 | Windows | none | the sandboxed modes prompt only, the allowlist is not enforced, `allowWrite` only feeds the prompt bounds. Run pi under WSL2 for containment |

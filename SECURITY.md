@@ -119,6 +119,14 @@ you can rely on it appropriately. The reference for every setting is in
   presents, outside the proxy and the allowlist, which is an exfiltration
   channel the runtime itself warns about. Enable either for one mode and
   only where the workflow needs it.
+- **The Linux switch widens the sandbox on purpose.** `sandbox.linux.allowNestedUserNamespaces`
+  is off unless set, global-config only, and lets a sandboxed command create
+  user and mount namespaces of its own, which runtime 0.0.80 and newer refuse
+  by default. A process with its own namespaces has more of the kernel's
+  attack surface available to it; the bubblewrap profile, the write bounds,
+  the masked reads and the network allowlist still apply. Prefer running the
+  program without its own sandbox (Chromium's `--no-sandbox`) inside the OS
+  sandbox, and enable the switch for one mode only where that is not offered.
 - **Subagent forwarding is best-effort.** The active mode is exported as
   `PI_PERMISSION_MODE` and inherited by child `pi` processes (e.g. subagents),
   which adopt it on start. A spawner that overrides the child's environment breaks

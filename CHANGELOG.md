@@ -40,6 +40,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
   [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
   tighten-only logic, tests, and security notes this takes over.
+- **`sandbox.linux.allowNestedUserNamespaces`: opt-in for programs that
+  sandbox themselves.** Runtime 0.0.80 keeps a sandboxed command in the
+  namespaces made for it, so Chromium and Electron (Playwright, Puppeteer),
+  rootless podman and buildah, and `unshare -r` fail with `EPERM` inside the
+  sandboxed modes. The switch lifts that for one mode, same rules as
+  `sandbox.macos`: off unless set, global config only, no effect elsewhere.
+  The awareness section names the limit on Linux while the switch is off,
+  with the `--no-sandbox` way around it; `/sandbox` shows the switch; the
+  cost is in SECURITY.md and `docs/sandbox.md`.
 - **Per-rule reasons: `{ "action": "deny", "reason": "..." }` on permission
   patterns.** A pattern entry can carry a reason, so a block tells the model
   what to do instead of only what failed: `"grep *": { "action": "deny",

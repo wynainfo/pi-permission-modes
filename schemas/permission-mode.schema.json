@@ -97,6 +97,14 @@
             "allowLocalBinding": { "type": "boolean", "description": "Direct loopback TCP plus binding local ports from sandboxed bash (database drivers, dev servers). Loopback services are not sandboxed; a 0.0.0.0 server is LAN-reachable." },
             "enableWeakerNetworkIsolation": { "type": "boolean", "description": "Let Go programs (gh, kubectl, terraform, gcloud) verify TLS by allowing the trustd lookup. trustd fetches revocation and issuer URLs outside the proxy, so this is an exfiltration channel." }
           }
+        },
+        "linux": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Linux-only runtime options, off unless set and without effect elsewhere. Projects may set a key to false, never true.",
+          "properties": {
+            "allowNestedUserNamespaces": { "type": "boolean", "description": "Let a sandboxed command create user and mount namespaces of its own, which Chromium and Electron (Playwright, Puppeteer), rootless podman and buildah, and unshare -r need. Widens the kernel attack surface available to a sandboxed process." }
+          }
         }
       }
     },

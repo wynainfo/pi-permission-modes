@@ -152,6 +152,13 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       );
     }
   }
+  if ((opts.platform ?? process.platform) === "linux" && !sb.linux?.allowNestedUserNamespaces) {
+    // The runtime refuses nested user namespaces since 0.0.80; the programs
+    // that need one fail with EPERM and a message that does not name the cause.
+    lines.push(
+      `- Programs that sandbox themselves cannot create a user namespace here (EPERM): Chromium and Electron (Playwright, Puppeteer), rootless podman and buildah, unshare -r. Where the program offers it, run it without its own sandbox (Chromium: --no-sandbox); otherwise tell the user (see ${docRef("linuxNamespaces")}).`,
+    );
+  }
   lines.push(
     "- Background processes do not outlive the command: each bash call runs in its own sandbox that is torn down when the command exits, so `&`, `nohup`, and `setsid` cannot start anything long-running. Run long tasks in the foreground with an adequate timeout, or ask the user.",
     "- Commands beyond these boundaries (out-of-project paths, sudo/doas) are fine to issue: the user is asked for permission automatically, and approved commands run outside the sandbox.",

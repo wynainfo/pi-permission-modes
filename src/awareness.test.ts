@@ -121,6 +121,20 @@ test("askOnBlockedHost:false: silent-deny wording, tool still offered", () => {
   assert.doesNotMatch(out ?? "", /pauses while the user is asked/);
 });
 
+test("sandbox.linux: the nested-namespace line renders on linux only, and only while the switch is off", () => {
+  const ns = /cannot create a user namespace here \(EPERM\)/;
+  const stock = sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!;
+  assert.match(stock, ns);
+  assert.match(stock, /docs\/troubleshooting\.md#nested-sandboxes-on-linux/);
+  const on = sandboxAwarenessPrompt(mode({}, { linux: { allowNestedUserNamespaces: true } }), { active: true, platform: "linux" })!;
+  assert.doesNotMatch(on, ns);
+  // Not tied to the network branch: an open or unrestricted network still gets the line.
+  const open = sandboxAwarenessPrompt(mode(), { active: true, platform: "linux", networkOpen: true })!;
+  assert.match(open, ns);
+  const darwin = sandboxAwarenessPrompt(mode(), { active: true, platform: "darwin" })!;
+  assert.doesNotMatch(darwin, ns);
+});
+
 test("sandbox.macos: the loopback line and the Go TLS line render on darwin only", () => {
   const loop = /Loopback is directly reachable/;
   const go = /Go programs .* cannot verify TLS/;

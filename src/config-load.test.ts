@@ -376,6 +376,37 @@ test("project: askOnBlockedHost can be forced off (silent deny), never back on",
   s.cleanup();
 });
 
+test("sandbox.linux: global opt-in projects to the runtime under its name; projects can only turn it off", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: { sandbox: { linux: { allowNestedUserNamespaces: true } } },
+        plan: { sandbox: { linux: { allowNestedUserNamespaces: "yes", bogus: true } } },
+        yolo: { sandbox: { linux: { allowNestedUserNamespaces: true } } },
+      },
+    },
+    project: {
+      modes: {
+        default: { sandbox: { linux: { allowNestedUserNamespaces: true } } }, // enabling: warned and ignored
+        yolo: { sandbox: { linux: { allowNestedUserNamespaces: false } } }, // real tightening
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.linux, { allowNestedUserNamespaces: true });
+  assert.equal(profileToConfig(c.modes.build.sandbox).allowNestedUserNamespaces, true);
+  assert.equal(c.modes.default.sandbox.linux?.allowNestedUserNamespaces, undefined);
+  assert.ok(s.errors.some((e) => /cannot enable sandbox\.linux\.allowNestedUserNamespaces/.test(e)));
+  assert.equal(c.modes.plan.sandbox.linux?.allowNestedUserNamespaces, undefined);
+  assert.ok(s.errors.some((e) => /sandbox\.linux\.allowNestedUserNamespaces.*wrong type/.test(e)));
+  assert.ok(s.errors.some((e) => /unknown sandbox\.linux field "bogus"/.test(e)));
+  assert.equal(c.modes.yolo.sandbox.linux?.allowNestedUserNamespaces, false);
+  // Emitted only when true: the stock profile and a false switch stay byte-identical.
+  assert.ok(!("allowNestedUserNamespaces" in profileToConfig(c.modes.default.sandbox)));
+  assert.ok(!("allowNestedUserNamespaces" in profileToConfig(c.modes.yolo.sandbox)));
+  s.cleanup();
+});
+
 test("sandbox.macos: global opt-in projects to the runtime under its names; projects can only turn a switch off", () => {
   const s = sandbox({
     global: {

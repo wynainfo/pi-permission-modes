@@ -663,6 +663,11 @@ export default async function (pi: ExtensionAPI) {
                 `macOS options: allowLocalBinding ${c.network.allowLocalBinding ? "on" : "off"}, enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`,
               ]
             : []),
+          ...(m.sandbox.linux || process.platform === "linux"
+            ? [
+                `Linux options: allowNestedUserNamespaces ${c.allowNestedUserNamespaces ? "on" : "off"}${process.platform === "linux" ? "" : " (Linux only, no effect here)"}`,
+              ]
+            : []),
           `Deny read:  ${c.filesystem?.denyRead?.join(", ") || "(none)"}`,
           ...(c.filesystem.allowRead?.length ? [`Allow read: ${c.filesystem.allowRead.join(", ")} (inside the denied paths)`] : []),
           `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,

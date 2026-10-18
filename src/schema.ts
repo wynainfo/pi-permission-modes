@@ -119,7 +119,22 @@ export interface SandboxProfile {
    * configs may set a key to false, never to true.
    */
   macos?: MacosOptions;
+  /**
+   * Linux-only runtime options, same rules as `macos`: forwarded under the
+   * runtime's names, off unless set, no effect elsewhere, project configs
+   * may set a key to false, never to true.
+   */
+  linux?: LinuxOptions;
 }
+
+/** The runtime's Linux-only switches a mode may opt into (`sandbox.linux`). */
+export interface LinuxOptions {
+  /** Let a sandboxed command create user and mount namespaces of its own (`allowNestedUserNamespaces`). */
+  allowNestedUserNamespaces?: boolean;
+}
+
+/** The keys of `sandbox.linux`, for the loader and the status line. */
+export const LINUX_KEYS = ["allowNestedUserNamespaces"] as const;
 
 /** The runtime's macOS-only switches a mode may opt into (`sandbox.macos`). */
 export interface MacosOptions {

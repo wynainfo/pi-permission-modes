@@ -29,6 +29,8 @@ import type { PlanApprovalConfig } from "./plan-approval.ts";
 import {
   MAX_RULE_REASON,
   type Action,
+  LINUX_KEYS,
+  type LinuxOptions,
   MACOS_KEYS,
   type MacosOptions,
   type ModeDef,
@@ -144,6 +146,21 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
         out.macos = macos;
         break;
       }
+      case "linux": {
+        if (!isPlainObject(v)) {
+          drop(k);
+          break;
+        }
+        const linux: LinuxOptions = {};
+        for (const [lk, lv] of safeEntries(v)) {
+          if (!(LINUX_KEYS as readonly string[]).includes(lk)) {
+            onError(`permission-mode: ignoring unknown sandbox.linux field "${lk}" in ${where}`);
+          } else if (typeof lv === "boolean") linux[lk as keyof LinuxOptions] = lv;
+          else drop(`linux.${lk}`);
+        }
+        out.linux = linux;
+        break;
+      }
       default:
         onError(`permission-mode: ignoring unknown sandbox field "${k}" in ${where}`);
     }
@@ -207,12 +224,15 @@ export interface SandboxConfig {
   filesystem: { denyRead: string[]; allowRead?: string[]; allowWrite: string[]; denyWrite: string[] };
   /** macOS: allow the trustd lookup Go programs need for TLS verification. */
   enableWeakerNetworkIsolation?: boolean;
+  /** Linux: let a sandboxed command create user and mount namespaces of its own. */
+  allowNestedUserNamespaces?: boolean;
 }
 
 /** Project a mode's sandbox profile into the runtime's config shape. */
 export function profileToConfig(p: SandboxProfile): SandboxConfig {
-  // The macOS switches are emitted only when true: the runtime defaults them
-  // to false, so stock output stays byte-identical and the profile key stable.
+  // The platform switches are emitted only when true: the runtime defaults
+  // them to false, so stock output stays byte-identical and the profile key
+  // stable.
   return {
     enabled: p.enabled,
     network: {
@@ -221,6 +241,7 @@ export function profileToConfig(p: SandboxProfile): SandboxConfig {
       ...(p.macos?.allowLocalBinding === true ? { allowLocalBinding: true } : {}),
     },
     ...(p.macos?.enableWeakerNetworkIsolation === true ? { enableWeakerNetworkIsolation: true } : {}),
+    ...(p.linux?.allowNestedUserNamespaces === true ? { allowNestedUserNamespaces: true } : {}),
     filesystem: {
       denyRead: p.denyRead ?? [],
       ...(p.allowRead ? { allowRead: p.allowRead } : {}),
@@ -498,6 +519,18 @@ function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, o
       }
     }
     result.macos = macos;
+  }
+  if (over.linux) {
+    // Same rule as the macOS switches: a project may only turn one off.
+    const linux: LinuxOptions = { ...base.linux };
+    for (const key of LINUX_KEYS) {
+      const v = over.linux[key];
+      if (v === false && base.linux?.[key] === true) linux[key] = false;
+      if (v === true && base.linux?.[key] !== true) {
+        onError(`permission-mode: project config cannot enable sandbox.linux.${key}; ignoring (see ${docRef("projectConfig")})`);
+      }
+    }
+    result.linux = linux;
   }
   if (over.allowWrite !== undefined) result.allowWrite = intersect(base.allowWrite, over.allowWrite);
   if (over.denyRead !== undefined) result.denyRead = union(base.denyRead, over.denyRead);
