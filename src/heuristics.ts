@@ -13,9 +13,42 @@ import { lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { bashPathEscapes, SAFE_OUTSIDE_RE } from "./paths.ts";
+import { isOutsideWin, winPathCandidate } from "./win-paths.ts";
 
-/** Privilege escalation / run-as-other-user. */
-export const PRIVILEGE_RE = /\b(sudo|su|doas|pkexec|runuser|setpriv|chroot)\b/i;
+/** Privilege escalation / run-as-other-user (Windows: `runas`, `gsudo`). */
+export const PRIVILEGE_RE = /\b(sudo|su|doas|pkexec|runuser|setpriv|chroot|runas|gsudo)\b/i;
+
+/** Platform and environment the path check runs against (injected in tests). */
+export interface PathCheckOptions {
+  platform?: NodeJS.Platform;
+  env?: Record<string, string | undefined>;
+  home?: string;
+}
+
+/**
+ * On win32, the judgement of a token that is Windows-shaped (`C:\x`, `~\x`,
+ * `$env:X\x`, `%X%\x`, `/c/x`, `..\x`): its absolute path and whether it
+ * escapes the project and every `alsoInside` root. Undefined off win32 and
+ * for tokens that are not Windows-shaped, which the POSIX rules then judge
+ * (`/x`, `~/x`, `a/b`, `..`). A single-letter switch (`cmd /c`, `dir /s`,
+ * `findstr /i`) is not a path.
+ */
+export function winTokenEscape(
+  tok: string,
+  root: string,
+  alsoInside: readonly string[],
+  opts: PathCheckOptions,
+): { target: string; escapes: boolean } | undefined {
+  if ((opts.platform ?? process.platform) !== "win32") return undefined;
+  if (/^\/[a-zA-Z?]$/.test(tok)) return { target: tok, escapes: false };
+  const target = winPathCandidate(tok, { root, home: opts.home ?? os.homedir(), env: opts.env ?? process.env });
+  if (target === undefined) return undefined;
+  const inside = [root, ...alsoInside].some((dir) => !isOutsideWin(dir, target));
+  // Lexical check always; on a real Windows host also the canonical one, so
+  // a junction inside the project cannot hide an escape.
+  const escapes = !inside || (process.platform === "win32" && bashPathEscapes(root, target, alsoInside));
+  return { target, escapes };
+}
 
 /**
  * Normalize a bash word for path judgement, undoing the spellings that hid a
@@ -71,12 +104,22 @@ export function tokenTarget(tok: string, root: string, bare: boolean): string | 
   }
 }
 
-export function bashConfirmReason(command: string, root: string, alsoInside: readonly string[] = []): string | undefined {
+export function bashConfirmReason(
+  command: string,
+  root: string,
+  alsoInside: readonly string[] = [],
+  opts: PathCheckOptions = {},
+): string | undefined {
   if (PRIVILEGE_RE.test(command)) return "privilege escalation";
   if (/(^|[;&|(]\s*)(cd|pushd)(\s+-)?\s*($|[;&|)])/.test(command)) return "path outside project: cd";
   for (const raw of command.split(/[\s;|&()<>]+/).filter(Boolean)) {
     const tok = normalizeBashToken(raw);
     if (!tok) continue;
+    const win = winTokenEscape(raw, root, alsoInside, opts); // raw: normalizeBashToken would eat the backslashes
+    if (win) {
+      if (win.escapes) return `path outside project: ${raw}`;
+      continue;
+    }
     if (/^~[^/]/.test(tok)) return `path outside project: ${raw}`;
     const target = tokenTarget(tok, root, true);
     if (target === undefined || SAFE_OUTSIDE_RE.test(target)) continue;

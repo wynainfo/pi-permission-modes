@@ -360,3 +360,54 @@ test("bare-word symlinks: an argument naming an in-project symlink to outside is
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+// --- win32: Windows-shaped paths, PowerShell and cmd scripts (platform injected) ---
+const WIN = { platform: "win32" as const, home: "C:\\Users\\u", env: { USERPROFILE: "C:\\Users\\u" } };
+const WIN_ROOT = "C:\\ws\\proj";
+const wbc = (name: string, ...args: string[]): BashCommand => ({ name, args, isNested: false });
+
+test("outsideReasonFromCommands (win32): env-var, home, drive and Git Bash paths are judged; in-project ones pass", () => {
+  assert.equal(
+    outsideReasonFromCommands([wbc("Remove-Item", "$env:USERPROFILE\\Documents\\tax.pdf")], WIN_ROOT, [], WIN),
+    "path outside project: $env:USERPROFILE\\Documents\\tax.pdf",
+  );
+  assert.equal(outsideReasonFromCommands([wbc("type", "~\\.ssh\\id_rsa")], WIN_ROOT, [], WIN), "path outside project: ~\\.ssh\\id_rsa");
+  assert.equal(outsideReasonFromCommands([wbc("cat", "/c/Users/u/.npmrc")], WIN_ROOT, [], WIN), "path outside project: /c/Users/u/.npmrc");
+  assert.equal(outsideReasonFromCommands([wbc("dir", "D:\\data")], WIN_ROOT, [], WIN), "path outside project: D:\\data");
+  assert.equal(outsideReasonFromCommands([wbc("Remove-Item", ".\\build\\x")], WIN_ROOT, [], WIN), undefined);
+  assert.equal(outsideReasonFromCommands([wbc("type", "c:\\WS\\Proj\\README.md")], WIN_ROOT, [], WIN), undefined); // case-insensitive
+  assert.equal(outsideReasonFromCommands([wbc("dir", "/s", "/b")], WIN_ROOT, [], WIN), undefined); // switches, not paths
+  // An insideRoots / sandbox-writable root counts, case-insensitively.
+  assert.equal(outsideReasonFromCommands([wbc("copy", "x", "C:\\Temp\\out")], WIN_ROOT, ["c:\\temp"], WIN), undefined);
+});
+
+test("outsideReasonFromCommands (win32): powershell -Command and cmd /c scripts are split into words", () => {
+  const ps = wbc("powershell", "-NoProfile", "-Command", "Remove-Item $env:USERPROFILE\\Documents\\x.pdf");
+  assert.equal(outsideReasonFromCommands([ps], WIN_ROOT, [], WIN), "path outside project: $env:USERPROFILE\\Documents\\x.pdf");
+  const cmdC = wbc("cmd.exe", "/c", "del %USERPROFILE%\\x.pdf");
+  assert.equal(outsideReasonFromCommands([cmdC], WIN_ROOT, [], WIN), "path outside project: %USERPROFILE%\\x.pdf");
+  assert.equal(outsideReasonFromCommands([wbc("cmd", "/c", "dir /s")], WIN_ROOT, [], WIN), undefined);
+});
+
+test("outsideReasonFromCommands (win32): encoded PowerShell and RunAs prompt; not on POSIX", () => {
+  assert.equal(outsideReasonFromCommands([wbc("pwsh", "-enc", "ZQBjAGgAbwA=")], WIN_ROOT, [], WIN), "encoded PowerShell command");
+  assert.equal(outsideReasonFromCommands([wbc("Start-Process", "pwsh", "-Verb", "RunAs")], WIN_ROOT, [], WIN), "privilege escalation");
+  assert.equal(outsideReasonFromCommands([wbc("runas", "/user:Administrator", "cmd")], WIN_ROOT, [], WIN), "privilege escalation");
+  assert.equal(outsideReasonFromCommands([wbc("pwsh", "-enc", "x")], "/p", [], { platform: "linux" }), undefined);
+});
+
+test("escapingPaths / escapeTargetFromReason (win32): the resolved Windows path is the Deny-and-block candidate", () => {
+  assert.deepEqual(escapingPaths([wbc("type", "%USERPROFILE%\\.npmrc", "src\\a")], WIN_ROOT, [], WIN), ["C:\\Users\\u\\.npmrc"]);
+  assert.equal(escapeTargetFromReason("path outside project: ~\\.ssh\\id_rsa", WIN_ROOT, WIN), "C:\\Users\\u\\.ssh\\id_rsa");
+  assert.equal(escapeTargetFromReason("path outside project: /c/Users/u/x", WIN_ROOT, WIN), "C:\\Users\\u\\x");
+});
+
+test("analyzeBash (win32): a PowerShell-style command through the real grammar (skips if WASM absent)", async () => {
+  const a = await analyzeBash("Remove-Item $env:USERPROFILE\\Documents\\tax.pdf", WIN_ROOT, [], WIN);
+  if (a.usedFallback) return;
+  assert.equal(a.outsideReason, "path outside project: $env:USERPROFILE\\Documents\\tax.pdf");
+  const quoted = await analyzeBash(`Remove-Item "$env:USERPROFILE\\Documents\\x.pdf"`, WIN_ROOT, [], WIN);
+  assert.match(quoted.outsideReason ?? "", /path outside project/);
+  const inProject = await analyzeBash("git -C .\\src status", WIN_ROOT, [], WIN);
+  assert.equal(inProject.outsideReason, undefined);
+});

@@ -22,7 +22,16 @@
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { bashConfirmReason, normalizeBashToken, pathPartOfToken, PRIVILEGE_RE, tokenTarget } from "./heuristics.ts";
+import {
+  bashConfirmReason,
+  normalizeBashToken,
+  type PathCheckOptions,
+  pathPartOfToken,
+  PRIVILEGE_RE,
+  tokenTarget,
+  winTokenEscape,
+} from "./heuristics.ts";
+import { winPathCandidate } from "./win-paths.ts";
 import { bashPathEscapes, SAFE_OUTSIDE_RE } from "./paths.ts";
 
 /** One command extracted from a bash line. */
@@ -232,6 +241,8 @@ export function isPrivilegeEscalation(c: BashCommand): boolean {
   let cur: { name: string; args: string[] } = c;
   for (let hops = 0; hops < 8; hops++) {
     if (PRIVILEGE_RE.test(path.basename(cur.name))) return true;
+    // PowerShell elevation: `Start-Process x -Verb RunAs` (aliases saps, start).
+    if (/^(start-process|saps|start)$/i.test(cur.name) && cur.args.some((a) => /^runas$/i.test(a))) return true;
     const next = unwrapCommand(cur);
     if (next.name === cur.name && next.args === cur.args) return false;
     cur = next;
@@ -339,6 +350,24 @@ export function expandShellCommands(
 /** `cd`/`pushd` with no path go to `$HOME`; `-` goes to the previous directory (unknown here). */
 const DIR_CHANGERS = new Set(["cd", "pushd"]);
 
+/** Windows shells whose script arguments are not bash (tree-sitter cannot expand them). */
+const WIN_SHELL_RE = /^(powershell|pwsh|cmd)(\.exe)?$/i;
+/** PowerShell `-EncodedCommand` and its abbreviations. */
+const PS_ENCODED_RE = /^-(e|ec|enc|encodedcommand)$/i;
+
+/**
+ * The tokens to path-check for a command: name and arguments, and for
+ * `powershell|pwsh|cmd` also the words of their script arguments
+ * (`-Command "Remove-Item $env:X\y"`, `/c "del %X%\y"`), which tree-sitter
+ * sees as one string.
+ */
+function scriptTokens(c: BashCommand): string[] {
+  const toks = [c.name, ...c.args];
+  if (!WIN_SHELL_RE.test(path.win32.basename(c.name))) return toks;
+  for (const a of c.args) toks.push(...a.split(/[\s;|&(){}<>,=]+/).filter(Boolean));
+  return toks;
+}
+
 /**
  * Reason to prompt (escape / privilege) derived from extracted commands - the
  * AST-based equivalent of `bashConfirmReason`, but it also sees commands and
@@ -350,15 +379,26 @@ export function outsideReasonFromCommands(
   commands: BashCommand[],
   root: string,
   alsoInside: readonly string[] = [],
+  opts: PathCheckOptions = {},
 ): string | undefined {
+  const win = (opts.platform ?? process.platform) === "win32";
   for (const c of commands) {
     if (isPrivilegeEscalation(c)) return "privilege escalation";
     if (DIR_CHANGERS.has(path.basename(c.name))) {
       const dest = c.args.find((a) => a === "-" || !a.startsWith("-"));
       if (dest === undefined || dest === "-") return `path outside project: ${c.name} ${dest ?? ""}`.trim();
     }
-    for (const [i, raw] of [c.name, ...c.args].entries()) {
+    // A PowerShell -EncodedCommand is an opaque script: its targets cannot be inspected.
+    if (win && WIN_SHELL_RE.test(path.win32.basename(c.name)) && c.args.some((a) => PS_ENCODED_RE.test(a))) {
+      return "encoded PowerShell command";
+    }
+    for (const [i, raw] of scriptTokens(c).entries()) {
       const tok = normalizeBashToken(raw);
+      const w = winTokenEscape(raw, root, alsoInside, opts); // raw: normalizeBashToken would eat the backslashes
+      if (w) {
+        if (w.escapes) return `path outside project: ${raw}`;
+        continue;
+      }
       if (/^~[^/]/.test(tok)) return `path outside project: ${raw}`; // ~user: another user's home
       // Arguments may be bare symlink names; a bare command name is a PATH lookup, not a path.
       const target = tokenTarget(tok, root, i > 0);
@@ -375,11 +415,21 @@ export function outsideReasonFromCommands(
  * block for the session after a Deny. Privilege escalation and unresolvable
  * tokens (`~user`, a bare `cd`) contribute nothing.
  */
-export function escapingPaths(commands: BashCommand[], root: string, alsoInside: readonly string[] = []): string[] {
+export function escapingPaths(
+  commands: BashCommand[],
+  root: string,
+  alsoInside: readonly string[] = [],
+  opts: PathCheckOptions = {},
+): string[] {
   const out = new Set<string>();
   for (const c of commands) {
-    for (const [i, raw] of [c.name, ...c.args].entries()) {
+    for (const [i, raw] of scriptTokens(c).entries()) {
       const tok = normalizeBashToken(raw);
+      const w = winTokenEscape(raw, root, alsoInside, opts); // raw: normalizeBashToken would eat the backslashes
+      if (w) {
+        if (w.escapes) out.add(w.target);
+        continue;
+      }
       if (/^~[^/]/.test(tok)) continue;
       const target = tokenTarget(tok, root, i > 0);
       if (target === undefined || SAFE_OUTSIDE_RE.test(target)) continue;
@@ -390,9 +440,13 @@ export function escapingPaths(commands: BashCommand[], root: string, alsoInside:
 }
 
 /** The escape target named by a heuristic reason ("path outside project: <tok>"), resolved like the detector does. */
-export function escapeTargetFromReason(reason: string | undefined, root: string): string | undefined {
+export function escapeTargetFromReason(reason: string | undefined, root: string, opts: PathCheckOptions = {}): string | undefined {
   const m = reason?.match(/^path outside project: (.+)$/);
   if (!m) return undefined;
+  if ((opts.platform ?? process.platform) === "win32") {
+    const win = winPathCandidate(m[1], { root, home: opts.home ?? os.homedir(), env: opts.env ?? process.env });
+    if (win !== undefined) return win;
+  }
   const p = pathPartOfToken(normalizeBashToken(m[1]));
   if (/^~[^/]/.test(p) || /^(cd|pushd)\b/.test(p)) return undefined;
   if (p.startsWith("/")) return p;
@@ -447,7 +501,12 @@ export interface BashAnalysis {
  * Analyze a bash command via tree-sitter, falling back to the regex heuristic.
  * `alsoInside`: extra in-bounds roots (sandbox-writable dirs) for escape detection.
  */
-export async function analyzeBash(command: string, root: string, alsoInside: readonly string[] = []): Promise<BashAnalysis> {
+export async function analyzeBash(
+  command: string,
+  root: string,
+  alsoInside: readonly string[] = [],
+  opts: PathCheckOptions = {},
+): Promise<BashAnalysis> {
   const parser = await getTreeSitterParser();
   if (parser) {
     try {
@@ -460,10 +519,10 @@ export async function analyzeBash(command: string, root: string, alsoInside: rea
         const pathTokens = [...new Set(raw.map(normalizeBashToken).filter((t) => !raw.includes(t)))];
         return { ...c, ...(aliases.length ? { aliases } : {}), ...(pathTokens.length ? { pathTokens } : {}) };
       });
-      return { commands, outsideReason: outsideReasonFromCommands(commands, root, alsoInside), usedFallback: false };
+      return { commands, outsideReason: outsideReasonFromCommands(commands, root, alsoInside, opts), usedFallback: false };
     } catch {
       // parse failure → fall through to the heuristic
     }
   }
-  return { commands: [], outsideReason: bashConfirmReason(command, root, alsoInside), usedFallback: true };
+  return { commands: [], outsideReason: bashConfirmReason(command, root, alsoInside, opts), usedFallback: true };
 }

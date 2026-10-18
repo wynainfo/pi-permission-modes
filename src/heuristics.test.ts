@@ -95,3 +95,14 @@ test("heuristic fallback and tokenTarget: bare-word symlinks out of the project 
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test("bashConfirmReason (win32 fallback): Windows-shaped tokens are judged; switches and in-project paths pass", () => {
+  const win = { platform: "win32" as const, home: "C:\\Users\\u", env: { USERPROFILE: "C:\\Users\\u" } };
+  const root = "C:\\ws\\proj";
+  assert.equal(bashConfirmReason("Remove-Item $env:USERPROFILE\\x.pdf", root, [], win), "path outside project: $env:USERPROFILE\\x.pdf");
+  assert.equal(bashConfirmReason("type ~\\.ssh\\id_rsa", root, [], win), "path outside project: ~\\.ssh\\id_rsa");
+  assert.equal(bashConfirmReason("dir /s /b src\\a", root, [], win), undefined);
+  assert.equal(bashConfirmReason("copy a C:\\Temp\\b", root, ["C:\\Temp"], win), undefined);
+  assert.equal(bashConfirmReason("runas /user:Administrator cmd", root, [], win), "privilege escalation");
+  assert.equal(bashConfirmReason("gsudo id", root, [], win), "privilege escalation");
+});
