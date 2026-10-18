@@ -266,8 +266,8 @@ bubblewrap and `sandbox-exec`, with the same profile keys on top:
   tools installed for your user only still run; a mode that sets
   `allowRead` itself replaces that list. Configuration files in your profile
   are not granted and would not be read anyway: HOME inside the sandbox is
-  the sandbox account's (your git identity travels as environment, see
-  below). Denies outside every grant are dropped before they reach the
+  the sandbox account's (your global git config and identity travel along,
+  see below). Denies outside every grant are dropped before they reach the
   runtime: the account cannot read there in the first place, and the
   runtime stamps each deny's parent folder too, so `~/.ssh` would walk the
   whole profile. The credential list still holds: nothing of your profile
@@ -298,9 +298,10 @@ The extension adds your shell environment minus the account's identity and
 profile paths (`USERNAME`, `USERPROFILE`, `APPDATA`, `HOME`, ...), the temp
 and path variables, and the proxy and CA variables the runtime sets, so
 `PI_*` and your tool settings arrive as on Linux. `TMPDIR`, `TEMP` and `TMP`
-point at the session scratch directory. Your git `user.name` and
-`user.email` are exported, since the account has no `.gitconfig` of yours;
-other global git settings are not applied inside the sandbox. Git and cargo
+point at the session scratch directory. Your global git config is copied
+into the command folder and read as `GIT_CONFIG_GLOBAL`, since the account
+has no `.gitconfig` of yours (withheld by a mode that masks `~/.gitconfig`;
+your `user.name` and `user.email` are exported either way). Git and cargo
 are told to skip certificate revocation checks, which cannot leave the
 fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-revocation-on-windows)).
 

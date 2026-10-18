@@ -40,6 +40,15 @@ function masksSshKeys(denyRead: string[], allowRead: string[] = []): boolean {
   return deny >= 0 && deepest(allowRead) < deny;
 }
 
+/** True when an allowRead entry covers ~/.ssh (`~`, `$HOME`, the expanded home, or ~/.ssh itself). */
+function grantsSsh(allowRead: readonly string[] | undefined): boolean {
+  const ssh = expandHome("~/.ssh");
+  return (allowRead ?? []).some((p) => {
+    const d = expandHome(p).replace(/[\\/]+$/, "");
+    return ssh === d || ssh.startsWith(`${d}/`);
+  });
+}
+
 /** True when an allowRead entry grants the whole user profile (`~`, `$HOME`, the expanded home). */
 function grantsHome(allowRead: readonly string[] | undefined): boolean {
   const home = expandHome("~");
@@ -136,13 +145,18 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     if (!win32 && sb.allowRead?.length) {
       lines.push(`- Readable again inside those denied paths: ${sb.allowRead.map(renderWritePath).join(", ")}. Anything else under a denied path reads as absent.`);
     }
-    if (masksSshKeys(sb.denyRead, sb.allowRead)) {
-      lines.push(
-        "- SSH keys are unreadable, so do not use ssh or git over SSH (`git@` remotes) from bash: authentication cannot succeed, whatever the options. " +
-          "Git over HTTPS works when a credential is configured; for a `git@` remote, `git -c url.\"https://github.com/\".insteadOf=git@github.com: fetch` uses HTTPS without changing the remote. " +
-          "If that fails to authenticate, stop and tell the user: recommend a fine-grained personal access token for HTTPS (see " + docRef("gitAuth") + "), or running the step themselves with pi's `!` prefix (for example `!git fetch`).",
-      );
-    }
+  }
+  // On Windows nothing of the profile is readable unless granted, so the
+  // keys are out of reach without any deny; elsewhere a deny must cover them.
+  const sshUnreadable = win32 ? !grantsSsh(sb.allowRead) || masksSshKeys(sb.denyRead ?? [], sb.allowRead) : masksSshKeys(sb.denyRead ?? [], sb.allowRead);
+  if (sshUnreadable) {
+    lines.push(
+      "- SSH keys are unreadable, so do not use ssh or git over SSH (`git@` remotes) from bash: authentication cannot succeed, whatever the options. " +
+        "Git over HTTPS works when a credential is configured; for a `git@` remote, `git -c url.\"https://github.com/\".insteadOf=git@github.com: fetch` uses HTTPS without changing the remote. " +
+        "If git asks for a username or fails with \"terminal prompts disabled\", no credential helper could answer (a credential manager cannot prompt in here): stop and tell the user. " +
+        "The way in is a fine-grained personal access token for HTTPS that the user puts in pi's environment before starting pi and a credential helper reads (see " + docRef("gitAuth") + "); " +
+        "do not ask for the token in chat or put one on a command line. The user can also run the step themselves with pi's `!` prefix (for example `!git fetch`).",
+    );
   }
   if (sb.network?.allowedDomains === undefined) {
     lines.push("- Network is unrestricted in this mode (no allowlist configured).");

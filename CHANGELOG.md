@@ -26,8 +26,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   moment), so a switch starts one quiet second after the last cycle step
   and cycling pays for the last mode only. The sandboxed command gets your
   shell environment minus identity, path, temp, proxy and CA variables,
-  your git identity, and `TMPDIR`, `TEMP`, `TMP` pointing at the scratch
-  directory; git sends its proxy credentials up front, never waits on a
+  your global git config (a copy, as `GIT_CONFIG_GLOBAL`) and identity, and
+  `TMPDIR`, `TEMP`, `TMP` pointing at the scratch directory; git sends its proxy credentials up front, never waits on a
   credential prompt, and, with cargo, skips the revocation check that
   cannot leave the fence. The bash escape heuristic understands Windows
   paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script arguments,

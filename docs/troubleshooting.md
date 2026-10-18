@@ -287,11 +287,27 @@ point on Linux. Run the removal outside the sandbox; it prompts.
 ([modes.md, Strict home](modes.md#strict-home)).
 
 On Windows the sandbox account has no `.gitconfig` of yours, whatever the
-profile grants; the extension exports your `user.name` and `user.email` as
-`GIT_AUTHOR_*` and `GIT_COMMITTER_*` into every sandboxed command, so
-commits carry your identity. Other global git settings (aliases,
-`core.autocrlf`) are not applied inside the sandbox; set the ones a project
-needs in its `.git/config`.
+profile grants, so the extension copies your global git config
+(`~/.gitconfig` and `~/.config/git/config`) into the sandbox's command
+folder and points `GIT_CONFIG_GLOBAL` at the copy: aliases, `core.autocrlf`
+and your credential helper apply inside the sandbox as they do on Linux.
+The copy is made when the sandbox initializes (a mode switch refreshes it)
+and withheld in a mode whose `denyRead` masks `~/.gitconfig`; your
+`user.name` and `user.email` travel as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`
+regardless, so commits carry your identity either way.
+
+## Git asks for a username inside the sandbox
+
+`fatal: could not read Username for 'https://github.com': terminal prompts
+disabled` (or a hang on a username prompt on Linux): the remote wants
+credentials and no credential helper could provide any. Inside the sandbox
+nothing can prompt: there is no terminal, and on Windows Git Credential
+Manager runs as the sandbox account, whose store is empty and which cannot
+show a window. The model is told to stop and tell you. Set up a fine-grained
+token read by a credential helper
+([network.md, Git authentication](network.md#git-authentication)), or run
+the step yourself with pi's `!` prefix (`!git clone ...`), which runs on
+the host with your own credentials.
 
 ## TLS revocation on Windows
 

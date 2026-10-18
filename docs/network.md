@@ -90,6 +90,17 @@ the model uses), or switch the remote to
 the sandbox can run with pi's `!` prefix (`!git push`), which runs on the
 host with your own credentials.
 
+On Windows the same recipe applies. Run step 2 in Git Bash (the value is a
+shell snippet git runs through its own `sh`); inside the sandbox your
+global git config is applied from a copy, so the helper is found there, and
+`GITHUB_TOKEN` arrives with the rest of your environment. Put the token in
+the shell that starts pi (`$env:GITHUB_TOKEN = "github_pat_..."` in
+PowerShell). Git Credential Manager, which Git for Windows configures for
+every user, cannot prompt inside the sandbox: a private remote without the
+helper fails at once with `could not read Username for 'https://github.com':
+terminal prompts disabled`, and the model is told to stop and ask you for
+the setup above rather than for the token itself.
+
 Any command inside the sandbox can read a token in its environment, so scope
 the token, not the secrecy. Other credential files are masked by `denyRead`
 ([sandbox.md, Keys](sandbox.md#keys)); the stored login of a CLI such as the

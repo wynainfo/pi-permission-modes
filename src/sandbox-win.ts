@@ -15,7 +15,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { docRef } from "./docs.ts";
 import type { SandboxProfile } from "./schema.ts";
@@ -129,6 +129,68 @@ export function readGitIdentity(
     }
   };
   return { name: get("user.name"), email: get("user.email") };
+}
+
+/**
+ * The files git reads as the user's global config on Windows, in git's order
+ * (a later file wins): `$XDG_CONFIG_HOME/git/config` or
+ * `~/.config/git/config`, then `~/.gitconfig` (`HOME`, else `USERPROFILE`).
+ */
+export function globalGitConfigSources(env: NodeJS.ProcessEnv): string[] {
+  const home = env.HOME || env.USERPROFILE;
+  if (!home) return [];
+  const xdg = env.XDG_CONFIG_HOME || path.win32.join(home, ".config");
+  return [path.win32.join(xdg, "git", "config"), path.win32.join(home, ".gitconfig")];
+}
+
+/**
+ * Copy the user's global git config into `dir` (the command dir, readable by
+ * the sandbox account) as one file for `GIT_CONFIG_GLOBAL`: the sandbox
+ * account's HOME is its own, so nothing of the user's profile is read
+ * otherwise, and the credential helper, `core.autocrlf` and the rest would
+ * not apply inside the sandbox as they do on Linux. Returns the copy's path,
+ * or undefined when there is no global config.
+ */
+export function stageGitConfig(
+  dir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  fs: { exists: (p: string) => boolean; read: (p: string) => string; write: (p: string, s: string) => void } = {
+    exists: existsSync,
+    read: (p) => readFileSync(p, "utf8"),
+    write: (p, s) => writeFileSync(p, s),
+  },
+): string | undefined {
+  const parts = globalGitConfigSources(env)
+    .filter((p) => fs.exists(p))
+    .map((p) => `# from ${p}\n${fs.read(p).replace(/\r?\n$/, "")}\n`);
+  if (parts.length === 0) return undefined;
+  const out = path.join(dir, "gitconfig");
+  fs.write(out, `# Your global git config, copied by pi-permission-modes for the sandbox account (GIT_CONFIG_GLOBAL).\n${parts.join("")}`);
+  return out;
+}
+
+/**
+ * Whether the profile masks `~/.gitconfig`: the most specific entry among
+ * `denyRead` and `allowRead` that covers it decides, as on Linux. Entries are
+ * compared in `~` form (`$HOME` and the expanded profile count as `~`).
+ */
+export function gitConfigMasked(profile: Pick<SandboxProfile, "denyRead" | "allowRead">, env: NodeJS.ProcessEnv = process.env): boolean {
+  const home = (env.USERPROFILE ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const norm = (p: string): string => {
+    let s = p.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (s === "$HOME" || s.startsWith("$HOME/")) s = `~${s.slice(5)}`;
+    const lower = s.toLowerCase();
+    if (home && (lower === home || lower.startsWith(`${home}/`))) s = `~${s.slice(home.length)}`;
+    return s.toLowerCase();
+  };
+  const target = "~/.gitconfig";
+  const depth = (p: string): number => {
+    const d = norm(p);
+    return target === d || target.startsWith(`${d}/`) ? d.split("/").length : -1;
+  };
+  const deepest = (list: readonly string[] | undefined): number => Math.max(-1, ...(list ?? []).map(depth));
+  const deny = deepest(profile.denyRead);
+  return deny >= 0 && deepest(profile.allowRead) < deny;
 }
 
 /** Environment carrying the host git identity into the sandbox (empty when unset). */

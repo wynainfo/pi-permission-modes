@@ -32,6 +32,8 @@ import {
   sandboxAceIn,
   stageSrtWin,
   expandWinEnv,
+  gitConfigMasked,
+  stageGitConfig,
   windowsEnvExports,
   windowsEnvFile,
   windowsGitEnv,
@@ -649,6 +651,8 @@ export interface WindowsHooks {
   commandDir?: (grantee: string) => string | undefined;
   /** `icacls` output for a folder the probe found writable ("" when unknown). */
   readAcl?: (dir: string) => string;
+  /** Copies the user's global git config into the command dir; returns the copy's path. */
+  gitConfig?: (commandDir: string | undefined) => string | undefined;
 }
 
 /** Footer reason while the Windows backend is not provisioned on this machine. */
@@ -661,6 +665,8 @@ interface WindowsBackend {
   /** `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from the host's git config, plus the revocation knobs. */
   extraEnv: Record<string, string>;
   commandDir: string | undefined;
+  /** The copy of the user's global git config the sandbox reads as `GIT_CONFIG_GLOBAL` (unless the mode masks `~/.gitconfig`). */
+  gitConfig: string | undefined;
   /** The applied profile's read and write grants, absolute: the only trees a deny can matter in. */
   grants: string[];
   /** The in-sandbox self-check passed for this init. */
@@ -1037,7 +1043,13 @@ export class SandboxController {
     }
     this.manager = rt.SandboxManager;
     const extraEnv = { ...gitIdentityEnv(id.name, id.email), ...windowsGitEnv(env) };
-    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, grants: readable, probed: false, sid: grantee, readOnly: !profile.writable };
+    let gitConfig: string | undefined;
+    try {
+      gitConfig = hooks.gitConfig ? hooks.gitConfig(commandDir) : commandDir ? stageGitConfig(commandDir, env) : undefined;
+    } catch {
+      gitConfig = undefined; // the identity still travels as environment
+    }
+    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, gitConfig, grants: readable, probed: false, sid: grantee, readOnly: !profile.writable };
     await this.applyProfile(profile);
   }
 
@@ -1153,6 +1165,10 @@ export class SandboxController {
       const env = this.lastInit?.windows?.env ?? process.env;
       const fs = cfg.filesystem;
       win.grants = [...(fs.allowRead ?? []), ...fs.allowWrite].map((p) => winAbs(p, this.cwd, env));
+      // The user's global git config applies inside the sandbox as it does on
+      // Linux: unless the mode masks ~/.gitconfig (a strict home).
+      if (win.gitConfig && !gitConfigMasked(profile, env)) win.extraEnv.GIT_CONFIG_GLOBAL = win.gitConfig.replace(/\\/g, "/");
+      else delete win.extraEnv.GIT_CONFIG_GLOBAL;
       cfg = {
         ...cfg,
         filesystem: {

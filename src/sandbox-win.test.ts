@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   findGitBash,
+  gitConfigMasked,
   gitIdentityEnv,
+  globalGitConfigSources,
+  stageGitConfig,
   grantReadExecute,
   parseProbe,
   probeAdvice,
@@ -103,6 +106,38 @@ test("parseProbe + probeProblem + probeAdvice: pass, writable, hidden parent, in
   assert.match(probeAdvice(nested), /another pi session runs in that folder or in one above it/);
   assert.match(probeAdvice(nested), /icacls "C:\\ws" \/remove:g srt-sandbox \/T/);
   assert.doesNotMatch(probeAdvice(nested), /drive root/);
+});
+
+test("stageGitConfig: the global config files in git's order, as one copy; none means undefined", () => {
+  const env = { USERPROFILE: "C:\\Users\\me" };
+  assert.deepEqual(globalGitConfigSources(env), ["C:\\Users\\me\\.config\\git\\config", "C:\\Users\\me\\.gitconfig"]);
+  assert.deepEqual(globalGitConfigSources({ ...env, HOME: "D:\\h", XDG_CONFIG_HOME: "D:\\xdg" }), ["D:\\xdg\\git\\config", "D:\\h\\.gitconfig"]);
+  assert.deepEqual(globalGitConfigSources({}), []);
+  const files: Record<string, string> = {
+    "C:\\Users\\me\\.gitconfig": "[user]\n\tname = Ann\n[credential \"https://github.com\"]\n\thelper = !f() { :; }; f\r\n",
+    "C:\\Users\\me\\.config\\git\\config": "[core]\n\tautocrlf = true\n",
+  };
+  const written: Record<string, string> = {};
+  const fs = { exists: (p: string) => p in files, read: (p: string) => files[p], write: (p: string, s: string) => void (written[p] = s) };
+  const out = stageGitConfig("/cmd", env, fs);
+  assert.equal(out, "/cmd/gitconfig");
+  const body = written["/cmd/gitconfig"];
+  assert.ok(body.indexOf("autocrlf") < body.indexOf("name = Ann"), "XDG first, ~/.gitconfig last so it wins");
+  assert.match(body, /^# Your global git config, copied by pi-permission-modes/);
+  assert.match(body, /# from C:\\Users\\me\\\.gitconfig\n\[user\]/);
+  assert.doesNotMatch(body, /\r/);
+  assert.equal(stageGitConfig("/cmd", { USERPROFILE: "C:\\Users\\nobody" }, fs), undefined);
+});
+
+test("gitConfigMasked: the most specific entry covering ~/.gitconfig decides, in ~, $HOME and expanded form", () => {
+  const env = { USERPROFILE: "C:\\Users\\me" };
+  assert.equal(gitConfigMasked({ denyRead: ["~/.ssh", "~/.aws"] }, env), false, "the stock denies leave it readable");
+  assert.equal(gitConfigMasked({ denyRead: ["~"] }, env), true, "a strict home masks it");
+  assert.equal(gitConfigMasked({ denyRead: ["$HOME"] }, env), true);
+  assert.equal(gitConfigMasked({ denyRead: ["C:\\Users\\me\\"] }, env), true);
+  assert.equal(gitConfigMasked({ denyRead: ["~"], allowRead: ["~/.gitconfig"] }, env), false, "re-allowed below the deny");
+  assert.equal(gitConfigMasked({ denyRead: ["~/.gitconfig"], allowRead: ["~"] }, env), true, "the deny is the more specific");
+  assert.equal(gitConfigMasked({}, env), false);
 });
 
 test("sandboxAceIn: finds the sandbox account by name or SID, explicit before inherited", () => {

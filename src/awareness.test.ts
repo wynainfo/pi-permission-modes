@@ -240,6 +240,12 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   const linux = sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!;
   assert.doesNotMatch(linux, /native Windows sandbox/);
   assert.match(linux, /Reads are broadly allowed EXCEPT/);
+  // Without any deny the keys are still out of reach on Windows (nothing of the profile is granted).
+  const noDeny = sandboxAwarenessPrompt(mode({}, { denyRead: [] }), { active: true, platform: "win32" })!;
+  assert.match(noDeny, /SSH keys are unreadable/);
+  assert.match(noDeny, /do not ask for the token in chat or put one on a command line/);
+  const sshGranted = sandboxAwarenessPrompt(mode({}, { denyRead: [], allowRead: ["~/.ssh"] }), { active: true, platform: "win32" })!;
+  assert.doesNotMatch(sshGranted, /SSH keys are unreadable/);
 });
 
 test("masksSshKeys: the most specific entry decides (an allow of ~ above a deny of ~/.ssh still masks; an allow of ~/.ssh re-opens)", () => {

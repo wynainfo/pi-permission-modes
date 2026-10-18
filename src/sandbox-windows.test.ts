@@ -130,8 +130,26 @@ const baseInit = (
       stageHelper: (exe, grantee) => `C:\\Users\\me\\AppData\\Local\\pi-permission-modes\\srt-win-${grantee.length}\\${path.win32.basename(exe)}`,
       readIdentity: () => ({ name: "Ann", email: "ann@x.io" }),
       commandDir: () => undefined,
+      gitConfig: () => "C:\\Users\\me\\AppData\\Local\\Temp\\pi-x\\gitconfig",
     },
   });
+
+test("controller (win32): the global git config copy rides along as GIT_CONFIG_GLOBAL, except when the mode masks ~/.gitconfig", async () => {
+  const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+  const fake = fakeWindowsRuntime({ argv: passing });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  await baseInit(c, fake, notes, { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh"] });
+  assert.equal(c.ready, true, notes.join("\n"));
+  await exec(c.bashOps({ readOnly: false })!, "true", { PATH: process.env.PATH });
+  assert.match(fake.wraps.at(-1)!.script, /GIT_CONFIG_GLOBAL='C:\/Users\/me\/AppData\/Local\/Temp\/pi-x\/gitconfig'/);
+  assert.match(fake.wraps.at(-1)!.script, /GIT_AUTHOR_NAME='Ann'/, "the identity still travels too");
+  // A strict home masks ~/.gitconfig: the copy is withheld after the switch.
+  await c.applyProfile({ enabled: true, writable: true, allowWrite: ["."], denyRead: ["~"] });
+  await c.settled();
+  await exec(c.bashOps({ readOnly: false })!, "true", { PATH: process.env.PATH });
+  assert.doesNotMatch(fake.wraps.at(-1)!.script, /GIT_CONFIG_GLOBAL/);
+});
 
 test("controller (win32): not provisioned degrades with the install hint and never initializes", async () => {
   const fake = fakeWindowsRuntime({ provisioned: false });
