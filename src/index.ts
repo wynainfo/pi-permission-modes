@@ -708,7 +708,9 @@ export default async function (pi: ExtensionAPI) {
               ]
             : []),
           `Deny read:  ${c.filesystem?.denyRead?.join(", ") || "(none)"}`,
-          ...(c.filesystem.allowRead?.length ? [`Allow read: ${c.filesystem.allowRead.join(", ")} (inside the denied paths)`] : []),
+          ...(c.filesystem.allowRead?.length
+            ? [`Allow read: ${c.filesystem.allowRead.join(", ")} ${sandbox.windowsStatus() ? "(readable for the sandbox account, besides the project)" : "(inside the denied paths)"}`]
+            : []),
           `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,
           `Allow write: ${c.filesystem?.allowWrite?.join(", ") || "(none)"}`,
           ...(m.sandbox.insideRoots?.length ? [`Inside roots: ${m.sandbox.insideRoots.join(", ")} (bash escape heuristic only)`] : []),

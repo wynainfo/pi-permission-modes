@@ -32,7 +32,7 @@ import {
   expandWinEnv,
   windowsEnvExports,
   windowsEnvFile,
-  windowsRevocationEnv,
+  windowsGitEnv,
   windowsScript,
 } from "./sandbox-win.ts";
 import type { SandboxProfile } from "./schema.ts";
@@ -1009,7 +1009,7 @@ export class SandboxController {
       );
     }
     this.manager = rt.SandboxManager;
-    const extraEnv = { ...gitIdentityEnv(id.name, id.email), ...windowsRevocationEnv(env) };
+    const extraEnv = { ...gitIdentityEnv(id.name, id.email), ...windowsGitEnv(env) };
     this.win = { bash, srtWinPath: staged, extraEnv, commandDir, grants: readable, probed: false, readOnly: !profile.writable };
     await this.applyProfile(profile);
   }
