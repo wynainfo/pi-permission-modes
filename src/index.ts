@@ -691,7 +691,9 @@ export default async function (pi: ExtensionAPI) {
           ...(sandbox.windowsStatus()
             ? [
                 `Windows: commands run as srt-sandbox in ${sandbox.windowsStatus()!.bash}; helper ${sandbox.windowsStatus()!.srtWinPath}; self-check passed`,
-                `Last initialize: ${((sandbox.lastInitMs ?? 0) / 1000).toFixed(1)} s (permission entries are copied over every granted tree)`,
+                `Last initialize: ${((sandbox.lastInitMs ?? 0) / 1000).toFixed(1)} s` +
+                  (sandbox.lastResetMs !== undefined ? `, last reset: ${(sandbox.lastResetMs / 1000).toFixed(1)} s` : "") +
+                  " (a mode switch pays both; the runtime copies permission entries over every granted tree, blocking pi meanwhile)",
               ]
             : []),
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,

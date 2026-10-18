@@ -27,7 +27,9 @@ import {
   probeProblem,
   probeScript,
   probeTargets,
+  readAcl,
   readGitIdentity,
+  sandboxAceIn,
   stageSrtWin,
   expandWinEnv,
   windowsEnvExports,
@@ -632,6 +634,8 @@ export interface WindowsHooks {
   readIdentity?: (cwd: string) => { name?: string; email?: string };
   /** Directory for command and env files, readable by `grantee`; undefined inlines them. */
   commandDir?: (grantee: string) => string | undefined;
+  /** `icacls` output for a folder the probe found writable ("" when unknown). */
+  readAcl?: (dir: string) => string;
 }
 
 /** Footer reason while the Windows backend is not provisioned on this machine. */
@@ -648,6 +652,8 @@ interface WindowsBackend {
   grants: string[];
   /** The in-sandbox self-check passed for this init. */
   probed: boolean;
+  /** The sandbox account's SID as the runtime reports it (`*S-1-5-21-...`). */
+  sid: string;
   /** The runtime is initialized without project writes (read-only is per session on Windows). */
   readOnly: boolean;
 }
@@ -747,6 +753,9 @@ export class SandboxController {
 
   /** Wall time of the last successful runtime initialize, in milliseconds (the permission-entry walks on Windows show here). */
   lastInitMs: number | undefined;
+  /** Wall time of the most recent runtime `reset()` (a mode switch pays this on top of the initialize). */
+  lastResetMs: number | undefined;
+  private identity: { name?: string; email?: string } | undefined;
 
   /** True while a profile switch is queued or running (the footer marks it). */
   get switching(): boolean {
@@ -1002,7 +1011,8 @@ export class SandboxController {
       return unavailable(`Windows sandbox off: could not stage srt-win (${errMsg(err)})`, `See ${docRef("windowsInstall")}`);
     }
     const commandDir = hooks.commandDir ? hooks.commandDir(grantee) : windowsCommandDir(grantee);
-    const id = (hooks.readIdentity ?? readGitIdentity)(cwd);
+    // Two git spawns per init otherwise, and a mode switch re-inits: the identity does not change within a session.
+    const id = (this.identity ??= (hooks.readIdentity ?? readGitIdentity)(cwd));
     if (this.extras?.allowWrite.length && hasUI) {
       notify(
         `permission-mode: git worktree/submodule detected; sandboxed bash may write its git dirs (${this.extras.allowWrite.join(", ")}), hooks and config excluded`,
@@ -1010,7 +1020,7 @@ export class SandboxController {
     }
     this.manager = rt.SandboxManager;
     const extraEnv = { ...gitIdentityEnv(id.name, id.email), ...windowsGitEnv(env) };
-    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, grants: readable, probed: false, readOnly: !profile.writable };
+    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, grants: readable, probed: false, sid: grantee, readOnly: !profile.writable };
     await this.applyProfile(profile);
   }
 
@@ -1033,6 +1043,13 @@ export class SandboxController {
       out += `\n${errMsg(err)}`;
     }
     const result = parseProbe(out);
+    if (result.writable.length) {
+      // A writable parent that already carries an entry for the sandbox
+      // account is another session's project, not a loose ACL: say so.
+      const acl = this.lastInit?.windows?.readAcl ?? readAcl;
+      const granted = result.writable.filter((d) => sandboxAceIn(acl(d), win.sid) !== undefined);
+      if (granted.length) result.granted = granted;
+    }
     const problem = probeProblem(result);
     if (!problem) {
       win.probed = true;
@@ -1131,7 +1148,9 @@ export class SandboxController {
     }
     try {
       if (this.runtimeInitialized) {
+        const resetStart = Date.now();
         await this.manager.reset();
+        this.lastResetMs = Date.now() - resetStart;
         this.runtimeInitialized = false;
       }
       // The ask callback rides along so unmatched hosts prompt instead of

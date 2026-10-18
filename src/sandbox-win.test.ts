@@ -8,6 +8,7 @@ import {
   probeAdvice,
   probeNotice,
   probeProblem,
+  sandboxAceIn,
   probeScript,
   probeTargets,
   readGitIdentity,
@@ -96,6 +97,32 @@ test("parseProbe + probeProblem + probeAdvice: pass, writable, hidden parent, in
   const partial = parseProbe("PI-SRT-PROBE WRITABLE C:\\ws\n");
   assert.match(probeProblem(partial)!, /did not complete/);
   assert.match(probeAdvice(partial), /did not complete/);
+  // A writable parent that is another session's project gets its own message.
+  const nested = { ...w, granted: ["C:\\ws"] };
+  assert.equal(probeProblem(nested), "Windows sandbox off: inside another sandboxed folder (C:\\ws)");
+  assert.match(probeAdvice(nested), /another pi session runs in that folder or in one above it/);
+  assert.match(probeAdvice(nested), /icacls "C:\\ws" \/remove:g srt-sandbox \/T/);
+  assert.doesNotMatch(probeAdvice(nested), /drive root/);
+});
+
+test("sandboxAceIn: finds the sandbox account by name or SID, explicit before inherited", () => {
+  const explicit = [
+    "C:\\Users\\me\\test NT AUTHORITY\\SYSTEM:(I)(OI)(CI)(F)",
+    "                    BUILTIN\\Administrators:(I)(OI)(CI)(F)",
+    "                    PC\\me:(I)(OI)(CI)(F)",
+    "                    PC\\srt-sandbox:(OI)(CI)(M)",
+    "",
+    "Successfully processed 1 files; Failed processing 0 files",
+  ].join("\r\n");
+  assert.equal(sandboxAceIn(explicit), "explicit");
+  const inherited = explicit.replace("srt-sandbox:(OI)(CI)(M)", "srt-sandbox:(I)(OI)(CI)(M)");
+  assert.equal(sandboxAceIn(inherited), "inherited");
+  const bySid = explicit.replace("PC\\srt-sandbox", "*S-1-5-21-1-2-3-1001");
+  assert.equal(sandboxAceIn(bySid), undefined, "an unresolved SID is only matched when given");
+  assert.equal(sandboxAceIn(bySid, "*S-1-5-21-1-2-3-1001"), "explicit");
+  assert.equal(sandboxAceIn(bySid, "S-1-5-21-1-2-3-1001"), "explicit");
+  assert.equal(sandboxAceIn(explicit.replace("srt-sandbox", "srt-sandbox-old")), undefined);
+  assert.equal(sandboxAceIn(""), undefined);
 });
 
 test("stagedSrtWinPath: per-hash folder under LOCALAPPDATA", () => {

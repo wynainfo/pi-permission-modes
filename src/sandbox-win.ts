@@ -336,6 +336,36 @@ export function probeScript(cwd: string, targets: string[], nonce: string): stri
   return lines.join("\n");
 }
 
+/** The local account the runtime's Windows backend runs commands as. */
+export const WINDOWS_SANDBOX_USER = "srt-sandbox";
+
+/** `icacls <dir>` output, or "" when icacls fails (the folder is then judged by the probe alone). */
+export function readAcl(dir: string): string {
+  try {
+    return execFileSync("icacls", [dir], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"], timeout: 15000 });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Whether `icacls` output lists a permission entry for the sandbox account
+ * (by name or SID): "explicit" when granted on the folder itself, which is
+ * how a running pi session marks its project, "inherited" when it comes from
+ * a folder above, undefined when there is none.
+ */
+export function sandboxAceIn(icaclsOutput: string, sid?: string): "explicit" | "inherited" | undefined {
+  const names = [`\\${WINDOWS_SANDBOX_USER}:`.toLowerCase(), ...(sid ? [`${sid.replace(/^\*/, "")}:`.toLowerCase()] : [])];
+  let found: "explicit" | "inherited" | undefined;
+  for (const line of icaclsOutput.split(/\r?\n/)) {
+    const l = line.toLowerCase();
+    if (!names.some((n) => l.includes(n))) continue;
+    if (!/\(i\)/.test(l)) return "explicit";
+    found = "inherited";
+  }
+  return found;
+}
+
 export interface ProbeResult {
   /** The probe ran to completion. */
   done: boolean;
@@ -343,6 +373,8 @@ export interface ProbeResult {
   writable: string[];
   /** The project's parent, when the sandbox user cannot stat it. */
   hiddenParent?: string;
+  /** Writable targets on which the sandbox account already holds a permission entry: another session's sandboxed folder (filled in by the controller). */
+  granted?: string[];
 }
 
 export function parseProbe(output: string): ProbeResult {
@@ -364,6 +396,7 @@ export function parseProbe(output: string): ProbeResult {
  */
 export function probeProblem(r: ProbeResult): string | undefined {
   if (!r.done) return "Windows sandbox self-check did not complete";
+  if (r.granted?.length) return `Windows sandbox off: inside another sandboxed folder (${r.granted.join(", ")})`;
   if (r.writable.length) return `Windows sandbox off: ${r.writable.join(", ")} writable by the sandbox user`;
   return undefined;
 }
@@ -381,6 +414,15 @@ export function probeNotice(r: ProbeResult): string | undefined {
 export function probeAdvice(r: ProbeResult): string {
   const ref = `see ${docRef("windowsSelfCheck")}`;
   if (!r.done) return `The Windows sandbox self-check did not complete; ${ref}. Bash asks before every command.`;
+  if (r.granted?.length) {
+    return (
+      `The sandbox account already holds permission entries on ${r.granted.join(", ")}: another pi session runs in that folder or in one above it, ` +
+      "or an earlier session did not release its grant. A project inside a folder the sandbox may write cannot be kept apart from it " +
+      "(Plan mode here could not stop writes that grant allows), so this session does not sandbox. Run pi in one of the two folders, not both; " +
+      `a grant no running session holds is released from an administrator prompt with: icacls "${r.granted[0]}" /remove:g ${WINDOWS_SANDBOX_USER} /T ` +
+      `(then restart pi); ${ref}. Until then bash asks before every command.`
+    );
+  }
   if (r.writable.length) {
     return (
       `The sandbox user can write to ${r.writable.join(", ")}. The Windows sandbox only adds permissions for ` +

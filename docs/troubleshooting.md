@@ -172,6 +172,20 @@ icacls C:\src /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /grant:r "SYSTEM:(O
 Projects under your user profile (`C:\Users\<you>\...`) do not have this
 problem: the profile grants other local users nothing.
 
+`inside another sandboxed folder`: the project's parent is writable because
+the sandbox account already holds a permission entry on it, which is how a
+running pi session marks its own project (the entry is removed when that
+session ends). Two sessions share the one sandbox account, so a project
+inside another session's project cannot be kept apart from it: Plan mode in
+the inner session could not stop writes the outer grant allows. Run pi in
+one of the two folders, not both. A grant left behind by a session that did
+not end cleanly is released from an administrator prompt, when no pi
+session is running there:
+
+```
+icacls "C:\Users\<you>\outer" /remove:g srt-sandbox /T
+```
+
 `The sandbox user cannot read <parent>`: a notice, not a refusal. The
 project's parent folder is not readable for the sandbox user (the usual
 case for a project inside your user profile, which grants other accounts

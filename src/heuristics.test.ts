@@ -103,6 +103,10 @@ test("bashConfirmReason (win32 fallback): Windows-shaped tokens are judged; swit
   assert.equal(bashConfirmReason("type ~\\.ssh\\id_rsa", root, [], win), "path outside project: ~\\.ssh\\id_rsa");
   assert.equal(bashConfirmReason("dir /s /b src\\a", root, [], win), undefined);
   assert.equal(bashConfirmReason("copy a C:\\Temp\\b", root, ["C:\\Temp"], win), undefined);
+  // `/tmp` is Git Bash's view of the running account's temp folder, not an escape.
+  assert.equal(bashConfirmReason('cd "$TMPDIR" 2>/dev/null || cd /tmp; curl -sS https://x.io', root, [], win), undefined);
+  assert.equal(bashConfirmReason("mktemp -d /tmp/pi.XXXX", root, [], win), undefined);
+  assert.equal(bashConfirmReason("cat /tmpx/secret", root, [], win), "path outside project: /tmpx/secret");
   assert.equal(bashConfirmReason("runas /user:Administrator cmd", root, [], win), "privilege escalation");
   assert.equal(bashConfirmReason("gsudo id", root, [], win), "privilege escalation");
 });

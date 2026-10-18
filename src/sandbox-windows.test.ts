@@ -210,6 +210,43 @@ test("controller (win32): a failed self-check tears the runtime down and degrade
   assert.equal(c.bashOps(), null);
 });
 
+test("controller (win32): a writable parent the sandbox account already holds is reported as another session's folder", async () => {
+  const { base, cwd } = writableParentProject();
+  const fake = fakeWindowsRuntime();
+  const c = new SandboxController();
+  const notes: string[] = [];
+  const asked: string[] = [];
+  const probeBase = path.win32.normalize(base); // probe targets are win32-spelled, also on this host
+  try {
+    await c.init({
+      cwd,
+      noSandbox: false,
+      hasUI: true,
+      notify: (m) => notes.push(m),
+      profile: { enabled: true, writable: true, allowWrite: ["."] },
+      platform: "win32",
+      loadRuntime: async () => fake.rt,
+      windows: {
+        env: { USERPROFILE: "C:\\Users\\me", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" },
+        findBash: () => "C:\\Program Files\\Git\\bin\\bash.exe",
+        stageHelper: (exe) => `C:\\Users\\me\\AppData\\Local\\pi-permission-modes\\srt-win-x\\${path.win32.basename(exe)}`,
+        readIdentity: () => ({}),
+        commandDir: () => undefined,
+        readAcl: (dir) => {
+          asked.push(dir);
+          return dir === probeBase ? `${dir} PC\\srt-sandbox:(OI)(CI)(M)\n` : "";
+        },
+      },
+    });
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+  assert.equal(c.ready, false);
+  assert.deepEqual(asked, [probeBase], "only the writable targets are inspected");
+  assert.equal(c.warn, `Windows sandbox off: inside another sandboxed folder (${probeBase})`);
+  assert.match(notes.join("\n"), /another pi session runs in that folder or in one above it/);
+});
+
 test("controller (win32): a folder the profile grants write access to is not probed", async () => {
   const { base, cwd } = writableParentProject();
   const fake = fakeWindowsRuntime();

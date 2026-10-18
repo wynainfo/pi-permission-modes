@@ -41,6 +41,11 @@ export function winTokenEscape(
 ): { target: string; escapes: boolean } | undefined {
   if ((opts.platform ?? process.platform) !== "win32") return undefined;
   if (/^\/[a-zA-Z?]$/.test(tok)) return { target: tok, escapes: false };
+  // Git Bash maps `/tmp` to the temp folder of the account running the
+  // command: the sandbox account's own inside the sandbox, the user's
+  // outside. Neither is a place worth a prompt, and a prompt would run the
+  // command unsandboxed once approved.
+  if (/^\/tmp(\/|$)/.test(tok.replace(/["'`]/g, ""))) return { target: tok, escapes: false };
   const target = winPathCandidate(tok, { root, home: opts.home ?? os.homedir(), env: opts.env ?? process.env });
   if (target === undefined) return undefined;
   const inside = [root, ...alsoInside].some((dir) => !isOutsideWin(dir, target));
