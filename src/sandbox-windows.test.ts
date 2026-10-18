@@ -280,3 +280,43 @@ test("controller: cycling past a mode skips its switch; `switching` is set while
   assert.deepEqual((fake.inits.at(-1) as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite, [".", "./extra"]);
   assert.ok(c.bashOps({ readOnly: false }));
 });
+
+test("controller (win32): a switch waits for a quiet moment after the last cycle step; the first init does not", async () => {
+  const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+  const fake = fakeWindowsRuntime({ argv: passing });
+  const c = new SandboxController();
+  const started = Date.now();
+  await c.init({
+    cwd: process.cwd(),
+    noSandbox: false,
+    hasUI: true,
+    notify: () => {},
+    profile: { enabled: true, writable: true, allowWrite: ["."] },
+    platform: "win32",
+    loadRuntime: async () => fake.rt,
+    switchDelayMs: 120,
+    windows: {
+      env: { USERPROFILE: "C:\\Users\\me", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" },
+      findBash: () => "C:\\Program Files\\Git\\bin\\bash.exe",
+      stageHelper: (exe) => `C:\\Users\\me\\AppData\\Local\\pi-permission-modes\\srt-win-x\\${path.win32.basename(exe)}`,
+      readIdentity: () => ({}),
+      commandDir: () => undefined,
+    },
+  });
+  assert.ok(Date.now() - started < 100, "the first init is not delayed");
+  const before = fake.calls.filter((x) => x === "initialize").length;
+  // Five cycle steps, 40 ms apart: each restarts the quiet timer, so nothing
+  // is applied until 120 ms after the last one, and then only the last one.
+  const profiles = [false, true, false, true, false].map((writable) => ({ enabled: true, writable, allowWrite: ["."] }));
+  const runs: Promise<void>[] = [];
+  for (const p of profiles) {
+    runs.push(c.applyProfile(p));
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  assert.equal(fake.calls.filter((x) => x === "initialize").length - before, 0, "still quiet-waiting after the burst");
+  assert.equal(c.switching, true);
+  await Promise.all(runs);
+  await c.settled();
+  assert.equal(fake.calls.filter((x) => x === "initialize").length - before, 1, "one re-init for the last selection");
+  assert.ok(c.bashOps({ readOnly: true }), "Plan, the last selection, is what landed");
+});

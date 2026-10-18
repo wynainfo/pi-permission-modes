@@ -621,6 +621,13 @@ export interface InitOptions {
   loadRuntime?: () => Promise<SandboxRuntime>;
   /** Windows backend hooks (injected in tests). */
   windows?: WindowsHooks;
+  /**
+   * Quiet time after the last profile change before a mode switch re-inits
+   * the runtime. Default 1000 ms on Windows, where a re-init blocks pi for
+   * seconds (permission entries are copied over whole trees) and a user
+   * cycling through the modes should pay for the last one only; 0 elsewhere.
+   */
+  switchDelayMs?: number;
 }
 
 export interface WindowsHooks {
@@ -718,6 +725,9 @@ export class SandboxController {
   private applying: Promise<void> = Promise.resolve();
   /** applyProfile requests not yet settled (queued or running). */
   private pendingApplies = 0;
+  private switchDelayMs = 0;
+  /** When the most recent applyProfile() arrived; the quiet time counts from here. */
+  private lastApplyAt = 0;
   /** Platform or dependency issue - never (re)initialize the runtime. */
   private degraded = false;
   private hasUI = false;
@@ -873,6 +883,7 @@ export class SandboxController {
     this.askHost = askHost;
     this.cwd = cwd;
     this.keepWritable = opts.keepWritable ?? [];
+    this.switchDelayMs = opts.switchDelayMs ?? ((opts.platform ?? process.platform) === "win32" ? 1000 : 0);
     this.lastInit = opts;
 
     if (noSandbox) {
@@ -1102,6 +1113,7 @@ export class SandboxController {
    */
   async applyProfile(profile: SandboxProfile): Promise<void> {
     this.profile = profile;
+    this.lastApplyAt = Date.now();
     this.pendingApplies++;
     const run = this.applying.then(() => this.applyProfileNow(profile)).finally(() => this.pendingApplies--);
     this.applying = run.catch(() => {});
@@ -1115,6 +1127,15 @@ export class SandboxController {
     // Windows each switch re-stamps permission entries over whole trees).
     if (profile !== this.profile) return;
     if (!profile.enabled) return; // non-sandboxing mode (e.g. YOLO): keep prior init
+    if (this.runtimeInitialized && this.switchDelayMs > 0) {
+      // A switch, not the first init: let the user finish cycling. The
+      // timer restarts with every later applyProfile(); whichever profile
+      // is current once it is quiet is the one applied.
+      for (let quiet = Date.now() - this.lastApplyAt; quiet < this.switchDelayMs; quiet = Date.now() - this.lastApplyAt) {
+        await new Promise((r) => setTimeout(r, this.switchDelayMs - quiet));
+      }
+      if (profile !== this.profile) return;
+    }
 
     const win = this.win;
     let cfg = withRuntimeExtras(profileToConfig(profile), this.extras);

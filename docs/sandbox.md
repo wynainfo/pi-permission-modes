@@ -308,8 +308,12 @@ fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-re
 
 - Plan mode (or any `writable: false` mode) re-initializes the runtime on
   the switch instead of dropping writes per command: grants are permission
-  entries stamped at initialize time. The switch takes a moment; a bash
-  call that arrives during it is refused with "run the command again".
+  entries stamped at initialize time. The switch takes a moment (the
+  runtime copies the entries over every granted tree, and pi is blocked
+  while it does), so it starts one quiet second after the last cycle step:
+  cycling through several modes pays for the last one only. The footer
+  says "applying sandbox profile" meanwhile; a bash call that arrives
+  during it is refused with "run the command again".
 - A session block ("Deny and block") still rides along per command: denies
   are the one per-command filesystem change the backend supports.
 - Programs installed for your user only are reachable only through the
