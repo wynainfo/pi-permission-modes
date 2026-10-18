@@ -537,9 +537,15 @@ export function commandFilesDir(): string | undefined {
   return commandFileDir();
 }
 
-/** The extras for a project at `cwd` (see RuntimeExtras). */
-export function runtimeExtrasFor(cwd: string, runtimeDir: string | undefined = runtimeInstallDir()): RuntimeExtras {
-  const extras: RuntimeExtras = { allowRead: runtimeDir ? [runtimeDir] : [], allowWrite: [], denyWrite: [] };
+/**
+ * The extras for a project at `cwd` (see RuntimeExtras). The runtime's own
+ * package is re-opened for the Linux seccomp helper only: on Windows it
+ * would be a read grant on a folder under the extension install, which
+ * `pi update` replaces, and srt-win then refuses to grant the path again
+ * ("file_id changed since prior grant").
+ */
+export function runtimeExtrasFor(cwd: string, runtimeDir: string | undefined = runtimeInstallDir(), platform: string = process.platform): RuntimeExtras {
+  const extras: RuntimeExtras = { allowRead: runtimeDir && platform !== "win32" ? [runtimeDir] : [], allowWrite: [], denyWrite: [] };
   // A gitfile at the project root is always write-denied: rewritten to point
   // at a git dir with planted hooks, it would run code at the user's next
   // host-side git command (a normal repo's .git/hooks and .git/config are
@@ -877,7 +883,7 @@ export class SandboxController {
     this.win = undefined;
     this.appliedKey = undefined;
     this.dependencyWarnings = [];
-    this.extras = runtimeExtrasFor(cwd);
+    this.extras = runtimeExtrasFor(cwd, undefined, opts.platform ?? process.platform);
     this.hasUI = hasUI;
     this.notifyFn = notify;
     this.askHost = askHost;
@@ -1120,7 +1126,7 @@ export class SandboxController {
     return run;
   }
 
-  private async applyProfileNow(profile: SandboxProfile): Promise<void> {
+  private async applyProfileNow(profile: SandboxProfile, retried = false): Promise<void> {
     if (this.degraded || !this.manager) return;
     // Superseded: a later applyProfile call holds the profile that counts
     // (cycling past a mode must not pay for the modes in between; on
@@ -1208,6 +1214,12 @@ export class SandboxController {
         // ignore
       }
       this.runtimeInitialized = false;
+      if (win && !retried && /acl grant/.test(errMsg(err))) {
+        // Permission entries held by an earlier run of this process (a
+        // /reload) can refuse a path replaced meanwhile; the resets above
+        // released them, so one more attempt is cheap.
+        return this.applyProfileNow(profile, true);
+      }
       this.warn = `sandbox init failed: ${err instanceof Error ? err.message : String(err)}`;
       if (this.hasUI) {
         this.notifyFn(

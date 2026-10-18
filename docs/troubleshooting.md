@@ -149,6 +149,14 @@ Until the backend is installed, or when one of its checks fails, the
 sandboxed modes ask before every bash command; the footer shows the reason
 and `/sandbox` the details.
 
+`file_id changed since prior grant - path was substituted (refusing)`: a
+folder this pi process granted earlier was replaced on disk since, which
+`srt-win` treats as a possible path swap. The usual cause is
+`pi update --extensions` followed by `/reload`: the extension's own files
+were reinstalled while the entries of the previous load were still held.
+The extension retries the initialize once after releasing them; should the
+message stay, restart pi.
+
 ## Windows sandbox self-check
 
 On Windows the sandbox runs each command as the local user `srt-sandbox`

@@ -21,7 +21,7 @@ interface Wrap {
   options: unknown;
 }
 
-function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: string) => string[] } = {}) {
+function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: string) => string[]; failInits?: string[] } = {}) {
   const calls: string[] = [];
   const wraps: Wrap[] = [];
   const inits: unknown[] = [];
@@ -42,6 +42,8 @@ function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: strin
     async initialize(cfg: unknown) {
       calls.push("initialize");
       inits.push(cfg);
+      const fail = opts.failInits?.shift();
+      if (fail) throw new Error(fail);
     },
     isSupportedPlatform: () => true,
   };
@@ -279,6 +281,28 @@ test("controller: cycling past a mode skips its switch; `switching` is set while
   assert.equal(fake.calls.filter((x) => x === "initialize").length - before, 1, "one re-init for the switch that counts");
   assert.deepEqual((fake.inits.at(-1) as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite, [".", "./extra"]);
   assert.ok(c.bashOps({ readOnly: false }));
+});
+
+test("controller (win32): a refused acl grant is retried once after the reset; the runtime's package is not granted", async () => {
+  const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+  const stale = "srt-win acl grant exited 1: srt-win: grant 'C:\\x\\node_modules\\@anthropic-ai\\sandbox-runtime': file_id changed since prior grant - path was substituted (refusing)";
+  const fake = fakeWindowsRuntime({ argv: passing, failInits: [stale] });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  await baseInit(c, fake, notes, { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh"] });
+  assert.equal(c.ready, true, notes.join("\n"));
+  assert.deepEqual(fake.calls.filter((x) => x === "initialize" || x === "reset"), ["initialize", "reset", "initialize"]);
+  assert.doesNotMatch(notes.join("\n"), /sandbox init failed/);
+  const cfg = fake.inits.at(-1) as { filesystem: { allowRead?: string[] } };
+  assert.ok(!(cfg.filesystem.allowRead ?? []).some((p) => p.includes("sandbox-runtime")), "no grant on the runtime's own package");
+  // A second failure in a row is reported, not retried again.
+  const fake2 = fakeWindowsRuntime({ argv: passing, failInits: [stale, stale] });
+  const c2 = new SandboxController();
+  const notes2: string[] = [];
+  await baseInit(c2, fake2, notes2);
+  assert.equal(c2.ready, false);
+  assert.match(c2.warn!, /sandbox init failed: srt-win acl grant exited 1/);
+  assert.equal(fake2.calls.filter((x) => x === "initialize").length, 2);
 });
 
 test("controller (win32): a switch waits for a quiet moment after the last cycle step; the first init does not", async () => {

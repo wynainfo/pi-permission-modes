@@ -324,6 +324,7 @@ test("runtime extras: runtime dir re-opened; a real worktree's git dirs writable
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, stdio: "ignore" });
   try {
     assert.deepEqual(runtimeExtrasFor(base, "/opt/rt"), { allowRead: ["/opt/rt"], allowWrite: [], denyWrite: [] });
+    assert.deepEqual(runtimeExtrasFor(base, "C:\\rt", "win32").allowRead, [], "no grant on the runtime's package on Windows");
     const main = path.join(base, "main");
     mkdirSync(main);
     git(main, "init", "-q");
