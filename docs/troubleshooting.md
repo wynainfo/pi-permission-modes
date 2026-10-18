@@ -131,6 +131,38 @@ runtime's seccomp helper or a bubblewrap 0.8 or newer that is not setuid;
 where neither applies, nothing limits namespaces and the runtime says so
 under `SRT_DEBUG=1`.
 
+## Windows sandbox self-check
+
+On Windows the sandbox runs each command as the local user `srt-sandbox`
+(the runtime's native backend). That backend only adds permission entries for
+the sandbox user, so it is only as tight as the folder ACLs already on the
+machine. When the sandbox initializes, the extension therefore runs a short
+probe as the sandbox user: it tries to create a file in the project's parent
+folder, at the drive root, and next to the staged `srt-win.exe`, and checks
+that it can list the project's parent. Until the probe passes, bash asks
+before every command, as it does when the sandbox is unavailable.
+
+`... writable by the sandbox user`: a folder created directly at a drive root
+(`C:\src`) inherits `Authenticated Users: Modify`, which the sandbox user
+holds too, so sibling projects would be writable from inside the sandbox.
+Keep that folder to yourself, once, from an elevated Command Prompt:
+
+```
+icacls C:\src /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /grant:r "SYSTEM:(OI)(CI)F" /grant:r "Administrators:(OI)(CI)F"
+```
+
+Projects under your user profile (`C:\Users\<you>\...`) do not have this
+problem: the profile grants other local users nothing.
+
+`sandbox user can't see <parent>`: the sandbox user cannot stat the project's
+parent, so git fails inside the sandbox. The mode's profile grants no read
+access to the folders above the project (the stock defaults grant
+`%USERPROFILE%` read access, a custom mode may not). Add the parent to
+`sandbox.allowRead` or move the project.
+
+`self-check did not complete`: the probe produced no result. `/sandbox`
+shows the runtime's own status and the last error.
+
 ## SSH in the sandbox
 
 `ssh` and git over SSH (`git@` remotes) cannot authenticate from sandboxed
