@@ -85,6 +85,18 @@ export function bashGate(
   return gate("allow", "", "", false);
 }
 
+/**
+ * The prompt title with the command it is about, so the user can judge what
+ * they approve: one line, whitespace collapsed, cut at 80 characters. The
+ * title alone ("Allow bash?") left the subject invisible when the last
+ * rendered tool call was an unrelated earlier one (#25).
+ */
+export function titleWithCommand(title: string, command: string): string {
+  const one = command.replace(/\s+/g, " ").trim();
+  const short = one.length > 80 ? `${one.slice(0, 77)}...` : one;
+  return `${title} \`${short}\``;
+}
+
 export interface BashExecPlan {
   sandboxed: boolean;
   readOnly: boolean;

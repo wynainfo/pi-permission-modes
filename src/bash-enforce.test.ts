@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { type BashGate, bashExecPlan, bashGate } from "./bash-enforce.ts";
+import { type BashGate, bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 
 const OUTSIDE = "path outside project: /etc/passwd";
 
@@ -58,4 +58,13 @@ test("bashExecPlan: sandboxed iff enabled & ready & not escaped; readOnly iff no
   assert.equal(bashExecPlan(true, true, true, true).sandboxed, false);
   // Sandbox down → unsandboxed.
   assert.equal(bashExecPlan(true, true, false, false).sandboxed, false);
+});
+
+test("titleWithCommand: one line, whitespace collapsed, cut at 80 characters", () => {
+  assert.equal(titleWithCommand("Allow bash?", "ls  -la"), "Allow bash? `ls -la`");
+  assert.equal(titleWithCommand("Allow bash? (sandbox unavailable)", "  cat <<'EOF'\n  a\n  EOF\n"), "Allow bash? (sandbox unavailable) `cat <<'EOF' a EOF`");
+  const long = "echo " + "x".repeat(100);
+  const title = titleWithCommand("Allow bash?", long);
+  assert.equal(title, "Allow bash? `" + long.slice(0, 77) + "...`");
+  assert.equal(titleWithCommand("Allow bash?", "echo " + "x".repeat(75)), "Allow bash? `echo " + "x".repeat(75) + "`");
 });

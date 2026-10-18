@@ -49,7 +49,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { askWithSession, BlockedPaths, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
-import { bashExecPlan, bashGate } from "./bash-enforce.ts";
+import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
   auditStaleDefaults,
@@ -1020,7 +1020,7 @@ export default async function (pi: ExtensionAPI) {
         if (gate.kind === "prompt") {
           // Every approval here runs with full user rights, so a session grant
           // stays scoped to the exact command string, never to command names.
-          if (!(await promptAllow(ctx, "bash", command, gate.title))) {
+          if (!(await promptAllow(ctx, "bash", command, titleWithCommand(gate.title, command)))) {
             return { block: true, reason: gate.reason };
           }
           if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
@@ -1061,7 +1061,7 @@ export default async function (pi: ExtensionAPI) {
           : [];
         const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
         if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it` };
-        if (!(await promptAllow(ctx, "bash", keys, gate.title, undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
+        if (!(await promptAllow(ctx, "bash", keys, titleWithCommand(gate.title, command), undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }
       return undefined;

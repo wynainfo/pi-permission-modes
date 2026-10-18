@@ -447,6 +447,9 @@ test("bash: a session grant never covers an escape, and an approved escape cover
     assert.equal(escape?.block, true);
     assert.equal(h.ctx.prompts.length, 2);
     assert.match(h.ctx.prompts[1].title, /path outside project/);
+    // Both prompts name the command they are about (#25).
+    assert.match(h.ctx.prompts[0].title, /`cat README.md`$/);
+    assert.match(h.ctx.prompts[1].title, /`cat ~\/.ssh\/id_rsa`$/);
     // An approved escape is remembered for that exact command only.
     h.ctx.answers.push("Allow for session");
     assert.equal(await h.call("bash", { command: "cat /etc/hostname" }), undefined);
@@ -1014,7 +1017,7 @@ test("custom unsandboxed mode still honors bash ask", { skip }, async () => {
     h.ctx.answers.push("Deny");
     const denied = await h.call("bash", { command: "touch owned" });
     assert.equal(denied?.block, true);
-    assert.match(h.ctx.prompts[0]?.title ?? "", /will run unsandboxed/);
+    assert.match(h.ctx.prompts[0]?.title ?? "", /will run unsandboxed\) `touch owned`$/);
   } finally {
     h.cleanup();
   }

@@ -23,6 +23,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#26](https://github.com/wynainfo/pi-permission-modes/issues/26) and
   [#21](https://github.com/wynainfo/pi-permission-modes/issues/21).
 
+### Fixed
+- **The bash prompt names the command.** `Allow bash?` and its escape,
+  sandbox-unavailable, and unsandboxed variants showed only the title, so the
+  command being approved was invisible whenever the last rendered tool call
+  was an earlier, unrelated one. The title now ends with the command, on one
+  line, cut at 80 characters. Reported by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#25](https://github.com/wynainfo/pi-permission-modes/issues/25).
+
 ## [2.4.2]
 
 ### Security
