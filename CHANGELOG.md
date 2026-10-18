@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.3]
+
 ### Security
 - **Unsandboxed modes judge bash per command.** A mode with
   `sandbox.enabled: false` matched its bash rules against the whole command
