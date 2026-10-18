@@ -439,7 +439,12 @@ export interface ProbeResult {
   hiddenParent?: string;
   /** Writable targets on which the sandbox account already holds a permission entry: another session's sandboxed folder (filled in by the controller). */
   granted?: string[];
+  /** The runtime's structured launch error, when the probe could not even start (a mapped-drive or UNC working directory). */
+  launchError?: string;
 }
+
+/** The line the Windows ops append when srt-win refuses to launch (see createWindowsSandboxedBashOps). */
+export const LAUNCH_ERROR_PREFIX = "[permission-mode] sandbox: ";
 
 export function parseProbe(output: string): ProbeResult {
   const result: ProbeResult = { done: false, writable: [] };
@@ -450,6 +455,9 @@ export function parseProbe(output: string): ProbeResult {
     else if (rest.startsWith("WRITABLE ")) result.writable.push(rest.slice("WRITABLE ".length));
     else if (rest.startsWith("HIDDEN ")) result.hiddenParent = rest.slice("HIDDEN ".length);
   }
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith(LAUNCH_ERROR_PREFIX)) result.launchError = line.slice(LAUNCH_ERROR_PREFIX.length).trim();
+  }
   return result;
 }
 
@@ -459,6 +467,7 @@ export function parseProbe(output: string): ProbeResult {
  * makes the sandbox tighter, not weaker (see `probeNotice`).
  */
 export function probeProblem(r: ProbeResult): string | undefined {
+  if (!r.done && r.launchError) return `Windows sandbox off: ${r.launchError}`;
   if (!r.done) return "Windows sandbox self-check did not complete";
   if (r.granted?.length) return `Windows sandbox off: inside another sandboxed folder (${r.granted.join(", ")})`;
   if (r.writable.length) return `Windows sandbox off: ${r.writable.join(", ")} writable by the sandbox user`;
@@ -477,6 +486,12 @@ export function probeNotice(r: ProbeResult): string | undefined {
 /** Longer explanation plus fix for a failed probe, for the one-time notification. */
 export function probeAdvice(r: ProbeResult): string {
   const ref = `see ${docRef("windowsSelfCheck")}`;
+  if (!r.done && r.launchError) {
+    return (
+      `The Windows sandbox could not start a command in this project: ${r.launchError}. Drive mappings and UNC paths belong to your ` +
+      `logon session and the sandbox account has none; work on a local drive (see ${docRef("windowsMappedDrive")}). Until then bash asks before every command.`
+    );
+  }
   if (!r.done) return `The Windows sandbox self-check did not complete; ${ref}. Bash asks before every command.`;
   if (r.granted?.length) {
     return (

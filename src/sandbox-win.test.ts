@@ -100,6 +100,12 @@ test("parseProbe + probeProblem + probeAdvice: pass, writable, hidden parent, in
   const partial = parseProbe("PI-SRT-PROBE WRITABLE C:\\ws\n");
   assert.match(probeProblem(partial)!, /did not complete/);
   assert.match(probeAdvice(partial), /did not complete/);
+  // srt-win refused to launch (a mapped-drive working directory): the runtime's message is the reason.
+  const refused = parseProbe("\n[permission-mode] sandbox: working directory X:\\proj is on a mapped drive\n");
+  assert.equal(refused.launchError, "working directory X:\\proj is on a mapped drive");
+  assert.equal(probeProblem(refused), "Windows sandbox off: working directory X:\\proj is on a mapped drive");
+  assert.match(probeAdvice(refused), /could not start a command in this project: working directory X:\\proj is on a mapped drive\. Drive mappings and UNC paths/);
+  assert.match(probeAdvice(refused), /docs\/troubleshooting\.md#mapped-drive-or-unc-project-on-windows/);
   // A writable parent that is another session's project gets its own message.
   const nested = { ...w, granted: ["C:\\ws"] };
   assert.equal(probeProblem(nested), "Windows sandbox off: inside another sandboxed folder (C:\\ws)");

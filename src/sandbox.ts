@@ -34,6 +34,7 @@ import {
   stageSrtWin,
   expandWinEnv,
   gitConfigMasked,
+  LAUNCH_ERROR_PREFIX,
   stageGitConfig,
   windowsEnvExports,
   windowsEnvFile,
@@ -452,7 +453,7 @@ export function createWindowsSandboxedBashOps(
             emitViolations();
             if (code !== 0 && opts.parseError) {
               const e = opts.parseError(stderr);
-              if (e) onData(Buffer.from(`\n[permission-mode] sandbox: ${e.message}\n`));
+              if (e) onData(Buffer.from(`\n${LAUNCH_ERROR_PREFIX}${e.message}\n`));
             }
           },
         );
@@ -1066,7 +1067,9 @@ export class SandboxController {
     const targets = probeTargets(this.cwd, win.srtWinPath).filter((t) => !writable.some((w) => !isOutsideWin(w, t)));
     let out = "";
     try {
-      const ops = createWindowsSandboxedBashOps(manager, { bash: win.bash, extraEnv: {}, commandDir: win.commandDir });
+      // The runtime's launch-error parser rides along: a working directory
+      // srt-win refuses (a mapped drive) must be named, not "did not complete".
+      const ops = createWindowsSandboxedBashOps(manager, { bash: win.bash, extraEnv: {}, commandDir: win.commandDir, parseError: this.rt?.parseWindowsSandboxError });
       const script = probeScript(this.cwd, targets, randomBytes(6).toString("hex"));
       await ops.exec(script, this.cwd, { onData: (d) => (out += String(d)), timeout: 120 });
     } catch (err) {

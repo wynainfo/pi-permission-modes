@@ -349,10 +349,14 @@ profile, not yours.
 ## Mapped drive or UNC project on Windows
 
 The Windows backend refuses to start a command whose working directory is
-on a mapped network drive or a UNC path (exit 16, the runtime's
-`mapped_drive_cwd` error, reported after the command's output). Drive
-mappings belong to your logon session and the sandbox account has none.
-Work on a local drive.
+on a mapped network drive (`subst`, `net use`) or a UNC path: srt-win exits
+16 with its `mapped_drive_cwd` error. Drive mappings belong to your logon
+session and the sandbox account has none. The self-check hits it first, so
+the sandbox turns itself off at startup with the runtime's message in the
+footer (`Windows sandbox off: ...`) and bash asks before every command; a
+command run later in such a directory reports the same line after its
+output. Work on a local drive, or start pi from the real path behind the
+mapping.
 
 ## Outdated defaults notice
 

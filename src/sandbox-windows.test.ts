@@ -21,7 +21,7 @@ interface Wrap {
   options: unknown;
 }
 
-function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: string) => string[]; failInits?: string[] } = {}) {
+function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: string) => string[]; failInits?: string[]; parseError?: (stderr: string) => { message: string } | undefined } = {}) {
   const calls: string[] = [];
   const wraps: Wrap[] = [];
   const inits: unknown[] = [];
@@ -54,7 +54,7 @@ function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: strin
     resolveSrtWin: (cfg: { path: string }) => ({ exe: cfg.path, prependArgs: [] }),
     getWindowsSandboxUserStatusAsync: async () => ({ provisioned, credPresent: provisioned, sid: provisioned ? "S-1-5-21-1-2-3-1001" : undefined }),
     checkWindowsDependenciesAsync: async () => ({ errors: [], warnings: [] }),
-    parseWindowsSandboxError: () => undefined,
+    parseWindowsSandboxError: opts.parseError ?? (() => undefined),
   };
   return { calls, wraps, inits, manager: manager as unknown as Parameters<typeof createWindowsSandboxedBashOps>[0], rt: rt as unknown as SandboxRuntime };
 }
@@ -265,6 +265,24 @@ test("controller (win32): a writable parent the sandbox account already holds is
   assert.deepEqual(asked, [probeBase], "only the writable targets are inspected");
   assert.equal(c.warn, `Windows sandbox off: inside another sandboxed folder (${probeBase})`);
   assert.match(notes.join("\n"), /another pi session runs in that folder or in one above it/);
+});
+
+test("controller (win32): a working directory srt-win refuses (mapped drive) degrades with the runtime's message", async () => {
+  // The probe's launch fails like srt-win's exit 16 does: a JSON error on stderr, no output.
+  const refusing = () => ["bash", "-c", "echo '{\"code\":\"mapped_drive_cwd\",\"message\":\"working directory X:\\\\proj is on a mapped drive\"}' >&2; exit 16"];
+  const parseError = (stderr: string) => {
+    const m = /"message":"([^"]+)"/.exec(stderr);
+    return m ? { message: m[1].replace(/\\\\/g, "\\") } : undefined;
+  };
+  const fake = fakeWindowsRuntime({ argv: refusing, parseError });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  await baseInit(c, fake, notes);
+  assert.equal(c.ready, false);
+  assert.equal(c.warn, "Windows sandbox off: working directory X:\\proj is on a mapped drive");
+  assert.match(notes.join("\n"), /could not start a command in this project: working directory X:\\proj is on a mapped drive\. Drive mappings and UNC paths belong to your logon session/);
+  assert.match(notes.join("\n"), /docs\/troubleshooting\.md#mapped-drive-or-unc-project-on-windows/);
+  assert.equal(c.bashOps(), null);
 });
 
 test("controller (win32): a folder the profile grants write access to is not probed", async () => {
