@@ -65,14 +65,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#15](https://github.com/wynainfo/pi-permission-modes/pull/15).
 
 ### Changed
-- **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.79.** On Linux a command's
-  first network call was sometimes refused because the command could start
-  before the in-sandbox relays listened; it now starts once they do.
-  bubblewrap 0.4 works again (one mount per destination). A `denyRead` or
-  `allowWrite` entry whose name contains glob characters (`[wip] app`) now
-  also matches that literal path. The proxy answers 502 instead of
-  crashing on an upstream that sends an invalid status line. Node 22.12 or
-  newer is required (pi itself needs 22.19).
+- **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.80.** Behavior changes:
+  a sandboxed command on Linux can no longer create user or mount namespaces
+  (see the `sandbox.linux` switch above); on Linux `denyWrite` now wins
+  over `allowWrite` however the two are nested, as on macOS, so a
+  `denyWrite: ["~"]` makes a project under the home directory read-only.
+  Fixes that reached users: on Linux a command's first network call was
+  sometimes refused because the command could start before the in-sandbox
+  relays listened; Linux without IPv6 had every proxied command refused
+  with some socat versions; an absent `denyWrite` path where bubblewrap
+  cannot create a mount point (a protected folder of a Windows drive under
+  WSL2, a path under `/usr`) kept every command from starting; a folder
+  named like `[user-id]` kept the sandbox from starting; a glob `denyRead`
+  did not cover subtrees on file systems that report no entry types (some
+  NFS and FUSE mounts, XFS with `ftype=0`); bubblewrap 0.4 works again; on
+  macOS git over SSH passes the proxy. A refused CONNECT now says why
+  (`403 host is not on the allow list`). Node 22.12 or newer is required
+  (pi itself needs 22.19).
 
 ## [2.4.3]
 
