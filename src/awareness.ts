@@ -154,7 +154,8 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       "- SSH keys are unreadable, so do not use ssh or git over SSH (`git@` remotes) from bash: authentication cannot succeed, whatever the options. " +
         "Git over HTTPS works when a credential is configured; for a `git@` remote, `git -c url.\"https://github.com/\".insteadOf=git@github.com: fetch` uses HTTPS without changing the remote. " +
         "If git asks for a username or fails with \"terminal prompts disabled\", no credential helper could answer (a credential manager cannot prompt in here): stop and tell the user. " +
-        "The way in is a fine-grained personal access token for HTTPS that the user puts in pi's environment before starting pi and a credential helper reads (see " + docRef("gitAuth") + "); " +
+        "The way in is a fine-grained personal access token for HTTPS that the user puts in pi's environment before starting pi and a credential helper reads: " +
+        "read " + docRef("gitAuth") + " and give the user its steps (the helper command and how to start pi with the token), or point them to that section; " +
         "do not ask for the token in chat or put one on a command line. The user can also run the step themselves with pi's `!` prefix (for example `!git fetch`).",
     );
   }
