@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { type BashGate, bashExecPlan, bashGate } from "./bash-enforce.ts";
+import { deniedByUser } from "./approvals.ts";
+import { type BashGate, bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 
 const OUTSIDE = "path outside project: /etc/passwd";
 
@@ -51,17 +52,17 @@ test("bashGate: per-rule policyReason overrides block and refusal reasons", () =
   assert.equal(bashGate("deny", undefined, true, true).reason, "bash command denied by policy (see docs/permissions.md#bash)");
   assert.equal(bashGate("deny", undefined, true, true, "use the grep tool instead").reason, "use the grep tool instead");
   // An ask refused by the user reports the rule's reason (the "what to do when refused" hint).
-  assert.equal(bashGate("ask", undefined, true, true).reason, "bash blocked");
+  assert.match(bashGate("ask", undefined, true, true).reason, /^The user denied this bash command\./);
   assert.equal(bashGate("ask", undefined, true, true, "pipes are fine, bare grep is not").reason, "pipes are fine, bare grep is not");
   // Prompts caused by an escape or a down sandbox report their own cause -
   // the policy reason must not masquerade as the block's explanation.
   assert.equal(
     bashGate("ask", OUTSIDE, true, true, "pipes are fine, bare grep is not").reason,
-    `bash blocked (${OUTSIDE})`,
+    deniedByUser(`bash command (${OUTSIDE})`),
   );
   assert.equal(
     bashGate("ask", undefined, true, false, "pipes are fine, bare grep is not").reason,
-    "bash blocked (sandbox unavailable)",
+    deniedByUser("bash command (sandbox unavailable)"),
   );
   // A policy-grounded ask (sandbox disabled) still reports the rule's reason.
   assert.equal(bashGate("ask", undefined, false, true, "sandbox-disabled reason").reason, "sandbox-disabled reason");
@@ -78,4 +79,22 @@ test("bashExecPlan: sandboxed iff enabled & ready & not escaped; readOnly iff no
   assert.equal(bashExecPlan(true, true, true, true).sandboxed, false);
   // Sandbox down → unsandboxed.
   assert.equal(bashExecPlan(true, true, false, false).sandboxed, false);
+});
+
+test("titleWithCommand: one line, whitespace collapsed, cut at 80 characters", () => {
+  assert.equal(titleWithCommand("Allow bash?", "ls  -la"), "Allow bash? `ls -la`");
+  assert.equal(titleWithCommand("Allow bash? (sandbox unavailable)", "  cat <<'EOF'\n  a\n  EOF\n"), "Allow bash? (sandbox unavailable) `cat <<'EOF' a EOF`");
+  const long = "echo " + "x".repeat(100);
+  const title = titleWithCommand("Allow bash?", long);
+  assert.equal(title, "Allow bash? `" + long.slice(0, 77) + "...`");
+  assert.equal(titleWithCommand("Allow bash?", "echo " + "x".repeat(75)), "Allow bash? `echo " + "x".repeat(75) + "`");
+});
+
+test("bashGate: a refused prompt reports the user's decision, with the escape or degradation as its cause", () => {
+  const user = /^The user denied this bash command/;
+  assert.match(bashGate("ask", undefined, false, true).reason, user);
+  assert.match(bashGate("ask", undefined, true, true).reason, user);
+  assert.match(bashGate("allow", OUTSIDE, true, true).reason, /^The user denied this bash command \(path outside project: \/etc\/passwd\)\./);
+  assert.match(bashGate("allow", undefined, true, false).reason, /^The user denied this bash command \(sandbox unavailable\)\./);
+  assert.doesNotMatch(bashGate("deny", undefined, true, true).reason, user);
 });

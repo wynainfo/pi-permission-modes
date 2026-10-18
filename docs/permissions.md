@@ -76,6 +76,13 @@ sandbox state:
 | `allow` or `ask`, in project | unavailable | prompts "Allow bash? (sandbox unavailable)", runs unsandboxed |
 | `ask` | disabled for the mode | prompts "Allow bash? (sandbox disabled; ...)" |
 
+Every bash prompt ends with the command it is about, on one line and cut at
+80 characters. A mode with `sandbox.enabled: false` judges the same
+per-command chain; only the escape detection is skipped, since there is no
+sandbox to escape from. When you refuse a prompt, the model is told that the
+user denied the call and not to retry or rephrase it; a rule reason, if the
+matching rule has one, replaces that text.
+
 If the tree-sitter grammar cannot load, a token-scan heuristic stands in; it
 is not a shell parser (SECURITY.md lists what it misses). A bare filename that
 is a symlink out of the project is resolved and treated as an escape; names

@@ -111,6 +111,15 @@ const DENY = "Deny";
  * it records the session grant AND invokes `onForever` (which persists the rule
  * to the user's config). Used for first-seen extension tools / skills.
  */
+/**
+ * The reason a tool call reports after the user picked Deny. It names the
+ * decision as the user's, so the model neither mistakes it for a transient
+ * failure nor for a policy rule it could satisfy by rephrasing (#19).
+ */
+export function deniedByUser(what: string): string {
+  return `The user denied this ${what}. Do not retry or rephrase it; if the step matters, ask the user how to proceed.`;
+}
+
 export async function askWithSession(
   ui: ApprovalUI,
   approvals: SessionApprovals,

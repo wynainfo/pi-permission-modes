@@ -14,6 +14,7 @@
  *                      read-only?), recomputed at run time from the active mode.
  */
 
+import { deniedByUser } from "./approvals.ts";
 import { docRef } from "./docs.ts";
 import type { Action } from "./schema.ts";
 
@@ -77,7 +78,7 @@ export function bashGate(
   // a custom unsandboxed mode with `ask` continues to require confirmation.
   if (!sandboxEnabled) {
     if (action === "ask") {
-      return gate("prompt", "Allow bash? (sandbox disabled; command will run unsandboxed)", policyReason ?? "bash blocked", true);
+      return gate("prompt", "Allow bash? (sandbox disabled; command will run unsandboxed)", policyReason ?? deniedByUser("bash command"), true);
     }
     return gate("allow", "", "", false);
   }
@@ -85,14 +86,26 @@ export function bashGate(
   // Out-of-project / privilege escalation: prompt, run unsandboxed once approved
   // (the sandbox would block a genuine escape anyway). A refusal here is about
   // the escape, not the policy - report its cause, not the rule's reason.
-  if (outsideReason) return gate("prompt", `Allow bash? (${outsideReason})`, `bash blocked (${outsideReason})`, true);
+  if (outsideReason) return gate("prompt", `Allow bash? (${outsideReason})`, deniedByUser(`bash command (${outsideReason})`), true);
 
   // In-project but the sandbox is unavailable: never run silently unprotected.
-  if (!sandboxReady) return gate("prompt", "Allow bash? (sandbox unavailable)", "bash blocked (sandbox unavailable)", true);
+  if (!sandboxReady) return gate("prompt", "Allow bash? (sandbox unavailable)", deniedByUser("bash command (sandbox unavailable)"), true);
 
   // In-project, sandbox ready: the policy action drives it.
-  if (action === "ask") return gate("prompt", "Allow bash?", policyReason ?? "bash blocked", false);
+  if (action === "ask") return gate("prompt", "Allow bash?", policyReason ?? deniedByUser("bash command"), false);
   return gate("allow", "", "", false);
+}
+
+/**
+ * The prompt title with the command it is about, so the user can judge what
+ * they approve: one line, whitespace collapsed, cut at 80 characters. The
+ * title alone ("Allow bash?") left the subject invisible when the last
+ * rendered tool call was an unrelated earlier one (#25).
+ */
+export function titleWithCommand(title: string, command: string): string {
+  const one = command.replace(/\s+/g, " ").trim();
+  const short = one.length > 80 ? `${one.slice(0, 77)}...` : one;
+  return `${title} \`${short}\``;
 }
 
 export interface BashExecPlan {

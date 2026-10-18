@@ -207,3 +207,6 @@ Non-sensitive hardening ideas are welcome as regular
   (fixed in 2.2.1) - reported by dyoon98-creator (https://github.com/dyoon98-creator);
   independently found and fixed in PR #5 by BeLeap (https://github.com/BeLeap)
   and in PR #6 by hsiangron (https://github.com/hsiangron).
+- **Bash `ask`/`deny` rules and the `path` gate bypassed in unsandboxed modes
+  by chained, prefixed, or piped commands** (fixed in 2.4.3) - reported by
+  donnielrt (https://github.com/donnielrt) in #26 and #21.

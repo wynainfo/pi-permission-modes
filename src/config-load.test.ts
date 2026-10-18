@@ -207,7 +207,7 @@ test("project: sandbox intersect/union + unsafe domains rejected", () => {
   assert.ok(sb.denyRead?.includes("~/.config") && sb.denyRead?.includes("~/.ssh")); // unioned
   assert.deepEqual(sb.allowRead, [], "the stock mode has no carve-outs, so the project cannot add any");
   assert.deepEqual(sb.network?.allowedDomains, ["github.com"]); // *.com dropped (intersect of safe)
-  assert.ok(s.errors.some((e) => /overly-broad/.test(e)));
+  assert.ok(s.errors.some((e) => /ignoring allowedDomains pattern "\*\.com" in /.test(e)));
   s.cleanup();
 });
 
@@ -246,8 +246,30 @@ test("readOnlyOverride drops allowWrite; profileToConfig maps fields; isUnsafeDo
   assert.deepEqual(readOnlyOverride(base).filesystem, { allowWrite: [], denyRead: ["~/.ssh"], denyWrite: [] });
   const c = profileToConfig({ enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh"], denyWrite: [] });
   assert.equal(c.filesystem.allowWrite[0], ".");
-  assert.ok(isUnsafeDomain("*") && isUnsafeDomain("*.com") && isUnsafeDomain("http://x"));
-  assert.ok(!isUnsafeDomain("*.github.com") && !isUnsafeDomain("github.com"));
+  // The runtime's own rule decides: single-label hosts fail it, a :port suffix passes (#22).
+  assert.ok(isUnsafeDomain("*") && isUnsafeDomain("*.com") && isUnsafeDomain("http://x") && isUnsafeDomain("storage") && isUnsafeDomain("nas01"));
+  assert.ok(!isUnsafeDomain("*.github.com") && !isUnsafeDomain("github.com") && !isUnsafeDomain("registry.npmjs.org:443"));
+});
+
+test("global config: network patterns the runtime rejects are dropped with a warning, the rest kept (#22)", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "perm-domains-"));
+  try {
+    mkdirSync(path.join(base, "permission-mode"));
+    writeFileSync(
+      path.join(base, "permission-mode/permission-mode.json"),
+      JSON.stringify({
+        modes: { build: { sandbox: { network: { allowedDomains: ["storage", "storage.example", "github.com:443"], deniedDomains: ["nas01", "evil.example"] } } } },
+      }),
+    );
+    const errors: string[] = [];
+    const c = loadModeConfig(base, base, (m) => errors.push(m));
+    assert.deepEqual(c.modes.build.sandbox.network?.allowedDomains, ["storage.example", "github.com:443"]);
+    assert.deepEqual(c.modes.build.sandbox.network?.deniedDomains, ["evil.example"]);
+    assert.ok(errors.some((e) => /ignoring allowedDomains pattern "storage" in .*: the sandbox runtime accepts/.test(e)), errors.join("\n"));
+    assert.ok(errors.some((e) => /ignoring deniedDomains pattern "nas01"/.test(e)));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("profileToConfig: every list is an array, only allowedDomains may be absent (unrestricted network)", () => {

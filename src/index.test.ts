@@ -270,6 +270,8 @@ test("default mode: reads free, writes prompt, protected paths hard-block", { sk
     const denied = await h.call("write", { path: "notes.txt" });
     assert.equal(denied?.block, true);
     assert.equal(h.ctx.prompts.length, 2);
+    // The reason names the user's decision, not a policy or a failure (#19).
+    assert.equal(denied?.reason, 'The user denied this write of "notes.txt". Do not retry or rephrase it; if the step matters, ask the user how to proceed.');
   } finally {
     h.cleanup();
   }
@@ -446,8 +448,12 @@ test("bash: a session grant never covers an escape, and an approved escape cover
     h.ctx.answers.push("Deny");
     const escape = await h.call("bash", { command: "cat ~/.ssh/id_rsa" });
     assert.equal(escape?.block, true);
+    assert.match(escape?.reason ?? "", /^The user denied this bash command \(path outside project: /);
     assert.equal(h.ctx.prompts.length, 2);
     assert.match(h.ctx.prompts[1].title, /path outside project/);
+    // Both prompts name the command they are about (#25).
+    assert.match(h.ctx.prompts[0].title, /`cat README.md`$/);
+    assert.match(h.ctx.prompts[1].title, /`cat ~\/.ssh\/id_rsa`$/);
     // An approved escape is remembered for that exact command only.
     h.ctx.answers.push("Allow for session");
     assert.equal(await h.call("bash", { command: "cat /etc/hostname" }), undefined);
@@ -1065,7 +1071,63 @@ test("custom unsandboxed mode still honors bash ask", { skip }, async () => {
     h.ctx.answers.push("Deny");
     const denied = await h.call("bash", { command: "touch owned" });
     assert.equal(denied?.block, true);
-    assert.match(h.ctx.prompts[0]?.title ?? "", /will run unsandboxed/);
+    assert.match(h.ctx.prompts[0]?.title ?? "", /will run unsandboxed\) `touch owned`$/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("unsandboxed modes judge bash per command: chains, prefixes, quoting, the path gate (#26, #21)", { skip }, async () => {
+  const h = await setup({
+    globalConfig: {
+      modes: {
+        host: {
+          label: "Host",
+          color: "error",
+          sandbox: { enabled: false, writable: true },
+          permission: {
+            path: { "*": "allow", "*.env": "deny" },
+            external_directory: "allow",
+            bash: { "*": "allow", "rm *": "ask", "sudo *": "deny", "ssh *": "ask", "ssh nas zpool status*": "allow" },
+          },
+        },
+      },
+    },
+  });
+  try {
+    await h.perm("host");
+
+    // A name-anchored ask rule fires on the chained, env-prefixed, and piped forms.
+    for (const command of ["cd /tmp && rm -rf scratchdir", "echo x | ssh nas cat", "VAR=1 ssh nas uptime"]) {
+      h.ctx.answers.push("Deny");
+      const res = await h.call("bash", { command });
+      assert.equal(res?.block, true, command);
+      assert.match(res?.reason ?? "", /^The user denied this bash command\./, command);
+      assert.match(h.ctx.prompts.at(-1)?.title ?? "", /will run unsandboxed/, command);
+    }
+    assert.equal(h.ctx.prompts.length, 3);
+
+    // A deny rule holds inside a chain, and the path gate applies to bash here too.
+    for (const command of ["cd /tmp && sudo id", "ls && cat .env"]) {
+      const res = await h.call("bash", { command });
+      assert.equal(res?.block, true, command);
+      assert.match(res?.reason ?? "", /denied by policy/, command);
+    }
+    assert.equal(h.ctx.prompts.length, 3); // deny blocks outright
+
+    // Quoting does not change the outcome: both spellings hit the allow rule.
+    assert.equal(await h.call("bash", { command: "ssh nas zpool status" }), undefined);
+    assert.equal(await h.call("bash", { command: "ssh nas 'zpool status'" }), undefined);
+    assert.equal(h.ctx.prompts.length, 3);
+
+    // A session grant stays scoped to the exact command, not to the name.
+    h.ctx.answers.push("Allow for session");
+    assert.equal(await h.call("bash", { command: "rm -rf one" }), undefined);
+    assert.equal(await h.call("bash", { command: "rm -rf one" }), undefined);
+    assert.equal(h.ctx.prompts.length, 4);
+    h.ctx.answers.push("Deny");
+    assert.equal((await h.call("bash", { command: "rm -rf two" }))?.block, true);
+    assert.equal(h.ctx.prompts.length, 5);
   } finally {
     h.cleanup();
   }
@@ -1080,10 +1142,10 @@ test("multi-line bash commands: policy applies across newlines (no silent allow,
     assert.equal(await h.call("bash", { command: "cat <<'EOF' > notes.txt\nline one\nline two\nEOF" }), undefined);
     assert.equal(h.ctx.prompts.length, 0);
 
-    // A deny rule must hold when a newline sits inside an argument, both in an
-    // unsandboxed mode (decide over the whole line) and in a sandboxed one
-    // (decideBashCommand per extracted command, where the per-token path layer
-    // used to be the only match and yielded "allow").
+    // A deny rule must hold when a newline sits inside an argument, in an
+    // unsandboxed mode and in a sandboxed one alike (decideBashCommand per
+    // extracted command, where the per-token path layer used to be the only
+    // match and yielded "allow").
     const dir = path.join(h.agentDir, "permission-mode");
     mkdirSync(dir, { recursive: true });
     writeFileSync(

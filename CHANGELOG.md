@@ -65,6 +65,52 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   crashing on an upstream that sends an invalid status line. Node 22.12 or
   newer is required (pi itself needs 22.19).
 
+## [2.4.3]
+
+### Security
+- **Unsandboxed modes judge bash per command.** A mode with
+  `sandbox.enabled: false` matched its bash rules against the whole command
+  line, so a name-anchored rule such as `"sudo *": "deny"` or `"ssh *": "ask"`
+  missed `cd repo && sudo id`, `VAR=1 ssh host ...`, and `echo x | ssh host
+  cat`; the `path` gate never applied to bash there at all; and quoting
+  changed the outcome (`ssh host 'zpool status'` missed a rule written for
+  `ssh host zpool status`). Such modes now run the same per-command analysis
+  as sandboxed ones (every command in the chain against the `bash` rules and
+  the `path` gate, most restrictive wins), skipping only the escape detection
+  that has no sandbox to protect. Session grants in these modes stay keyed on
+  the exact command. The stock modes are unaffected (YOLO allows everything);
+  user-defined unsandboxed modes with `ask` or `deny` rules were bypassed.
+  Reported by [@donnielrt](https://github.com/donnielrt) in
+  [#26](https://github.com/wynainfo/pi-permission-modes/issues/26) and
+  [#21](https://github.com/wynainfo/pi-permission-modes/issues/21).
+
+### Fixed
+- **The bash prompt names the command.** `Allow bash?` and its escape,
+  sandbox-unavailable, and unsandboxed variants showed only the title, so the
+  command being approved was invisible whenever the last rendered tool call
+  was an earlier, unrelated one. The title now ends with the command, on one
+  line, cut at 80 characters. Reported by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#25](https://github.com/wynainfo/pi-permission-modes/issues/25).
+- **A refused prompt says the user denied it.** After Deny, the model saw
+  `bash blocked`, `blocked`, or `tool blocked`, the same shape as a policy
+  block or a failure, and tended to rephrase and retry. The reason now reads
+  `The user denied this <call>. Do not retry or rephrase it; if the step
+  matters, ask the user how to proceed.`, with the escape or the unavailable
+  sandbox named as the cause where one applies. Policy denies keep their own
+  text. Reported by [@donnielrt](https://github.com/donnielrt) in
+  [#19](https://github.com/wynainfo/pi-permission-modes/issues/19).
+- **Network patterns are checked with the runtime's own rule.** A single-label
+  host such as `"storage"` in `allowedDomains` passed the extension's check
+  and failed the sandbox runtime's schema at initialization, taking the whole
+  sandbox down for the mode; a `host:port` entry, which the runtime accepts,
+  was dropped as unsafe. Every `allowedDomains` and `deniedDomains` entry is
+  now validated with the runtime's `NetworkConfigSchema` when the config
+  loads: a rejected pattern is dropped with a warning that names it and the
+  accepted forms, the rest of the list stays. Reported by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#22](https://github.com/wynainfo/pi-permission-modes/issues/22).
+
 ## [2.4.2]
 
 ### Security

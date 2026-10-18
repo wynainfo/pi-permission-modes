@@ -7,7 +7,10 @@ has no other route out.
 ## Allowlist
 
 `sandbox.network.allowedDomains` lists the hosts bash may reach: exact names,
-`*.example.com` wildcards, and an optional `:port` suffix. The stock list
+`*.example.com` wildcards, and an optional `:port` suffix; every entry is
+checked with the sandbox runtime's own rule when the config loads, and one it
+would reject (a bare `*`, a `*.com` wildcard, a single-label host such as
+`nas01`) is dropped with a warning instead of failing the sandbox. The stock list
 covers the npm, yarn, and PyPI registries, `github.com`, `*.github.com`,
 `api.github.com`, and `raw.githubusercontent.com`. An allowed host is reachable
 on every port unless the entry names one. `deniedDomains` are refused even

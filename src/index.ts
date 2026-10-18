@@ -48,9 +48,9 @@ import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { docRef, docsDir, docsPromptBlock } from "./docs.ts";
-import { askWithSession, BlockedPaths, type DenyOption, SessionApprovals } from "./approvals.ts";
+import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { sandboxAwarenessPrompt } from "./awareness.ts";
-import { bashExecPlan, bashGate } from "./bash-enforce.ts";
+import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
   auditStaleDefaults,
@@ -1016,16 +1016,23 @@ export default async function (pi: ExtensionAPI) {
     // Bash.
     if (toolName === "bash") {
       const command = String(input.command ?? "");
-      // Fast path: non-sandboxing modes skip AST escape analysis, but still
-      // honor their explicit bash policy. YOLO remains silent because its
-      // policy is `allow`; an unsandboxed `ask` mode must still prompt.
+      // Non-sandboxing modes judge the same per-command chain as sandboxed
+      // ones (bash surface plus the path gate on every extracted command,
+      // most restrictive across the chain): a whole-line match let
+      // `cd x && sudo id` slip past `"sudo *"` and skipped the path gate
+      // entirely. Only escape detection is dropped - there is no sandbox to
+      // escape from. YOLO remains silent because its policy is `allow`; an
+      // unsandboxed `ask` mode must still prompt.
       if (!m.sandbox.enabled) {
-        const decision = decideDetailed(m, "bash", command);
+        const analysis = await analyzeBash(command, root, docBounds);
+        const decision =
+          analysis.commands.length > 0 ? decideBashChainDetailed(m, analysis.commands) : decideDetailed(m, "bash", command);
         const gate = bashGate(decision.action, undefined, false, sandbox.ready, decision.reason);
         if (gate.kind === "block") return { block: true, reason: gate.reason };
         if (gate.kind === "prompt") {
-          // Without an AST parse, scope a session grant to the exact command.
-          if (!(await promptAllow(ctx, "bash", command, gate.title))) {
+          // Every approval here runs with full user rights, so a session grant
+          // stays scoped to the exact command string, never to command names.
+          if (!(await promptAllow(ctx, "bash", command, titleWithCommand(gate.title, command)))) {
             return { block: true, reason: gate.reason };
           }
           if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
@@ -1066,7 +1073,7 @@ export default async function (pi: ExtensionAPI) {
           : [];
         const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
         if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
-        if (!(await promptAllow(ctx, "bash", keys, gate.title, undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
+        if (!(await promptAllow(ctx, "bash", keys, titleWithCommand(gate.title, command), undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }
       return undefined;
@@ -1097,7 +1104,7 @@ export default async function (pi: ExtensionAPI) {
       }
       if (decision.action === "ask") {
         const title = outside ? `Outside project - allow ${toolName}? (${path})` : `Allow ${toolName}? (${path})`;
-        const reason = decision.reason ?? (outside ? `Access outside project blocked (see ${docRef("blockedByPolicy")})` : "blocked");
+        const reason = decision.reason ?? deniedByUser(outside ? `${toolName} of "${path}" outside the project` : `${toolName} of "${path}"`);
         const denyAnd = outside ? denyAndBlock(ctx, [path]) : undefined;
         if (!(await promptAllow(ctx, surface, path, title, undefined, denyAnd))) return { block: true, reason };
       }
@@ -1110,7 +1117,7 @@ export default async function (pi: ExtensionAPI) {
       if (decision.action === "deny") return { block: true, reason: decision.reason ?? `web search blocked by ${m.label} (see ${docRef("blockedByPolicy")})` };
       // Session approval is surface-wide ("allow web search this session").
       if (decision.action === "ask" && !(await promptAllow(ctx, "web_search", "*", "Allow web search?"))) {
-        return { block: true, reason: decision.reason ?? "web search blocked" };
+        return { block: true, reason: decision.reason ?? deniedByUser("web search") };
       }
       return undefined;
     }
@@ -1124,7 +1131,7 @@ export default async function (pi: ExtensionAPI) {
         decision.action === "ask" &&
         !(await promptAllow(ctx, "tool", toolName, `Tool "${toolName}" — first use in ${m.label}; allow?`, learnForever(ctx, "tool", toolName)))
       ) {
-        return { block: true, reason: decision.reason ?? "tool blocked" };
+        return { block: true, reason: decision.reason ?? deniedByUser(`tool "${toolName}" call`) };
       }
     }
 
