@@ -488,7 +488,7 @@ export function probeAdvice(r: ProbeResult): string {
   const ref = `see ${docRef("windowsSelfCheck")}`;
   if (!r.done && r.launchError) {
     return (
-      `The Windows sandbox could not start a command in this project: ${r.launchError}. Drive mappings and UNC paths belong to your ` +
+      `The Windows sandbox could not start a command in this project: ${r.launchError.replace(/\.+$/, "")}. Drive mappings and UNC paths belong to your ` +
       `logon session and the sandbox account has none; work on a local drive (see ${docRef("windowsMappedDrive")}). Until then bash asks before every command.`
     );
   }

@@ -190,14 +190,18 @@ you can rely on it appropriately. The reference for every setting is in
   the grants are dropped. Known gaps, all inherited from the runtime:
   the proxy token is visible to local principals that can inspect the
   runner's command line, DNS lookups are not fenced (connections are),
-  inbound connections are not fenced either (a sandboxed command may listen
-  on a port and anything on the machine, or on the LAN for `0.0.0.0` as
-  far as Windows Firewall allows, can connect while the command runs; the
-  listener ends with the command), revocation checks cannot leave the fence (git and cargo are told to skip
+  revocation checks cannot leave the fence (git and cargo are told to skip
   them inside the sandbox; System32 curl needs `--ssl-no-revoke`), and the
   sandboxed command's environment is your shell environment minus identity,
   path, temp, proxy and CA variables, the same exposure as on Linux
-  ([docs/sandbox.md, Windows](docs/sandbox.md#windows)).
+  ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). One difference
+  is deliberate and useful: the fence stops the account's outbound
+  connects only, so a server a sandboxed command starts is reachable from
+  the host while the command runs (previews, tests), and ends with it. The
+  cost to know: bound to `0.0.0.0` it answers on the LAN as far as Windows
+  Firewall allows, so servers belong on `127.0.0.1`. Linux (private network
+  namespace) and macOS (without `allowLocalBinding`) do not reach such a
+  server from the host today; parity is planned with managed jobs.
 - **Pinned directories on Linux.** Every existing ancestor of a path the
   sandbox protects (a denied read, a mandatory-deny dotfile, the runtime's
   own binds) is a mount point inside the sandbox. Renaming or removing such a
