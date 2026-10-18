@@ -106,6 +106,7 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
       case "denyWrite":
       case "denyRead":
       case "allowRead":
+      case "insideRoots":
         if (isStringArray(v)) out[k] = v;
         else drop(k);
         break;
@@ -533,6 +534,8 @@ function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, o
     result.linux = linux;
   }
   if (over.allowWrite !== undefined) result.allowWrite = intersect(base.allowWrite, over.allowWrite);
+  // A root here removes a prompt, so a project may only take roots away.
+  if (over.insideRoots !== undefined) result.insideRoots = intersect(base.insideRoots, over.insideRoots);
   if (over.denyRead !== undefined) result.denyRead = union(base.denyRead, over.denyRead);
   if (over.allowRead !== undefined) result.allowRead = intersect(base.allowRead, over.allowRead); // may only close carve-outs
   if (over.denyWrite !== undefined) result.denyWrite = union(base.denyWrite, over.denyWrite);

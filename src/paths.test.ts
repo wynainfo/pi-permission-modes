@@ -18,6 +18,7 @@ import {
   canonicalPath,
   displayPath,
   gitDirsOf,
+  insideRoots,
   normalizeToolPath,
   sandboxAllowedRoots,
 } from "./paths.ts";
@@ -390,4 +391,13 @@ test("gitDirsOf: real worktrees and submodules resolve; forged or dangerous gitf
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test("insideRoots: absolute, home-expanded, globs and empties skipped, deduplicated", () => {
+  const prof = (insideRoots?: string[]) => ({ enabled: true, writable: true, insideRoots });
+  const got = insideRoots("/project", prof(["/mnt/user", "data", "/mnt/user", "/bad/*", "", "~/share"]));
+  assert.deepEqual(got.slice(0, 2), ["/mnt/user", "/project/data"]);
+  assert.equal(got.length, 3);
+  assert.ok(got[2].endsWith("/share") && !got[2].includes("~"));
+  assert.deepEqual(insideRoots("/project", prof()), []);
 });

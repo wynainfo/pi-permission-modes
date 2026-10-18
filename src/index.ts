@@ -77,7 +77,7 @@ import {
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
 import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
-import { blockablePath, canonicalPath, displayPath, isOutside, isProtectedWrite, normalizeToolPath, resolvePlanPath, sandboxAllowedRoots } from "./paths.ts";
+import { blockablePath, canonicalPath, displayPath, insideRoots, isOutside, isProtectedWrite, normalizeToolPath, resolvePlanPath, sandboxAllowedRoots } from "./paths.ts";
 import {
   approvalMessage,
   DEFAULT_APPROVE_MODE,
@@ -672,6 +672,7 @@ export default async function (pi: ExtensionAPI) {
           ...(c.filesystem.allowRead?.length ? [`Allow read: ${c.filesystem.allowRead.join(", ")} (inside the denied paths)`] : []),
           `Session blocks: ${blocked.list().map(displayPath).join(", ") || "(none)"}`,
           `Allow write: ${c.filesystem?.allowWrite?.join(", ") || "(none)"}`,
+          ...(m.sandbox.insideRoots?.length ? [`Inside roots: ${m.sandbox.insideRoots.join(", ")} (bash escape heuristic only)`] : []),
           `Deny write:  ${c.filesystem?.denyWrite?.join(", ") || "(none)"}`,
           ...(sandbox.extras?.allowWrite.length ? [`Git dirs (worktree/submodule): writable ${sandbox.extras.allowWrite.join(", ")}; hooks and config denied`] : []),
           ...(sandbox.dependencyWarnings.length > 0 ? ["", `Runtime warnings: ${sandbox.dependencyWarnings.join("; ")}`] : []),
@@ -1007,6 +1008,10 @@ export default async function (pi: ExtensionAPI) {
     // The shipped docs are read-only reference material the prompt points at:
     // reading them is not an escape (writing to them still is).
     const docBounds = [...bounds, docsDir()];
+    // Bash only: the mode's insideRoots (remote paths named in ssh commands,
+    // say) are not escapes, so the command runs sandboxed instead of prompting
+    // and then running unsandboxed. File tools do not get them.
+    const bashBounds = [...docBounds, ...insideRoots(root, m.sandbox)];
 
     // Hard backstop: never write to protected paths (file tools aren't sandboxed),
     // unless the mode explicitly trusts everything (YOLO). Matched lexically AND
@@ -1029,7 +1034,7 @@ export default async function (pi: ExtensionAPI) {
       // escape from. YOLO remains silent because its policy is `allow`; an
       // unsandboxed `ask` mode must still prompt.
       if (!m.sandbox.enabled) {
-        const analysis = await analyzeBash(command, root, docBounds);
+        const analysis = await analyzeBash(command, root, bashBounds);
         const decision =
           analysis.commands.length > 0 ? decideBashChainDetailed(m, analysis.commands) : decideDetailed(m, "bash", command);
         const gate = bashGate(decision.action, undefined, false, sandbox.ready, decision.reason);
@@ -1048,7 +1053,7 @@ export default async function (pi: ExtensionAPI) {
       // bash surface AND the cross-cutting path gate (joined string + each token,
       // see decideBashCommand), most-restrictive across the chain; detect
       // escapes/privilege.
-      const analysis = await analyzeBash(command, root, docBounds);
+      const analysis = await analyzeBash(command, root, bashBounds);
       // A command no layer matches falls back to "ask" (see decideBashChain).
       const decision =
         analysis.commands.length > 0 ? decideBashChainDetailed(m, analysis.commands) : decideDetailed(m, "bash", command);
@@ -1074,7 +1079,7 @@ export default async function (pi: ExtensionAPI) {
         const targets = analysis.outsideReason?.startsWith("path outside project")
           ? analysis.usedFallback
             ? [escapeTargetFromReason(analysis.outsideReason, root)].filter((t): t is string => t !== undefined)
-            : escapingPaths(analysis.commands, root, docBounds)
+            : escapingPaths(analysis.commands, root, bashBounds)
           : [];
         const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
         if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };

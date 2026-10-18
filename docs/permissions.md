@@ -62,8 +62,9 @@ commands. Aliases are considered too: `"sudo*": "deny"` catches
 `/usr/bin/sudo id` and `time sudo id`.
 
 Independently of the policy, the analysis detects escapes: a path outside
-the project (and outside the sandbox-writable roots), or privilege
-escalation. An escape always prompts, and an approved escape runs
+the project (and outside the sandbox-writable roots and the mode's
+`sandbox.insideRoots`, [sandbox.md, Inside roots](sandbox.md#inside-roots)),
+or privilege escalation. An escape always prompts, and an approved escape runs
 unsandboxed, since you authorized it. The gate then composes with the
 sandbox state:
 

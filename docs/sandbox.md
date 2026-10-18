@@ -23,6 +23,7 @@ config may do with the key ([configuration.md, Project config](configuration.md#
 | `allowRead` | string[] | `[]` | Readable again inside a `denyRead` region (deny-then-allow; [modes.md, Strict home](modes.md#strict-home)). A more specific `denyRead` or a session block inside a carve-out still wins | may remove entries |
 | `network.allowedDomains` | string[] | package registries and GitHub | Hosts bash may reach; `*.example.com` wildcards and an optional `:port` suffix are accepted. Absent means no filtering ([network.md](network.md)) | may remove entries |
 | `network.deniedDomains` | string[] | `[]` | Hosts always refused, even when the network is open for the session | may add entries |
+| `insideRoots` | string[] | `[]` | Roots the bash escape heuristic treats as inside, for remote paths named in `ssh` commands and the like ([Inside roots](#inside-roots)). Bash only; no file-tool or sandbox access | may remove entries |
 | `askOnBlockedHost` | boolean | true | Prompt live when bash tries a host outside the allowlist. `false` denies silently | may set `false` |
 | `macos.allowLocalBinding` | boolean | unset | macOS only. Direct loopback TCP and binding local ports from sandboxed bash, for database drivers and dev servers ([macOS](#macos)) | may set `false` |
 | `macos.enableWeakerNetworkIsolation` | boolean | unset | macOS only. Allow the `trustd` lookup Go programs need to verify TLS certificates ([macOS](#macos)) | may set `false` |
@@ -177,6 +178,28 @@ isolation" for that reason
 `/sandbox` shows both switches; off macOS it says "no effect here". The
 awareness section tells the model about the loopback carve-out when it is
 on, and about the Go TLS limit when the second switch is off.
+
+## Inside roots
+
+The bash analysis reads every path-like argument as a local path, so
+`ssh nas ls /mnt/user` prompts as an escape to `/mnt/user`, and approving it
+runs the command unsandboxed. Exempting `ssh` arguments wholesale would hide
+`ssh -i ~/.ssh/key` and the local side of `scp`. `sandbox.insideRoots` names
+the roots instead:
+
+```jsonc
+"sandbox": { "insideRoots": ["/mnt/user", "/srv/backup"] }
+```
+
+A path under one of them is not an escape: the command neither prompts for
+it nor runs unsandboxed, it runs inside the sandbox like any in-project
+command, so a local write there is still refused by the sandbox and a local
+read is as allowed as any other read. The file tools do not see the list (a
+`read` of `/mnt/user/x` still prompts as outside the project), nothing is
+forwarded to the runtime, and modes with `sandbox.enabled: false` skip the
+escape heuristic anyway. Literal paths, `~` expands, globs are ignored.
+Global config only: a project may remove entries, never add one. `/sandbox`
+lists the roots.
 
 ## Linux
 

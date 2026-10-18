@@ -49,6 +49,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The awareness section names the limit on Linux while the switch is off,
   with the `--no-sandbox` way around it; `/sandbox` shows the switch; the
   cost is in SECURITY.md and `docs/sandbox.md`.
+- **`sandbox.insideRoots`: paths the bash escape heuristic treats as
+  inside.** The analysis reads every path-like argument as local, so
+  `ssh nas ls /mnt/user` prompted as an escape to `/mnt/user` and, once
+  approved, ran unsandboxed. A root listed here is not an escape: the command
+  runs sandboxed like any in-project command. Bash only; the file tools, the
+  sandbox profile and the runtime see nothing of it. Global config only, a
+  project may remove entries. `/sandbox` lists them. Proposed with a patch by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#24](https://github.com/wynainfo/pi-permission-modes/issues/24).
 - **Per-rule reasons: `{ "action": "deny", "reason": "..." }` on permission
   patterns.** A pattern entry can carry a reason, so a block tells the model
   what to do instead of only what failed: `"grep *": { "action": "deny",

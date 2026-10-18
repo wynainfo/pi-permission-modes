@@ -253,6 +253,21 @@ export function sandboxAllowedRoots(root: string, profile: SandboxProfile): stri
   return out;
 }
 
+/**
+ * The mode's `sandbox.insideRoots`, absolute: extra bounds for the bash escape
+ * heuristic only (a remote path in an ssh command is not a local escape).
+ * Same spelling rules as the writable roots: `~` expands, globs are skipped.
+ */
+export function insideRoots(root: string, profile: SandboxProfile): string[] {
+  const out: string[] = [];
+  for (const raw of profile.insideRoots ?? []) {
+    if (raw.length === 0 || /[*?[\]{}]/.test(raw)) continue;
+    const abs = path.resolve(root, expandHome(raw));
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out;
+}
+
 /** True when the path is a Markdown file (planning files allowed in Read mode). */
 export function isMarkdown(p: string): boolean {
   return /\.(md|markdown)$/i.test(p);

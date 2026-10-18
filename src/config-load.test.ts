@@ -376,6 +376,20 @@ test("project: askOnBlockedHost can be forced off (silent deny), never back on",
   s.cleanup();
 });
 
+test("sandbox.insideRoots: global list kept, wrong type dropped, project may only remove entries, not forwarded to the runtime", () => {
+  const s = sandbox({
+    global: { modes: { build: { sandbox: { insideRoots: ["/mnt/user", "/srv/backup"] } }, plan: { sandbox: { insideRoots: "/mnt/user" } } } },
+    project: { modes: { build: { sandbox: { insideRoots: ["/srv/backup", "/elsewhere"] } }, default: { sandbox: { insideRoots: ["/elsewhere"] } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.insideRoots, ["/srv/backup"]);
+  assert.deepEqual(c.modes.default.sandbox.insideRoots, []);
+  assert.equal(c.modes.plan.sandbox.insideRoots, undefined);
+  assert.ok(s.errors.some((e) => /insideRoots.*wrong type/.test(e)));
+  assert.ok(!("insideRoots" in profileToConfig(c.modes.build.sandbox)));
+  s.cleanup();
+});
+
 test("sandbox.linux: global opt-in projects to the runtime under its name; projects can only turn it off", () => {
   const s = sandbox({
     global: {

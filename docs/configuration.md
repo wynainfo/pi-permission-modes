@@ -67,8 +67,8 @@ as the loader enforces them (`src/config-load.ts`, `tightenSandbox` and
 - `sandbox.enabled` cannot change (neither off nor on). `writable` may be set
   to `false`, never back to `true`. `askOnBlockedHost` may be set to `false`,
   never to `true`.
-- `allowWrite` and `allowRead` are intersected with the base (a project can
-  only remove writable roots or carve-outs). `denyRead` and `denyWrite` are
+- `allowWrite`, `allowRead`, and `insideRoots` are intersected with the base
+  (a project can only remove writable roots, carve-outs, or inside roots). `denyRead` and `denyWrite` are
   unioned (a project can only add denies).
 - `network.allowedDomains` is intersected with the base (a project can only
   narrow the allowlist; an overly broad pattern such as `*` is dropped with a

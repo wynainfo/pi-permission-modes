@@ -114,6 +114,15 @@ export interface SandboxProfile {
    */
   askOnBlockedHost?: boolean;
   /**
+   * Roots the bash escape heuristic treats as inside: a path under one (a
+   * remote path in `ssh nas ls /mnt/user`, say) is not an out-of-project
+   * escape, so the command runs sandboxed as usual instead of prompting and
+   * then running unsandboxed. Literal paths, `~` expands, globs are ignored.
+   * Bash only: file tools, the sandbox profile and the runtime config do not
+   * see them. Global config only; a project may remove entries, never add.
+   */
+  insideRoots?: string[];
+  /**
    * macOS-only runtime options, forwarded to sandbox-runtime under its own
    * names and without effect on other platforms. Off unless set. Project
    * configs may set a key to false, never to true.

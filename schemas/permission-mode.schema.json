@@ -89,6 +89,7 @@
             "deniedDomains": { "type": "array", "items": { "type": "string" } }
           }
         },
+        "insideRoots": { "type": "array", "items": { "type": "string" }, "description": "Roots the bash escape heuristic treats as inside (remote paths in ssh commands, say): a path under one does not prompt as outside the project, and the command runs sandboxed as usual. Bash only; grants no file-tool or sandbox access. Projects may remove entries, never add." },
         "macos": {
           "type": "object",
           "additionalProperties": false,

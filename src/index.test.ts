@@ -1077,6 +1077,37 @@ test("custom unsandboxed mode still honors bash ask", { skip }, async () => {
   }
 });
 
+test("sandbox.insideRoots: removes the escape prompt for bash only; a project cannot add a root (#24)", { skip }, async () => {
+  const h = await setup({ globalConfig: { modes: { build: { sandbox: { insideRoots: ["/mnt/user"] } } } } });
+  try {
+    await h.perm("build");
+    // Under an inside root: no "path outside project"; the harness has no OS
+    // sandbox, so the degraded-runtime prompt remains, which is not a bypass.
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: "ssh nas ls /mnt/user/photos" });
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /sandbox unavailable/);
+    assert.doesNotMatch(h.ctx.prompts.at(-1)?.title ?? "", /path outside project/);
+    // A sibling path is still an escape.
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: "ssh nas ls /mnt/other" });
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /path outside project: \/mnt\/other/);
+    // File tools do not get the root.
+    h.ctx.answers.push("Deny");
+    await h.call("read", { path: "/mnt/user/photos/a.txt" });
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /Outside project - allow read/);
+    // A project config cannot add a root.
+    mkdirSync(path.join(h.root, ".pi"), { recursive: true });
+    writeFileSync(path.join(h.root, ".pi/permission-mode.json"), JSON.stringify({ modes: { build: { sandbox: { insideRoots: ["/mnt/user", "/elsewhere"] } } } }));
+    await h.pi.emit("session_start", {}, h.ctx);
+    h.ctx.answers.push("Deny");
+    await h.call("bash", { command: "ssh nas ls /elsewhere" });
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /path outside project: \/elsewhere/);
+    assert.equal(h.ctx.prompts.length, 4);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("unsandboxed modes judge bash per command: chains, prefixes, quoting, the path gate (#26, #21)", { skip }, async () => {
   const h = await setup({
     globalConfig: {
