@@ -280,7 +280,10 @@ blocks that. Tools that check revocation by default fail with
 `CRYPT_E_REVOCATION_OFFLINE` (`0x80092013`). The extension exports
 `GIT_CONFIG_PARAMETERS='http.schannelCheckRevoke=false'` and
 `CARGO_HTTP_CHECK_REVOKE=false` into every sandboxed command, so git and
-cargo work; for System32 curl pass `--ssl-no-revoke`. Git also runs with
+cargo work; for System32 curl pass `--ssl-no-revoke`. Git is also set to
+`http.proxyAuthMethod=basic`: its libcurl otherwise sends the first CONNECT
+to the sandbox proxy without credentials, gets a 407 and a closed
+connection, and fails with "Proxy CONNECT aborted". Git also runs with
 `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never` there: a remote that
 wants credentials fails at once instead of waiting on a prompt the sandbox
 account cannot show (use a token, see

@@ -185,10 +185,13 @@ test("withWindowsReads: the grants become allowRead unless the mode sets its own
 
 test("windowsGitEnv: git and cargo skip the revocation check, git never prompts; the caller's git parameters stay ahead", () => {
   assert.deepEqual(windowsGitEnv({}), {
-    GIT_CONFIG_PARAMETERS: "'http.schannelCheckRevoke=false'",
+    GIT_CONFIG_PARAMETERS: "'http.schannelCheckRevoke=false' 'http.proxyAuthMethod=basic'",
     CARGO_HTTP_CHECK_REVOKE: "false",
     GIT_TERMINAL_PROMPT: "0",
     GCM_INTERACTIVE: "never",
   });
-  assert.equal(windowsGitEnv({ GIT_CONFIG_PARAMETERS: "'core.autocrlf=true'" }).GIT_CONFIG_PARAMETERS, "'core.autocrlf=true' 'http.schannelCheckRevoke=false'");
+  assert.equal(
+    windowsGitEnv({ GIT_CONFIG_PARAMETERS: "'core.autocrlf=true'" }).GIT_CONFIG_PARAMETERS,
+    "'core.autocrlf=true' 'http.schannelCheckRevoke=false' 'http.proxyAuthMethod=basic'",
+  );
 });

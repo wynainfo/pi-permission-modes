@@ -164,7 +164,7 @@ test("controller (win32): provisioned, probe passes; read-only is applied at ini
   // Build: writable ops run; a read-only request must wait for the re-init.
   const ops = c.bashOps({ readOnly: false })!;
   const r = await exec(ops, "echo \"$GIT_AUTHOR_NAME $GIT_COMMITTER_EMAIL $GIT_CONFIG_PARAMETERS $CARGO_HTTP_CHECK_REVOKE\"", { PATH: process.env.PATH });
-  assert.equal(r.out, "Ann ann@x.io 'http.schannelCheckRevoke=false' false\n");
+  assert.equal(r.out, "Ann ann@x.io 'http.schannelCheckRevoke=false' 'http.proxyAuthMethod=basic' false\n");
   await assert.rejects(c.bashOps({ readOnly: true })!.exec("true", process.cwd(), { onData: () => {} }), /re-initialized for this mode/);
   // A session block outside the grants is dropped per command too; one inside rides along.
   const blocked = c.bashOps({ readOnly: false, extraDenyRead: ["~/secret", path.join(process.cwd(), "src", "x.ts")] })!;

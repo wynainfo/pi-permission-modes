@@ -277,15 +277,20 @@ export function withWindowsReads(profile: SandboxProfile, grants: readonly strin
  * fetch revocation lists (the lookup goes out over WinHTTP, past the proxy
  * variables), so git over HTTPS and cargo would fail with
  * CRYPT_E_REVOCATION_OFFLINE; both read these variables, and the caller's
- * own `GIT_CONFIG_PARAMETERS` stay ahead. Git must also fail fast when a
- * remote wants credentials: there is no terminal, and Git Credential
- * Manager runs as the sandbox account, whose store is empty and which
- * cannot show a window, so interactive prompts are turned off (the model is
- * told to recommend a token, as on Linux).
+ * own `GIT_CONFIG_PARAMETERS` stay ahead. Git's libcurl negotiates proxy
+ * authentication (a first CONNECT without credentials, a 407, a retry),
+ * and the runtime's proxy closes the connection with the 407, which the
+ * curl in Git for Windows does not survive ("Proxy CONNECT aborted"), so
+ * git is told to send Basic up front, as curl itself does with the
+ * credentials in the proxy URL. Git must also fail fast when a remote wants
+ * credentials: there is no terminal, and Git Credential Manager runs as the
+ * sandbox account, whose store is empty and which cannot show a window, so
+ * interactive prompts are turned off (the model is told to recommend a
+ * token, as on Linux).
  */
 export function windowsGitEnv(callerEnv: NodeJS.ProcessEnv): Record<string, string> {
   const existing = callerEnv.GIT_CONFIG_PARAMETERS?.trim();
-  const param = "'http.schannelCheckRevoke=false'";
+  const param = "'http.schannelCheckRevoke=false' 'http.proxyAuthMethod=basic'";
   return {
     GIT_CONFIG_PARAMETERS: existing ? `${existing} ${param}` : param,
     CARGO_HTTP_CHECK_REVOKE: "false",
