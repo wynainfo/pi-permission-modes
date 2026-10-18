@@ -21,7 +21,13 @@ The allowlist is a domain allowlist, not traffic inspection: everything you
 allow is exfiltration surface, so keep it tight. The runtime refuses an
 allowed name that resolves to loopback, link-local, this host's own
 addresses, or a cloud metadata endpoint, so a permitted domain cannot be
-pointed at local services through DNS.
+pointed at local services through DNS. `localhost` (and names under
+`.localhost`) is the one name that may resolve to loopback: allowing it,
+in the allowlist or for the session, lets sandboxed bash reach services
+on this machine through the proxy (a dev server on port 8000, say), on
+every platform; an IP literal such as `127.0.0.1:8000` works as an entry
+too. Only clients that do not speak to a proxy (database drivers, raw
+TCP) need macOS's `allowLocalBinding` for loopback.
 
 ## Requesting access
 
@@ -34,7 +40,9 @@ all deny.
 Three ways to grant access:
 
 - **The live prompt**, as above. A denied host stays denied for the session,
-  so a retrying installer does not storm you with prompts.
+  so a retrying installer does not storm you with prompts. A prompt whose
+  command has ended meanwhile (finished, aborted or timed out) is dismissed
+  by itself: the request it stood for is denied and nothing is remembered.
 - **`request_network_access`**, a tool the model has: it names the hosts and
   a reason, one prompt covers all of them (for example every host an install
   needs), and the model is told to retry the command once granted.

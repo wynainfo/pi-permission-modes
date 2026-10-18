@@ -855,6 +855,15 @@ export class SandboxController {
     return new Promise((r) => this.idleWaiters.push(r));
   }
 
+  /**
+   * Resolves once no sandboxed command is running. A network prompt raised by
+   * a command's connection is dismissed on it: once the command has ended or
+   * timed out, nothing waits for the answer and the prompt would only linger.
+   */
+  idle(): Promise<void> {
+    return this.whenIdle();
+  }
+
   /** Install instructions shown when the runtime is missing or fails to init. */
   private static installHint(): string {
     const linux = process.platform === "linux" ? "  (Linux also needs: bubblewrap, socat, ripgrep)" : "";

@@ -202,11 +202,16 @@ export default async function (pi: ExtensionAPI) {
     const ctx = uiCtx;
     if (!ctx?.hasUI || currentMode().sandbox.askOnBlockedHost === false) return "dismiss";
     const target = port !== undefined ? `${host}:${port}` : host;
-    const choice = await ctx.ui.select(`Network: bash wants to reach ${target} (not in the allowlist) — allow?`, [
+    // The prompt lives as long as a sandboxed command does: when the command
+    // that opened the connection has ended (or timed out), the answer has
+    // nothing to apply to, so the prompt is dismissed (denied, not remembered).
+    const gone = new AbortController();
+    void sandbox.idle().then(() => gone.abort());
+    const choice = await ctx.ui.select(`Network: bash wants to reach ${target} (not in the allowlist) - allow?`, [
       "Allow for session",
       "Allow forever",
       "Deny",
-    ]);
+    ], { signal: gone.signal });
     if (choice === "Allow for session") return "allow-session";
     if (choice === "Allow forever") {
       try {

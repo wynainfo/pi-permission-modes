@@ -341,6 +341,25 @@ test("controller (win32): a refused acl grant is retried once after the reset; t
   assert.equal(fake2.calls.filter((x) => x === "initialize").length, 2);
 });
 
+test("controller: idle() resolves once no sandboxed command runs (a network prompt is dismissed on it)", async () => {
+  const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+  const fake = fakeWindowsRuntime({ argv: passing });
+  const c = new SandboxController();
+  await baseInit(c, fake, []);
+  await c.idle(); // nothing running: resolves at once
+  let out = "";
+  const run = c.bashOps({ readOnly: false })!.exec("sleep 0.5; echo done", process.cwd(), { onData: (b) => (out += String(b)), signal: undefined as never, timeout: 10, env: { PATH: process.env.PATH } });
+  await new Promise((r) => setTimeout(r, 100)); // the command is running (a prompt can only come from a running command)
+  let idle = false;
+  const waited = c.idle().then(() => (idle = true));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(idle, false, "still running");
+  await run;
+  await waited;
+  assert.equal(idle, true);
+  assert.match(out, /done/);
+});
+
 test("controller (win32): a switch waits for a quiet moment after the last cycle step; the first init does not", async () => {
   const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
   const fake = fakeWindowsRuntime({ argv: passing });
