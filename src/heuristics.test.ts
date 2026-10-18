@@ -45,6 +45,14 @@ test("known gaps: heuristic does not parse the shell", () => {
 });
 
 
+test("fallback: a script program's quoted text is not a path, its files are", () => {
+  assert.equal(bashConfirmReason("sed -n '/git-authentication/,/^## /p' network.md", ROOT), undefined);
+  assert.equal(bashConfirmReason("awk '/x/ {print $1}' data.txt | sed -e 's#/a#/b#' > out", ROOT), undefined);
+  assert.match(bashConfirmReason("sed -n p /etc/passwd", ROOT) ?? "", /path outside project: \/etc\/passwd/);
+  assert.match(bashConfirmReason("sed -n '/x/p' network.md; cat /etc/hosts", ROOT) ?? "", /path outside project: \/etc\/hosts/);
+  assert.match(bashConfirmReason("awk -f /etc/prog.awk x", ROOT) ?? "", /path outside project: \/etc\/prog\.awk/);
+});
+
 test("sandbox-writable roots are in-bounds for the heuristic too (parity with the AST path)", () => {
   assert.match(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT) ?? "", /path outside project/);
   assert.equal(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT, ["/tmp"]), undefined);

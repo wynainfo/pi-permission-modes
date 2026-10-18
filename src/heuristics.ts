@@ -9,7 +9,7 @@
  * Pure (no `pi`/`ctx`) so the known-gap behavior can be locked down with tests.
  */
 
-import { lstatSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { bashPathEscapes, SAFE_OUTSIDE_RE } from "./paths.ts";
@@ -83,6 +83,79 @@ export function pathPartOfToken(tok: string): string {
 }
 
 /**
+ * Programs whose program text is passed as an argument: a sed address like
+ * `/git-authentication/,/^## /p` or an awk pattern `/x/ {print}` starts with
+ * a slash but names no path. `scriptOpt` options take the program as the
+ * next argument (also as the last letter of a combined flag, `sed -ne`,
+ * `perl -pe`); `fileOpt` options take a file, which stays judged; `valueOpt`
+ * options consume the next argument for something that is no path (a field
+ * separator, an assignment); `positional` says the first non-option argument is the program when
+ * no script option and no `-f` file was given (perl and ruby take a script
+ * FILE there, which is a path and stays judged).
+ */
+const SCRIPT_PROGRAMS: Record<string, { scriptOpt: RegExp; fileOpt: RegExp; valueOpt: RegExp; positional: boolean }> = {
+  sed: { scriptOpt: /^(-[a-zA-Z]*e|--expression)$/, fileOpt: /^(-f|--file)$/, valueOpt: /^(-l|--line-length)$/, positional: true },
+  awk: { scriptOpt: /^(-[a-zA-Z]*e|--source)$/, fileOpt: /^(-f|--file)$/, valueOpt: /^(-F|-v|--assign|--field-separator)$/, positional: true },
+  perl: { scriptOpt: /^-[a-zA-Z0-9]*[eE]$/, fileOpt: /^-I$/, valueOpt: /^$/, positional: false },
+  ruby: { scriptOpt: /^-[a-zA-Z0-9]*e$/, fileOpt: /^-I$/, valueOpt: /^$/, positional: false },
+};
+for (const a of ["gawk", "mawk", "nawk"]) SCRIPT_PROGRAMS[a] = SCRIPT_PROGRAMS.awk;
+
+/**
+ * The arguments of `name` that may name paths: the program text of a script
+ * program (see SCRIPT_PROGRAMS) is left out. Other commands keep every
+ * argument. `name` may be a path to the program.
+ */
+export function pathArgs(name: string, args: readonly string[]): string[] {
+  const prog = SCRIPT_PROGRAMS[path.basename(name).replace(/\.exe$/i, "")];
+  if (!prog) return [...args];
+  const out: string[] = [];
+  let scriptGiven = false;
+  let positionalSeen = false;
+  let i = 0;
+  // Pass one: does a script option or a script file appear anywhere? Then
+  // the first positional is an input file, not the program.
+  for (const a of args) if (prog.scriptOpt.test(a) || /^(-f|--file)$/.test(a) || /^--(expression|source|file)=/.test(a)) scriptGiven = true;
+  while (i < args.length) {
+    const a = args[i];
+    if (a === "--") {
+      out.push(...args.slice(i + 1));
+      break;
+    }
+    if (prog.scriptOpt.test(a)) {
+      i += 2; // the option and the program text
+      continue;
+    }
+    if (/^--(expression|source)=/.test(a)) {
+      i += 1;
+      continue;
+    }
+    if (prog.fileOpt.test(a)) {
+      out.push(a, ...(i + 1 < args.length ? [args[i + 1]] : [])); // `-f file` names a path: judged
+      i += 2;
+      continue;
+    }
+    if (prog.valueOpt.test(a)) {
+      i += 2;
+      continue;
+    }
+    if (a.startsWith("-") && a !== "-") {
+      out.push(a);
+      i += 1;
+      continue;
+    }
+    if (prog.positional && !scriptGiven && !positionalSeen) {
+      positionalSeen = true; // the program text
+      i += 1;
+      continue;
+    }
+    out.push(a);
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Returns a human-readable reason to prompt before running `command`, or
  * undefined when the heuristic finds nothing concerning. `root` is the project
  * directory used to classify path tokens as in/out of project; `alsoInside`
@@ -117,7 +190,29 @@ export function bashConfirmReason(
 ): string | undefined {
   if (PRIVILEGE_RE.test(command)) return "privilege escalation";
   if (/(^|[;&|(]\s*)(cd|pushd)(\s+-)?\s*($|[;&|)])/.test(command)) return "path outside project: cd";
-  for (const raw of command.split(/[\s;|&()<>]+/).filter(Boolean)) {
+  // Without a parser, quoting is invisible: a script program's text is
+  // dropped by pathArgs where it is one word, and a slash-token of its that
+  // names nothing on disk (a regex fragment, `/^##` or `/p`) is not a path.
+  const words: string[] = [];
+  for (const segment of command.split(/[;|&()]+/)) {
+    const seg = segment.split(/[\s<>]+/).filter(Boolean);
+    const headAt = seg.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    const head = headAt >= 0 ? seg[headAt].replace(/["'`]/g, "") : undefined;
+    const kept = head && SCRIPT_PROGRAMS[path.basename(head)] ? [...seg.slice(0, headAt + 1), ...pathArgs(head, seg.slice(headAt + 1).map((w) => w.replace(/^["'`]+|["'`]+$/g, "")))] : seg;
+    const scripted = Boolean(head && SCRIPT_PROGRAMS[path.basename(head)]);
+    for (const w of kept) {
+      if (scripted) {
+        const bare = w.replace(/["'`]/g, "");
+        // Program text, not a path: a quote inside the word (a quoted script
+        // split at its spaces), regex characters, or a one-segment name that
+        // does not exist (`/p`, `/d`). A quoted file (`'/etc/hosts'`) stays.
+        const quoteInside = !/^["'`]*[^"'`]*["'`]*$/.test(w);
+        if (bare.startsWith("/") && (quoteInside || /[\^$*+?|()[\]{}#,\\]/.test(bare) || (!bare.slice(1).includes("/") && !existsSync(bare)))) continue;
+      }
+      words.push(w);
+    }
+  }
+  for (const raw of words) {
     const tok = normalizeBashToken(raw);
     if (!tok) continue;
     const win = winTokenEscape(raw, root, alsoInside, opts); // raw: normalizeBashToken would eat the backslashes

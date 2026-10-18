@@ -59,6 +59,22 @@ test("extractCommands: quotes are stripped from args", () => {
   assert.deepEqual(extractCommands(program(c))[0].args, ["hi"]);
 });
 
+test("outsideReasonFromCommands: a script program's text is not a path; its files still are", () => {
+  const root = "/p";
+  assert.equal(outsideReasonFromCommands([bc("sed", "-n", "/git-authentication/,/^## /p", "network.md")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("sed", "-ne", "/a/p", "-e", "/b/d", "x.md")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("sed", "-i", "s/x/y/", "/etc/hosts")], root), "path outside project: /etc/hosts");
+  assert.equal(outsideReasonFromCommands([bc("sed", "-n", "-f", "/etc/prog.sed", "x")], root), "path outside project: /etc/prog.sed");
+  assert.equal(outsideReasonFromCommands([bc("sed", "-e", "/a/p", "/etc/passwd")], root), "path outside project: /etc/passwd", "with -e the positional is a file");
+  assert.equal(outsideReasonFromCommands([bc("awk", "/x/ {print $1}", "data.txt")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("awk", "-F", "/", "{print $2}", "data.txt")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("gawk", "-f", "/etc/prog.awk", "data.txt")], root), "path outside project: /etc/prog.awk");
+  assert.equal(outsideReasonFromCommands([bc("perl", "-ne", "/^#/ && print", "x")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("perl", "/etc/script.pl")], root), "path outside project: /etc/script.pl", "perl's positional is a script file");
+  assert.equal(outsideReasonFromCommands([bc("ruby", "-e", "/x/", "/etc/in")], root), "path outside project: /etc/in");
+  assert.deepEqual(escapingPaths([bc("sed", "-n", "/a/,/b/p", "/etc/hosts")], root), ["/etc/hosts"]);
+});
+
 test("outsideReasonFromCommands: privilege escalation by command name", () => {
   assert.equal(outsideReasonFromCommands([{ name: "sudo", args: ["apt"], isNested: false }], "/p"), "privilege escalation");
   // even nested (the extractor already flattened it)

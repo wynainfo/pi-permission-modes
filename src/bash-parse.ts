@@ -25,6 +25,7 @@ import path from "node:path";
 import {
   bashConfirmReason,
   normalizeBashToken,
+  pathArgs,
   type PathCheckOptions,
   pathPartOfToken,
   PRIVILEGE_RE,
@@ -356,13 +357,14 @@ const WIN_SHELL_RE = /^(powershell|pwsh|cmd)(\.exe)?$/i;
 const PS_ENCODED_RE = /^-(e|ec|enc|encodedcommand)$/i;
 
 /**
- * The tokens to path-check for a command: name and arguments, and for
+ * The tokens to path-check for a command: name and arguments (minus the
+ * program text of sed, awk, perl and ruby, see `pathArgs`), and for
  * `powershell|pwsh|cmd` also the words of their script arguments
  * (`-Command "Remove-Item $env:X\y"`, `/c "del %X%\y"`), which tree-sitter
  * sees as one string.
  */
 function scriptTokens(c: BashCommand): string[] {
-  const toks = [c.name, ...c.args];
+  const toks = [c.name, ...pathArgs(c.name, c.args)];
   if (!WIN_SHELL_RE.test(path.win32.basename(c.name))) return toks;
   for (const a of c.args) toks.push(...a.split(/[\s;|&(){}<>,=]+/).filter(Boolean));
   return toks;
