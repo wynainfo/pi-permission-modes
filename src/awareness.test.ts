@@ -50,7 +50,7 @@ test("masked ~/.ssh: the SSH bullet rules out ssh, names HTTPS, a PAT, and the !
   assert.match(out, /insteadOf=git@github\.com: fetch/);
   assert.match(out, /fine-grained personal access token/);
   assert.doesNotMatch(out, /\bgh\b/, "gh is not recommended while its login stays readable");
-  assert.match(out, /`!git fetch`/);
+  assert.match(out, /`!git clone <url>`, later `!git push`/);
   assert.match(sandboxAwarenessPrompt(mode({}, { denyRead: ["~"] }), { active: true })!, ssh, "a strict home masks ~/.ssh too");
   assert.doesNotMatch(sandboxAwarenessPrompt(mode({}, { denyRead: ["~/.aws"] }), { active: true })!, ssh);
   assert.doesNotMatch(sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.ssh"] }), { active: true })!, ssh, "readable again");
@@ -243,7 +243,7 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   // Without any deny the keys are still out of reach on Windows (nothing of the profile is granted).
   const noDeny = sandboxAwarenessPrompt(mode({}, { denyRead: [] }), { active: true, platform: "win32" })!;
   assert.match(noDeny, /SSH keys are unreadable/);
-  assert.match(noDeny, /do not ask for the token in chat or put one on a command line/);
+  assert.match(noDeny, /Do not ask for the token in chat or put one on a command line/);
   const sshGranted = sandboxAwarenessPrompt(mode({}, { denyRead: [], allowRead: ["~/.ssh"] }), { active: true, platform: "win32" })!;
   assert.doesNotMatch(sshGranted, /SSH keys are unreadable/);
 });

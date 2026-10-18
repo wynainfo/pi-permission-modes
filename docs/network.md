@@ -72,6 +72,22 @@ personal access token limited to the repositories and permissions the agent
 needs (Contents read/write, for example). A leaked token then reaches only
 those repositories, and you revoke one token.
 
+Only the operations that talk to the remote need a credential: clone,
+fetch, pull, push, and opening a pull request. Commits, branches and
+everything else git does locally work in the sandbox without one. That
+leaves two ways to work with a private repository, and the choice is yours:
+
+- **A. Autonomous access with a token.** The setup below. The agent clones,
+  fetches, pushes and opens pull requests on its own (the GitHub CLI reads
+  `GITHUB_TOKEN` too, so `gh pr create` works with the same variable). Scope
+  the token to the repositories it should reach.
+- **B. One-off steps on the host.** You clone with `!git clone <url>`, the
+  agent works and commits inside the sandbox, and you push with `!git push`
+  (or open the pull request yourself) when you are satisfied. Nothing is
+  configured, no token exists, and every push stays a human action.
+
+For option A:
+
 1. Create the token on GitHub: Settings, Developer settings, Personal access
    tokens, Fine-grained tokens.
 2. Let git read it from the environment for github.com (once, outside pi):
