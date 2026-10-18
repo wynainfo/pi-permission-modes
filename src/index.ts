@@ -875,6 +875,7 @@ export default async function (pi: ExtensionAPI) {
       // Live network gate: the proxy consults session state for every host
       // outside the allowlist; unknown hosts prompt via askNetHost.
       askHost: (host, port) => net.decide(host, port, askNetHost),
+      keepWritable: scratchDir ? [scratchDir] : [],
     });
     // Record the start mode when the session does not already end on it (a
     // carried mode, a --perm flag, a new session), so resuming it in a later

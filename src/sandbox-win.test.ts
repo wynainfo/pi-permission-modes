@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   findGitBash,
   gitIdentityEnv,
+  grantReadExecute,
   parseProbe,
   probeAdvice,
   probeProblem,
@@ -10,6 +11,9 @@ import {
   probeTargets,
   readGitIdentity,
   stagedSrtWinPath,
+  windowsEnvExports,
+  windowsEnvFile,
+  windowsScript,
 } from "./sandbox-win.ts";
 
 const existsIn = (files: string[]) => (p: string) => files.map((f) => f.toLowerCase()).includes(p.toLowerCase());
@@ -93,4 +97,62 @@ test("stagedSrtWinPath: per-hash folder under LOCALAPPDATA", () => {
   assert.match(p, /^C:\\Users\\me\\AppData\\Local\\pi-permission-modes\\srt-win-[0-9a-f]{12}\\srt-win\.exe$/);
   // A different helper build lands in a different folder.
   assert.notEqual(p, stagedSrtWinPath(local, "C:\\x\\vendor\\srt-win.exe", Buffer.from("abd")));
+});
+
+test("stagedSrtWinPath: the grantee is part of the folder name", () => {
+  const local = "C:\\Users\\me\\AppData\\Local";
+  const users = stagedSrtWinPath(local, "C:\\x\\srt-win.exe", Buffer.from("abc"));
+  const sid = stagedSrtWinPath(local, "C:\\x\\srt-win.exe", Buffer.from("abc"), "*S-1-5-21-1-2-3-1001");
+  assert.notEqual(users, sid);
+});
+
+test("grantReadExecute: one icacls per directory and grantee, inheriting read and execute", () => {
+  const runs: string[][] = [];
+  const run = (args: string[]) => {
+    runs.push(args);
+  };
+  grantReadExecute("C:\\Users\\me\\AppData\\Local\\Temp\\pi-permission-mode-x", "*S-1-5-21-9", run);
+  grantReadExecute("c:\\users\\me\\appdata\\local\\temp\\pi-permission-mode-x", "*S-1-5-21-9", run);
+  grantReadExecute("C:\\Users\\me\\AppData\\Local\\Temp\\pi-permission-mode-x", "*S-1-5-21-10", run);
+  assert.deepEqual(runs, [
+    ["C:\\Users\\me\\AppData\\Local\\Temp\\pi-permission-mode-x", "/grant", "*S-1-5-21-9:(OI)(CI)RX"],
+    ["C:\\Users\\me\\AppData\\Local\\Temp\\pi-permission-mode-x", "/grant", "*S-1-5-21-10:(OI)(CI)RX"],
+  ]);
+});
+
+test("windowsEnvExports: forwards the caller's env minus identity, profile, temp, PATH, proxy and CA variables; extra wins", () => {
+  const env = {
+    FOO: "bar baz",
+    PI_SESSION: "it's",
+    USERPROFILE: "C:\\Users\\me",
+    Path: "C:\\Windows",
+    temp: "C:\\Users\\me\\AppData\\Local\\Temp",
+    HTTPS_PROXY: "http://corp:3128",
+    no_proxy: "localhost",
+    SSL_CERT_FILE: "C:\\ca.pem",
+    GIT_CONFIG_COUNT: "1",
+    SRT_TOKEN: "x",
+    "ProgramFiles(x86)": "C:\\Program Files (x86)",
+    EMPTY: "",
+    GONE: undefined,
+  };
+  assert.deepEqual(windowsEnvExports(env, { GIT_AUTHOR_NAME: "Ann", FOO: "override", TMPDIR: "C:/tmp/pi/s" }), [
+    "FOO='override'",
+    "PI_SESSION='it'\\''s'",
+    "EMPTY=''",
+    "GIT_AUTHOR_NAME='Ann'",
+    "TMPDIR='C:/tmp/pi/s'",
+  ]);
+});
+
+test("windowsScript: sources the env file and runs the command file in a bash -c of its own; inlines when a path cannot be quoted", () => {
+  const files = { env: "C:\\Users\\me\\AppData\\Local\\Temp\\pi-permission-mode-ab\\env-1.sh", cmd: "C:\\Users\\me\\AppData\\Local\\Temp\\pi-permission-mode-ab\\cmd-1.sh" };
+  assert.equal(
+    windowsScript("echo hi", files, ["A='1'"]),
+    `. 'C:/Users/me/AppData/Local/Temp/pi-permission-mode-ab/env-1.sh'; bash -c "$(<"C:/Users/me/AppData/Local/Temp/pi-permission-mode-ab/cmd-1.sh")"`,
+  );
+  const odd = { env: "C:\\Users\\O'Neil\\env-1.sh", cmd: "C:\\Users\\O'Neil\\cmd-1.sh" };
+  assert.equal(windowsScript("echo hi", odd, ["A='1'", "B='2'"]), "export A='1' B='2'; echo hi");
+  assert.equal(windowsScript("echo hi", undefined, []), "echo hi");
+  assert.equal(windowsEnvFile(["A='1'", "B='2'"]), "export A='1'\nexport B='2'\n");
 });

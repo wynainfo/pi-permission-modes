@@ -131,6 +131,24 @@ runtime's seccomp helper or a bubblewrap 0.8 or newer that is not setuid;
 where neither applies, nothing limits namespaces and the runtime says so
 under `SRT_DEBUG=1`.
 
+## Windows sandbox install
+
+On Windows the sandbox is the runtime's native backend: commands run as the
+local user `srt-sandbox` behind a Windows Filtering Platform fence keyed on
+that account, and the mode's profile becomes NTFS permission entries for it.
+It needs a one-time, elevated install per machine. Run `/sandbox install` in
+pi (one UAC prompt): it creates the account with a random password, stored
+encrypted machine-wide, and installs the firewall filter set. No logout is
+needed and your own network is unaffected. `/sandbox uninstall` removes all
+of it again.
+
+Commands run in Git Bash, so Git for Windows must be installed for all users
+(under Program Files), or the mode's profile must grant read access to a
+per-user install (the stock defaults grant `%USERPROFILE%` read access).
+Until the backend is installed, or when one of its checks fails, the
+sandboxed modes ask before every bash command; the footer shows the reason
+and `/sandbox` the details.
+
 ## Windows sandbox self-check
 
 On Windows the sandbox runs each command as the local user `srt-sandbox`

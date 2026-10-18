@@ -6,7 +6,7 @@
  * that owns init / wrap / reset and the readiness state surfaced in the footer.
  */
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -17,12 +17,29 @@ import { docRef } from "./docs.ts";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
 import { gitDirsOf } from "./paths.ts";
 import { expandHome } from "./resolve.ts";
+import {
+  findGitBash,
+  gitIdentityEnv,
+  grantReadExecute,
+  parseProbe,
+  probeAdvice,
+  probeProblem,
+  probeScript,
+  probeTargets,
+  readGitIdentity,
+  stageSrtWin,
+  windowsEnvExports,
+  windowsEnvFile,
+  windowsScript,
+} from "./sandbox-win.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
+import { isOutsideWin } from "./win-paths.ts";
 
-// Real type of the runtime singleton, erased at compile time so a missing
-// dependency never breaks loading. Replaces the former `any`.
-type SandboxManagerType = typeof import("@anthropic-ai/sandbox-runtime").SandboxManager;
+// Real types of the runtime, erased at compile time so a missing dependency
+// never breaks loading.
+export type SandboxRuntime = typeof import("@anthropic-ai/sandbox-runtime");
+type SandboxManagerType = SandboxRuntime["SandboxManager"];
 
 /** This extension's own directory (works wherever it's installed). */
 const EXTENSION_DIR = fileURLToPath(new URL("..", import.meta.url));
@@ -99,11 +116,11 @@ function commandFileDir(): string | undefined {
  * when the file can't be written (read-only temp dir): the caller then passes
  * the raw command instead of failing the run.
  */
-export function writeCommandFile(command: string, dir: string | undefined = commandFileDir()): string | undefined {
+export function writeCommandFile(command: string, dir: string | undefined = commandFileDir(), prefix = "cmd"): string | undefined {
   if (!dir) return undefined;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const file = path.join(dir, `cmd-${randomBytes(8).toString("hex")}.sh`);
+    const file = path.join(dir, `${prefix}-${randomBytes(8).toString("hex")}.sh`);
     writeFileSync(file, command, { mode: 0o600 });
     return file;
   } catch {
@@ -169,6 +186,82 @@ export function processViolations(block: string): { block: string; grantableHost
 }
 
 /**
+ * After a run: the runtime's violation block for THIS command (filed under
+ * `commandId`), and a hint when it refused hosts the user could still allow,
+ * so a blocked connection is diagnosable rather than a mystery.
+ */
+function violationsReporter(SandboxManager: SandboxManagerType, commandId: string, onData: (data: Buffer) => void): () => void {
+  return () => {
+    let raw = "";
+    try {
+      raw = SandboxManager.annotateStderrWithSandboxFailures?.(commandId, "")?.trim() ?? "";
+    } catch {
+      return;
+    }
+    const { block, grantableHosts } = processViolations(raw);
+    if (block) onData(Buffer.from(`\n${block}\n`));
+    if (grantableHosts.length > 0) {
+      onData(
+        Buffer.from(
+          `\n[permission-mode] network: connection(s) blocked by the sandbox allowlist: ${grantableHosts.join(", ")}. ` +
+            `Request access with the request_network_access tool, or ask the user (/net allow <domain>); see ${docRef("networkAccess")}.\n`,
+        ),
+      );
+    }
+  };
+}
+
+/**
+ * Run a spawned child to completion: stream its output, enforce `timeout`
+ * (seconds) and the abort signal through `kill`, then resolve with the exit
+ * code once `onClose` has appended what belongs after the output. The
+ * violation monitors report over sockets of their own, so `onClose` runs one
+ * turn of the loop after the child closed, when events already sent have
+ * landed.
+ */
+function superviseChild(
+  child: ChildProcess,
+  kill: () => void,
+  { onData, signal, timeout }: { onData: (data: Buffer) => void; signal?: AbortSignal; timeout?: number },
+  onStderr: (chunk: Buffer) => void,
+  onClose: (code: number | null) => void,
+): Promise<{ exitCode: number | null }> {
+  return new Promise((resolve, reject) => {
+    let timedOut = false;
+    let timer: NodeJS.Timeout | undefined;
+    if (timeout && timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        kill();
+      }, timeout * 1000);
+    }
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", (chunk: Buffer) => {
+      onStderr(chunk);
+      onData(chunk);
+    });
+    const onAbort = () => kill();
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(err);
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) kill(); // aborted between the wrap and the listener
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      setImmediate(() => {
+        onClose(code);
+        if (signal?.aborted) reject(new Error("aborted"));
+        else if (timedOut) reject(new Error(`timeout:${timeout}`));
+        else resolve({ exitCode: code });
+      });
+    });
+  });
+}
+
+/**
  * BashOperations backed by `SandboxManager.wrapWithSandbox`. An optional
  * `customConfig` overrides the init-time config per command (used to drop write
  * access in Read mode without re-initializing the sandbox).
@@ -200,27 +293,7 @@ export function createSandboxedBashOps(
       // writes, denied hosts) are filed under this id; the ORIGINAL command
       // is what they report, not the launcher.
       const commandId = `pi-${randomBytes(8).toString("hex")}`;
-      // After the run: the runtime's violation block for THIS command, and
-      // a hint when it refused hosts the user could still allow, so a
-      // blocked connection is diagnosable rather than a mystery.
-      const emitViolations = () => {
-        let raw = "";
-        try {
-          raw = SandboxManager.annotateStderrWithSandboxFailures?.(commandId, "")?.trim() ?? "";
-        } catch {
-          return;
-        }
-        const { block, grantableHosts } = processViolations(raw);
-        if (block) onData(Buffer.from(`\n${block}\n`));
-        if (grantableHosts.length > 0) {
-          onData(
-            Buffer.from(
-              `\n[permission-mode] network: connection(s) blocked by the sandbox allowlist: ${grantableHosts.join(", ")}. ` +
-                `Request access with the request_network_access tool, or ask the user (/net allow <domain>); see ${docRef("networkAccess")}.\n`,
-            ),
-          );
-        }
-      };
+      const emitViolations = violationsReporter(SandboxManager, commandId, onData);
       let wrapped: string;
       try {
         // The signal rides into the runtime too (its project scan can take a
@@ -243,56 +316,24 @@ export function createSandboxedBashOps(
       try {
         if (signal?.aborted) throw new Error("aborted");
         const head = new StderrHead();
+        const child = spawn("bash", ["-c", wrapped], { cwd, env: env ?? process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        const kill = () => {
+          if (child.pid) {
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              child.kill("SIGKILL");
+            }
+          }
+        };
         // `await` so the finally runs after the child exits, not after the
         // Promise is constructed - otherwise cleanup would race the run.
-        return await new Promise((resolve, reject) => {
-          const child = spawn("bash", ["-c", wrapped], { cwd, env: env ?? process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-          let timedOut = false;
-          let timer: NodeJS.Timeout | undefined;
-          const kill = () => {
-            if (child.pid) {
-              try {
-                process.kill(-child.pid, "SIGKILL");
-              } catch {
-                child.kill("SIGKILL");
-              }
-            }
-          };
-          if (timeout && timeout > 0) {
-            timer = setTimeout(() => {
-              timedOut = true;
-              kill();
-            }, timeout * 1000);
+        return await superviseChild(child, kill, { onData, signal, timeout }, (chunk) => head.add(chunk), (code) => {
+          emitViolations();
+          if (code !== 0) {
+            const hint = head.namespaceHint();
+            if (hint) onData(Buffer.from(hint));
           }
-          child.stdout?.on("data", onData);
-          child.stderr?.on("data", (chunk: Buffer) => {
-            head.add(chunk);
-            onData(chunk);
-          });
-          const onAbort = () => kill();
-          child.on("error", (err) => {
-            if (timer) clearTimeout(timer);
-            signal?.removeEventListener("abort", onAbort);
-            reject(err);
-          });
-          signal?.addEventListener("abort", onAbort, { once: true });
-          if (signal?.aborted) kill(); // aborted between the wrap and the listener
-          child.on("close", (code) => {
-            if (timer) clearTimeout(timer);
-            signal?.removeEventListener("abort", onAbort);
-            // The violation monitors report over sockets of their own; give
-            // events already sent one turn of the loop to land before reading.
-            setImmediate(() => {
-              emitViolations();
-              if (code !== 0) {
-                const hint = head.namespaceHint();
-                if (hint) onData(Buffer.from(hint));
-              }
-              if (signal?.aborted) reject(new Error("aborted"));
-              else if (timedOut) reject(new Error(`timeout:${timeout}`));
-              else resolve({ exitCode: code });
-            });
-          });
         });
       } finally {
         try {
@@ -302,6 +343,119 @@ export function createSandboxedBashOps(
         }
         runDone?.();
         if (commandFile) rmSync(commandFile, { force: true });
+      }
+    },
+  };
+}
+
+export interface WindowsOpsOptions {
+  /** Git Bash `bash.exe` the sandbox user can run. */
+  bash: string;
+  /** The host's git identity as environment (the sandbox user has no gitconfig of the host's). */
+  identity: Record<string, string>;
+  /** TMPDIR, TEMP and TMP inside the command (the session scratch dir). */
+  tmpdir?: string;
+  /** Paths masked for this command on top of the session's permission entries (per-exec denies are the one per-command filesystem change the Windows backend supports). */
+  extraDenyRead?: readonly string[];
+  /** Directory for the env and command files, readable by the sandbox user; undefined inlines them into the shell argument. */
+  commandDir?: string;
+  /** The runtime's parser for srt-win's structured launch errors (a mapped-drive cwd, exit 16). */
+  parseError?: (stderr: string) => { message: string } | undefined;
+}
+
+/** Kill the broker and whatever of its tree this user may end (the sandboxed child itself dies with the runner's job object). */
+function killWindowsTree(child: ChildProcess): void {
+  if (child.pid && process.platform === "win32") {
+    try {
+      const tk = spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(child.pid)], {
+        stdio: "ignore",
+        detached: true,
+        windowsHide: true,
+      });
+      tk.once("error", () => {});
+    } catch {
+      // best effort
+    }
+  }
+  child.kill("SIGKILL");
+}
+
+/**
+ * BashOperations for the native Windows backend: `srt-win exec` starts Git
+ * Bash as the `srt-sandbox` user, and the argv is spawned directly, never
+ * through a host shell. The runner starts the child from the sandbox user's
+ * own profile with only PATH and the proxy variables, so the caller's
+ * environment travels in an env file the script sources first (minus the
+ * profile, temp, proxy and CA variables the sandbox provides itself) and the
+ * command rides in a file, as on Linux.
+ */
+export function createWindowsSandboxedBashOps(
+  SandboxManager: SandboxManagerType,
+  opts: WindowsOpsOptions,
+  runOpts: { onRun?: () => () => void } = {},
+): BashOperations {
+  return {
+    async exec(command, cwd, { onData, signal, timeout, env }) {
+      if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
+      if (signal?.aborted) throw new Error("aborted");
+      // TMPDIR in the form msys tools read, TEMP and TMP as Windows programs do.
+      const tmp: Record<string, string> = opts.tmpdir ? { TMPDIR: opts.tmpdir.replace(/\\/g, "/"), TEMP: opts.tmpdir, TMP: opts.tmpdir } : {};
+      const exports = windowsEnvExports(env ?? process.env, { ...opts.identity, ...tmp });
+      const envFile = opts.commandDir ? writeCommandFile(windowsEnvFile(exports), opts.commandDir, "env") : undefined;
+      const cmdFile = envFile ? writeCommandFile(command, opts.commandDir) : undefined;
+      const files = envFile && cmdFile ? { env: envFile, cmd: cmdFile } : undefined;
+      const removeFiles = () => {
+        for (const f of [envFile, cmdFile]) if (f) rmSync(f, { force: true });
+      };
+      const script = windowsScript(command, files, exports);
+      const commandId = `pi-${randomBytes(8).toString("hex")}`;
+      const emitViolations = violationsReporter(SandboxManager, commandId, onData);
+      const extra = opts.extraDenyRead ?? [];
+      // Per-exec config carries denies only: a per-exec allow list makes the runtime throw on Windows.
+      const customConfig = extra.length > 0 ? { filesystem: { denyRead: [...extra], allowWrite: [], denyWrite: [] } } : undefined;
+      let argv: string[];
+      let spawnEnv: NodeJS.ProcessEnv;
+      try {
+        ({ argv, env: spawnEnv } = await SandboxManager.wrapWithSandboxArgv(
+          script,
+          { exe: opts.bash, args: ["-c"] },
+          customConfig as never,
+          signal as never,
+          cwd,
+          { commandId, commandText: command },
+        ));
+      } catch (err) {
+        removeFiles();
+        throw runError(err);
+      }
+      const runDone = runOpts.onRun?.();
+      try {
+        if (signal?.aborted) throw new Error("aborted");
+        let stderr = "";
+        const child = spawn(argv[0], argv.slice(1), { cwd, env: spawnEnv, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+        return await superviseChild(
+          child,
+          () => killWindowsTree(child),
+          { onData, signal, timeout },
+          (chunk) => {
+            if (stderr.length < 4096) stderr += String(chunk).slice(0, 4096 - stderr.length);
+          },
+          (code) => {
+            emitViolations();
+            if (code !== 0 && opts.parseError) {
+              const e = opts.parseError(stderr);
+              if (e) onData(Buffer.from(`\n[permission-mode] sandbox: ${e.message}\n`));
+            }
+          },
+        );
+      } finally {
+        try {
+          SandboxManager.cleanupAfterCommand?.();
+        } catch {
+          // best effort
+        }
+        runDone?.();
+        removeFiles();
       }
     },
   };
@@ -450,15 +604,92 @@ export interface InitOptions {
    * keeps the historic silent-deny behavior.
    */
   askHost?: (host: string, port: number | undefined) => Promise<boolean>;
+  /**
+   * Directories that stay writable when a read-only mode is applied (the
+   * session scratch dir). Linux and macOS drop writes per command; Windows
+   * applies read-only when the runtime initializes, so it needs the list here.
+   */
+  keepWritable?: string[];
+  /** Host platform (injected in tests); defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
+  /** Loads the runtime module (injected in tests). */
+  loadRuntime?: () => Promise<SandboxRuntime>;
+  /** Windows backend hooks (injected in tests). */
+  windows?: WindowsHooks;
 }
+
+export interface WindowsHooks {
+  /** Environment to read `USERPROFILE`, `LOCALAPPDATA` and PATH from. */
+  env?: NodeJS.ProcessEnv;
+  /** Locates Git Bash; `profileReadable` says whether the applied profile lets the sandbox user read the user profile. */
+  findBash?: (profileReadable: boolean) => string | undefined;
+  /** Copies `srt-win.exe` where `grantee` can run it; returns the path. */
+  stageHelper?: (bundledExe: string, grantee: string) => string;
+  /** The host git identity as seen from `cwd`. */
+  readIdentity?: (cwd: string) => { name?: string; email?: string };
+  /** Directory for command and env files, readable by `grantee`; undefined inlines them. */
+  commandDir?: (grantee: string) => string | undefined;
+}
+
+/** Footer reason while the Windows backend is not provisioned on this machine. */
+export const WINDOWS_NOT_INSTALLED_WARN = "Windows sandbox not installed (/sandbox install)";
+
+/** Windows backend state, present while the runtime drives `srt-win`. */
+interface WindowsBackend {
+  bash: string;
+  srtWinPath: string;
+  /** `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from the host's git config. */
+  identity: Record<string, string>;
+  commandDir: string | undefined;
+  /** The in-sandbox self-check passed for this init. */
+  probed: boolean;
+  /** The runtime is initialized without project writes (read-only is per session on Windows). */
+  readOnly: boolean;
+}
+
+/** The command-file directory with read access for the sandbox user, or undefined when that cannot be arranged (files are then inlined). */
+function windowsCommandDir(grantee: string): string | undefined {
+  const dir = commandFileDir();
+  if (!dir) return undefined;
+  try {
+    grantReadExecute(dir, grantee);
+    return dir;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A profile path as an absolute Windows path (`~` is the user profile). */
+function winAbs(p: string, cwd: string, home: string | undefined): string {
+  let e = p;
+  if (home && (p === "~" || p.startsWith("~/") || p.startsWith("~\\"))) e = home + p.slice(1);
+  return path.win32.resolve(cwd, e);
+}
+
+/** True when the profile grants the sandbox user read access to the whole user profile (then per-user tool installs are usable). */
+function profileGrantsHome(profile: SandboxProfile, cwd: string, home: string | undefined): boolean {
+  if (!home) return false;
+  const grants = [...(profile.allowRead ?? []), ...(profile.allowWrite ?? [])].map((p) => winAbs(p, cwd, home));
+  return grants.some((g) => !isOutsideWin(g, home));
+}
+
+const errMsg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
  * Owns the sandbox runtime and its readiness state. A single instance lives for
  * the extension's lifetime; `init` is re-runnable across sessions, and
  * `applyProfile` re-initializes when the active mode's sandbox profile changes.
+ *
+ * Native Windows uses the runtime's `srt-win` backend (a dedicated
+ * `srt-sandbox` user) once it is installed and a self-check inside the
+ * sandbox passes (see sandbox-win.ts). Otherwise the controller degrades
+ * (ready=false), so the sandboxed modes prompt before every bash command
+ * instead of claiming a protection that does not exist.
  */
 export class SandboxController {
   private manager: SandboxManagerType | null = null;
+  /** The runtime module, kept on Windows for its helper exports (install, error parsing). */
+  private rt: SandboxRuntime | undefined;
   private profile: SandboxProfile | undefined;
   /** Key of the profile the runtime is currently initialized with. */
   private appliedKey: string | undefined;
@@ -471,6 +702,11 @@ export class SandboxController {
   private hasUI = false;
   private notifyFn: Notify = () => {};
   private askHost: ((host: string, port: number | undefined) => Promise<boolean>) | undefined;
+  private cwd = "";
+  private keepWritable: string[] = [];
+  private win: WindowsBackend | undefined;
+  /** Options of the last `init`, so `/sandbox install` can re-run it. */
+  private lastInit: InitOptions | undefined;
   ready = false;
   disabled = false;
   warn: string | undefined;
@@ -484,15 +720,46 @@ export class SandboxController {
     return this.manager;
   }
 
+  /** True while the native Windows backend drives the sandbox. */
+  get windowsBackend(): boolean {
+    return this.win !== undefined;
+  }
+
   /**
    * Wrap a fresh BashOperations around the active runtime, or null when
    * unavailable. With `readOnly`, the command runs with project writes
    * disabled (Plan mode); `extraDenyRead` masks the session's blocked paths
    * for this command. Both ride along as the per-wrap config (the runtime
    * compiles filesystem rules at wrap time), so neither restarts the runtime.
+   *
+   * On Windows only the denies ride along: grants are permission entries
+   * stamped at initialize time, so read-only was applied when the mode was
+   * switched to (see applyProfile). Until that re-initialization has landed,
+   * the operations refuse to run rather than run with the wrong grants.
    */
   bashOps(opts: BashOpsOptions = {}): BashOperations | null {
     if (!this.manager || !this.profile) return null;
+    if (this.win) {
+      if (Boolean(opts.readOnly) !== this.win.readOnly) {
+        return {
+          async exec() {
+            throw new Error("permission-mode: the sandbox is still being re-initialized for this mode (on Windows read-only applies per session); run the command again");
+          },
+        };
+      }
+      return createWindowsSandboxedBashOps(
+        this.manager,
+        {
+          bash: this.win.bash,
+          identity: this.win.identity,
+          tmpdir: opts.tmpdir,
+          extraDenyRead: opts.extraDenyRead,
+          commandDir: this.win.commandDir,
+          parseError: this.rt?.parseWindowsSandboxError,
+        },
+        { onRun: () => this.runStarted() },
+      );
+    }
     return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts, this.extras), {
       tmpdir: opts.tmpdir,
       onRun: () => this.runStarted(),
@@ -526,7 +793,16 @@ export class SandboxController {
     return `Fix: cd ${EXTENSION_DIR} && npm install${linux}; see ${docRef("sandboxUnavailable")}`;
   }
 
-  async init({ cwd, noSandbox, hasUI, notify, profile, askHost }: InitOptions): Promise<void> {
+  /** Stop trying to sandbox for this init: record why, and tell the user once. */
+  private degrade(profile: SandboxProfile, warn: string, message?: string): void {
+    this.degraded = true;
+    this.profile = profile;
+    this.warn = warn;
+    if (message && this.hasUI) this.notifyFn(message);
+  }
+
+  async init(opts: InitOptions): Promise<void> {
+    const { cwd, noSandbox, hasUI, notify, profile, askHost, platform = process.platform, loadRuntime = () => import("@anthropic-ai/sandbox-runtime") } = opts;
     await this.applying.catch(() => {}); // let an in-flight profile switch settle first
     // A re-run (resume, /reload) must start from a clean runtime: initialize()
     // is a no-op while the runtime still holds its previous initialization.
@@ -543,12 +819,17 @@ export class SandboxController {
     this.degraded = false;
     this.warn = undefined;
     this.manager = null;
+    this.rt = undefined;
+    this.win = undefined;
     this.appliedKey = undefined;
     this.dependencyWarnings = [];
     this.extras = runtimeExtrasFor(cwd);
     this.hasUI = hasUI;
     this.notifyFn = notify;
     this.askHost = askHost;
+    this.cwd = cwd;
+    this.keepWritable = opts.keepWritable ?? [];
+    this.lastInit = opts;
 
     if (noSandbox) {
       this.disabled = true;
@@ -556,18 +837,10 @@ export class SandboxController {
       this.profile = profile;
       return;
     }
-    if (process.platform === "win32") {
-      // The runtime's Windows sandbox (alpha) needs a one-time elevated
-      // install and an argv-based wrap; not integrated yet, see README.
-      this.warn = "sandbox unsupported on Windows (run pi under WSL2)";
-      this.degraded = true;
-      this.profile = profile;
-      return;
-    }
 
+    let rt: SandboxRuntime;
     try {
-      const mod = (await import("@anthropic-ai/sandbox-runtime")) as { SandboxManager: SandboxManagerType };
-      this.manager = mod.SandboxManager;
+      rt = await loadRuntime();
     } catch (err) {
       this.degraded = true;
       this.profile = profile;
@@ -582,10 +855,12 @@ export class SandboxController {
       }
       return;
     }
+    if (platform === "win32") return this.initWindows(opts, rt);
+    this.manager = rt.SandboxManager;
 
     if (!this.manager.isSupportedPlatform()) {
       // WSL1 has no bubblewrap support; the runtime knows the platforms it runs on.
-      this.warn = `sandbox unsupported on this platform${process.platform === "linux" ? " (WSL1?)" : ""}`;
+      this.warn = `sandbox unsupported on this platform${platform === "linux" ? " (WSL1?)" : ""}`;
       this.degraded = true;
       this.profile = profile;
       if (hasUI) notify(`permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${this.warn}\nSee ${docRef("sandboxUnavailable")}`);
@@ -630,6 +905,140 @@ export class SandboxController {
   }
 
   /**
+   * Native Windows: the runtime's `srt-win` backend. It needs the one-time
+   * elevated install (the `srt-sandbox` account and its firewall filter), a
+   * Git Bash the sandbox user can run, and the helper staged where that user
+   * can read it. The in-sandbox self-check runs on the first initialize
+   * (see applyProfileNow).
+   */
+  private async initWindows(opts: InitOptions, rt: SandboxRuntime): Promise<void> {
+    const { profile, cwd, hasUI, notify } = opts;
+    const hooks = opts.windows ?? {};
+    const env = hooks.env ?? process.env;
+    this.rt = rt;
+    const unavailable = (why: string, fix: string): void =>
+      this.degrade(profile, why, `permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${why}\n${fix}`);
+    let srtWin: ReturnType<SandboxRuntime["resolveSrtWin"]>;
+    try {
+      srtWin = rt.resolveSrtWin({ path: rt.VENDORED_SRT_WIN_EXE });
+    } catch (err) {
+      return unavailable(`Windows sandbox helper missing: ${errMsg(err)}`, SandboxController.installHint());
+    }
+    let status: Awaited<ReturnType<SandboxRuntime["getWindowsSandboxUserStatusAsync"]>>;
+    try {
+      status = await rt.getWindowsSandboxUserStatusAsync({ srtWin });
+    } catch (err) {
+      return unavailable(`Windows sandbox check failed: ${errMsg(err)}`, `See ${docRef("windowsInstall")}`);
+    }
+    if (!status.provisioned || !status.credPresent || !status.sid) {
+      return this.degrade(
+        profile,
+        WINDOWS_NOT_INSTALLED_WARN,
+        "permission-mode: the Windows sandbox is not installed, so the sandboxed modes ask before every bash command. " +
+          "Run /sandbox install (one UAC prompt: it creates the local user srt-sandbox and a firewall filter keyed on it); " +
+          `see ${docRef("windowsInstall")}`,
+      );
+    }
+    const grantee = `*${status.sid}`;
+    let deps: { errors: string[]; warnings: string[] };
+    try {
+      deps = await rt.checkWindowsDependenciesAsync({ srtWin });
+    } catch (err) {
+      deps = { errors: [errMsg(err)], warnings: [] };
+    }
+    if (deps.errors.length > 0) return unavailable(`sandbox dependencies: ${deps.errors.join("; ")}`, `See ${docRef("windowsInstall")}`);
+    this.dependencyWarnings = deps.warnings;
+    if (deps.warnings.length > 0 && hasUI) notify(`permission-mode: sandbox dependency warning(s): ${deps.warnings.join("; ")}`);
+
+    const readable = profileGrantsHome(profile, cwd, env.USERPROFILE);
+    const bash = hooks.findBash ? hooks.findBash(readable) : findGitBash(env, existsSync, readable);
+    if (!bash) {
+      return this.degrade(
+        profile,
+        "Windows sandbox off: Git Bash not found",
+        "permission-mode: the Windows sandbox runs commands in Git Bash (Git for Windows). None the sandbox user can run was found, " +
+          `so the sandboxed modes ask before every bash command. Install Git for Windows for all users (Program Files); see ${docRef("windowsInstall")}`,
+      );
+    }
+    let staged: string;
+    try {
+      staged = hooks.stageHelper ? hooks.stageHelper(rt.VENDORED_SRT_WIN_EXE, grantee) : stageSrtWin(rt.VENDORED_SRT_WIN_EXE, grantee, env);
+    } catch (err) {
+      return unavailable(`Windows sandbox off: could not stage srt-win (${errMsg(err)})`, `See ${docRef("windowsInstall")}`);
+    }
+    const commandDir = hooks.commandDir ? hooks.commandDir(grantee) : windowsCommandDir(grantee);
+    const id = (hooks.readIdentity ?? readGitIdentity)(cwd);
+    if (this.extras?.allowWrite.length && hasUI) {
+      notify(
+        `permission-mode: git worktree/submodule detected; sandboxed bash may write its git dirs (${this.extras.allowWrite.join(", ")}), hooks and config excluded`,
+      );
+    }
+    this.manager = rt.SandboxManager;
+    this.win = { bash, srtWinPath: staged, identity: gitIdentityEnv(id.name, id.email), commandDir, probed: false, readOnly: !profile.writable };
+    await this.applyProfile(profile);
+  }
+
+  /**
+   * Run the self-check inside the freshly initialized Windows sandbox (see
+   * sandbox-win.ts). Folders the profile grants write access to are not
+   * probed: writable by design. Returns true when it passed; otherwise tears
+   * the runtime down and degrades.
+   */
+  private async probeWindows(win: WindowsBackend, manager: SandboxManagerType, cfg: SandboxConfig, profile: SandboxProfile): Promise<boolean> {
+    const home = this.lastInit?.windows?.env?.USERPROFILE ?? process.env.USERPROFILE;
+    const writable = (cfg.filesystem.allowWrite ?? []).map((p) => winAbs(p, this.cwd, home));
+    const targets = probeTargets(this.cwd, win.srtWinPath).filter((t) => !writable.some((w) => !isOutsideWin(w, t)));
+    let out = "";
+    try {
+      const ops = createWindowsSandboxedBashOps(manager, { bash: win.bash, identity: {}, commandDir: win.commandDir });
+      const script = probeScript(this.cwd, targets, randomBytes(6).toString("hex"));
+      await ops.exec(script, this.cwd, { onData: (d) => (out += String(d)), timeout: 120 });
+    } catch (err) {
+      out += `\n${errMsg(err)}`;
+    }
+    const result = parseProbe(out);
+    const problem = probeProblem(result);
+    if (!problem) {
+      win.probed = true;
+      return true;
+    }
+    this.ready = false;
+    try {
+      await manager.reset();
+    } catch {
+      // ignore cleanup errors
+    }
+    this.runtimeInitialized = false;
+    // Drop the runtime so nothing can hand out operations for a sandbox we rejected.
+    this.manager = null;
+    this.win = undefined;
+    this.degrade(profile, problem, `permission-mode: ${probeAdvice(result)}`);
+    return false;
+  }
+
+  /**
+   * Install or remove the Windows backend (one UAC prompt each), then re-run
+   * the last init so the result takes effect at once. Returns a status line.
+   */
+  async windowsSetup(action: "install" | "uninstall"): Promise<string> {
+    const rt = this.rt ?? (await (this.lastInit?.loadRuntime ?? (() => import("@anthropic-ai/sandbox-runtime")))());
+    const srtWin = rt.resolveSrtWin({ path: rt.VENDORED_SRT_WIN_EXE });
+    if (action === "install") {
+      const r = await rt.installWindowsSandboxAsync({ srtWin });
+      if (r.cancelled) return "Windows sandbox install cancelled (the UAC prompt was dismissed).";
+    } else {
+      await this.reset(); // drop this session's permission entries before the account goes away
+      const r = rt.uninstallWindowsSandbox({ srtWin });
+      if (r.cancelled) return "Windows sandbox uninstall cancelled (the UAC prompt was dismissed).";
+    }
+    if (this.lastInit) await this.init(this.lastInit);
+    if (this.ready) return "Windows sandbox installed and active.";
+    return action === "install"
+      ? `Windows sandbox installed, but not active: ${this.warn ?? "unknown"}`
+      : "Windows sandbox removed; the sandboxed modes ask before every bash command.";
+  }
+
+  /**
    * Ensure the runtime is initialized with `profile`. A no-op when degraded, when
    * the profile doesn't sandbox (`enabled:false`), or when the profile's
    * filesystem/network is unchanged. Re-initializes (reset + initialize) when the
@@ -647,7 +1056,12 @@ export class SandboxController {
     if (this.degraded || !this.manager) return;
     if (!profile.enabled) return; // non-sandboxing mode (e.g. YOLO): keep prior init
 
-    const cfg = withRuntimeExtras(profileToConfig(profile), this.extras);
+    const win = this.win;
+    let cfg = withRuntimeExtras(profileToConfig(profile), this.extras);
+    // Windows cannot change grants per command (only per-exec denies), so a
+    // read-only mode (Plan) is applied here: the session runs without project
+    // writes until the next mode switch re-initializes.
+    if (win && !profile.writable) cfg = readOnlyOverride(cfg, this.keepWritable);
     const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem });
     if (this.ready && key === this.appliedKey) return;
 
@@ -673,12 +1087,17 @@ export class SandboxController {
       // output too. The Linux observer judges writes by the init-time lists,
       // so a Plan-mode (per-wrap read-only) refusal is not reported; the
       // block is best effort, the refusal itself is not.
+      const runtimeCfg = win ? { ...cfg, windows: { srtWin: { path: win.srtWinPath } } } : cfg;
       await this.manager.initialize(
-        cfg as never,
+        runtimeCfg as never,
         ask ? (p: { host: string; port?: number }) => ask(p.host, p.port) : undefined,
         true,
       );
       this.runtimeInitialized = true;
+      if (win) {
+        win.readOnly = !profile.writable;
+        if (!win.probed && !(await this.probeWindows(win, this.manager, cfg, profile))) return;
+      }
       this.ready = true;
       this.appliedKey = key;
       this.warn = undefined;
@@ -694,7 +1113,7 @@ export class SandboxController {
       if (this.hasUI) {
         this.notifyFn(
           `permission-mode: sandbox failed to initialize - protection is heuristic-only.\n${this.warn}` +
-            `${process.platform === "linux" ? "\nLinux requires: bubblewrap, socat, ripgrep" : ""}\nSee ${docRef("sandboxUnavailable")}`,
+            `${process.platform === "linux" ? "\nLinux requires: bubblewrap, socat, ripgrep" : ""}\nSee ${docRef(win ? "windowsInstall" : "sandboxUnavailable")}`,
         );
       }
     }

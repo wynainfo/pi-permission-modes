@@ -20,14 +20,42 @@ import path from "node:path";
 import { docRef } from "./docs.ts";
 import { isOutsideWin } from "./win-paths.ts";
 
+const sq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+/** A Windows path as Git Bash reads it (`C:/dir/file`). */
+export const bashPath = (p: string): string => p.replace(/\\/g, "/");
+
 /**
  * Where the `srt-win.exe` helper is staged: `%LOCALAPPDATA%\pi-permission-modes\
- * srt-win-<hash>\`. The folder name carries the helper's content hash, so a
- * staged copy is reused only when it is byte-identical to the bundled one.
+ * srt-win-<hash>\`. The folder name carries the hash of the helper's content
+ * and of the grantee, so a staged copy is reused only when it is byte-identical
+ * to the bundled one and carries the same permission entry.
  */
-export function stagedSrtWinPath(localAppData: string, bundledExe: string, content: Buffer): string {
-  const tag = createHash("sha256").update(content).digest("hex").slice(0, 12);
+export function stagedSrtWinPath(localAppData: string, bundledExe: string, content: Buffer, grantee = USERS_SID): string {
+  const tag = createHash("sha256").update(content).update(`\0${grantee}`).digest("hex").slice(0, 12);
   return path.win32.join(localAppData, "pi-permission-modes", `srt-win-${tag}`, path.win32.basename(bundledExe));
+}
+
+/** `BUILTIN\Users`, the grantee when the sandbox user's own SID is not known yet. */
+export const USERS_SID = "*S-1-5-32-545";
+
+/**
+ * Give `grantee` (an account SID with a leading `*`, or a name) read and
+ * execute on `dir` and everything created in it, once per process and pair.
+ * Used for the staged helper and the command-file directory: both live in the
+ * user profile, which the sandbox user cannot open otherwise.
+ */
+const granted = new Set<string>();
+export function grantReadExecute(
+  dir: string,
+  grantee: string,
+  run: (args: string[]) => void = (args) => {
+    execFileSync("icacls", args, { windowsHide: true, stdio: "ignore" });
+  },
+): void {
+  const key = `${dir.toLowerCase()}|${grantee.toLowerCase()}`;
+  if (granted.has(key)) return;
+  run([dir, "/grant", `${grantee}:(OI)(CI)RX`]);
+  granted.add(key);
 }
 
 /**
@@ -38,19 +66,19 @@ export function stagedSrtWinPath(localAppData: string, bundledExe: string, conte
  * `node_modules`, which is inside the user profile and, when the extension
  * repository itself is the project, inside a write grant. The staged folder
  * stays in the profile (no other account can plant files there) and gets one
- * extra ACE: read and execute for Users; the sandbox user reaches it through
- * its bypass-traverse right. The copy is made by the real user, so staging
+ * extra ACE: read and execute for the sandbox user (`grantee`, its SID); it
+ * reaches the folder through its bypass-traverse right. The copy is made by the real user, so staging
  * protects the helper from the sandbox, not the bundle from the extension's
  * own install. Returns the staged path.
  */
-export function stageSrtWin(bundledExe: string, env: NodeJS.ProcessEnv = process.env): string {
+export function stageSrtWin(bundledExe: string, grantee = USERS_SID, env: NodeJS.ProcessEnv = process.env): string {
   if (!env.LOCALAPPDATA) throw new Error("cannot stage srt-win: LOCALAPPDATA is not set");
   const content = readFileSync(bundledExe);
-  const staged = stagedSrtWinPath(env.LOCALAPPDATA, bundledExe, content);
+  const staged = stagedSrtWinPath(env.LOCALAPPDATA, bundledExe, content, grantee);
   if (existsSync(staged) && readFileSync(staged).equals(content)) return staged;
   const dir = path.win32.dirname(staged);
   mkdirSync(dir, { recursive: true });
-  execFileSync("icacls", [dir, "/grant", "*S-1-5-32-545:(OI)(CI)RX"], { windowsHide: true, stdio: "ignore" });
+  grantReadExecute(dir, grantee);
   copyFileSync(bundledExe, staged);
   return staged;
 }
@@ -117,6 +145,70 @@ export function gitIdentityEnv(name?: string, email?: string): Record<string, st
 }
 
 /**
+ * Variables the sandbox provides itself, so the caller's values must not
+ * travel: the sandbox user's identity and profile paths (the child runs as
+ * another account, with its own profile), the temp dirs (set to the scratch
+ * dir instead), PATH and PATHEXT (the runtime passes the broker's), the proxy
+ * and CA variables (the runtime's point at its proxy; the caller's would send
+ * traffic around it or break TLS), and the runtime's own git settings.
+ * Compared case-insensitively, as Windows does.
+ */
+export const WIN_ENV_EXCLUDE = new Set(
+  [
+    "USERNAME", "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOMESHARE", "HOME",
+    "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "TMPDIR", "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+    "LOGONSERVER", "SESSIONNAME", "PWD", "OLDPWD", "SHLVL", "_",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "NODE_USE_SYSTEM_CA", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
+    "REQUESTS_CA_BUNDLE", "CARGO_HTTP_CAINFO", "PIP_CERT", "NPM_CONFIG_CAFILE", "DENO_CERT", "AWS_CA_BUNDLE",
+  ].map((n) => n.toUpperCase()),
+);
+const WIN_ENV_EXCLUDE_PREFIXES = ["GIT_CONFIG_", "SRT_"];
+const BASH_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * `NAME='value'` tokens carrying the caller's environment into the sandbox,
+ * minus `WIN_ENV_EXCLUDE`; `extra` (the git identity, the temp dirs) comes
+ * last and wins. Names bash cannot export (`ProgramFiles(x86)`) are skipped.
+ */
+export function windowsEnvExports(env: NodeJS.ProcessEnv, extra: Record<string, string> = {}): string[] {
+  const out = new Map<string, string>();
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined || !BASH_NAME_RE.test(name)) continue;
+    const upper = name.toUpperCase();
+    if (WIN_ENV_EXCLUDE.has(upper) || WIN_ENV_EXCLUDE_PREFIXES.some((p) => upper.startsWith(p))) continue;
+    out.set(name, value);
+  }
+  for (const [name, value] of Object.entries(extra)) if (BASH_NAME_RE.test(name)) out.set(name, value);
+  return [...out].map(([n, v]) => `${n}=${sq(v)}`);
+}
+
+/** Characters a path cannot have inside the script's quoting (see `windowsScript`). */
+const SCRIPT_UNSAFE = /['!"$`\\\r\n]/;
+
+/**
+ * The script the inner Git Bash runs. With files: source the env file, then
+ * run the command file as a `bash -c` script of its own, so the command keeps
+ * the semantics of pi's own bash tool (same $0, same "bash: line N" error
+ * prefixes, same exit status) and never meets a quoting pass or a command
+ * line limit. Without files, or when a path contains a character the quoting
+ * cannot carry, the exports are inlined ahead of the command text.
+ */
+export function windowsScript(command: string, files: { env: string; cmd: string } | undefined, exports: readonly string[]): string {
+  if (files) {
+    const env = bashPath(files.env);
+    const cmd = bashPath(files.cmd);
+    if (!SCRIPT_UNSAFE.test(env) && !SCRIPT_UNSAFE.test(cmd)) return `. '${env}'; bash -c "$(<"${cmd}")"`;
+  }
+  return exports.length ? `export ${exports.join(" ")}; ${command}` : command;
+}
+
+/** Content of the env file `windowsScript` sources. */
+export function windowsEnvFile(exports: readonly string[]): string {
+  return exports.map((t) => `export ${t}`).join("\n") + "\n";
+}
+
+/**
  * Folders that must NOT be writable from inside the sandbox: the project's
  * parent (sibling projects), the drive root, and the folder holding the
  * staged `srt-win.exe` (a writable helper would let the sandbox rewrite the
@@ -130,8 +222,6 @@ export function probeTargets(cwd: string, srtWinExe: string): string[] {
 }
 
 const PROBE_TAG = "PI-SRT-PROBE";
-const sq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
-const bashPath = (p: string): string => p.replace(/\\/g, "/");
 
 /**
  * Bash script run inside the sandbox: reports each target it can create a

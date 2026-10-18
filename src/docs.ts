@@ -32,6 +32,7 @@ export const DOC_REFS = {
   macosLoopback: "troubleshooting.md#macos-loopback-services",
   linuxNamespaces: "troubleshooting.md#nested-sandboxes-on-linux",
   windowsSelfCheck: "troubleshooting.md#windows-sandbox-self-check",
+  windowsInstall: "troubleshooting.md#windows-sandbox-install",
 } as const;
 
 export type DocRefKey = keyof typeof DOC_REFS;
