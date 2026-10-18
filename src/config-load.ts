@@ -21,6 +21,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { NetworkConfigSchema } from "@anthropic-ai/sandbox-runtime";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PlanApprovalConfig } from "./plan-approval.ts";
@@ -108,11 +109,11 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
         }
         const net: NonNullable<SandboxProfile["network"]> = {};
         if (v.allowedDomains !== undefined) {
-          if (isStringArray(v.allowedDomains)) net.allowedDomains = v.allowedDomains;
+          if (isStringArray(v.allowedDomains)) net.allowedDomains = safeDomains(v.allowedDomains, "allowedDomains", where, onError);
           else drop("network.allowedDomains");
         }
         if (v.deniedDomains !== undefined) {
-          if (isStringArray(v.deniedDomains)) net.deniedDomains = v.deniedDomains;
+          if (isStringArray(v.deniedDomains)) net.deniedDomains = safeDomains(v.deniedDomains, "deniedDomains", where, onError);
           else drop("network.deniedDomains");
         }
         out.network = net;
@@ -205,14 +206,27 @@ export function readOnlyOverride(config: SandboxConfig, keepWritable: string[] =
 }
 
 /**
- * Reject domain patterns the sandbox-runtime schema would reject: bare `*`,
- * TLD-only wildcards like `*.com`, and anything carrying a protocol, path, or port.
+ * True when the sandbox runtime's own schema rejects the pattern: bare `*`,
+ * TLD-only wildcards like `*.com`, single-label hosts like `nas01`, protocols,
+ * paths. Asking the runtime keeps the two in step: an entry it rejects at
+ * initialize() would otherwise take the whole sandbox down, and what it
+ * admits (a `:port` suffix, a bracketed IPv6 literal) passes here too.
  */
 export function isUnsafeDomain(d: string): boolean {
-  if (d === "*") return true;
-  if (/[/:]/.test(d)) return true;
-  if (/^\*\.[^.]+$/.test(d)) return true;
-  return false;
+  return !NetworkConfigSchema.safeParse({ allowedDomains: [d], deniedDomains: [] }).success;
+}
+
+/** The one-line hint attached to a rejected network pattern. */
+export const DOMAIN_PATTERN_HINT =
+  "the sandbox runtime accepts a host with a dot (example.com), a *.sub wildcard, or a bracketed IPv6 literal, each with an optional :port";
+
+/** The patterns the runtime accepts; each rejected one is reported and dropped. */
+function safeDomains(list: string[], label: string, where: string, onError: (msg: string) => void): string[] {
+  return list.filter((d) => {
+    if (!isUnsafeDomain(d)) return true;
+    onError(`permission-mode: ignoring ${label} pattern "${d}" in ${where}: ${DOMAIN_PATTERN_HINT}`);
+    return false;
+  });
 }
 
 const union = (a: string[] = [], b: string[] = []): string[] => [...new Set([...a, ...b])];
@@ -402,17 +416,12 @@ function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, o
   if (over.denyWrite !== undefined) result.denyWrite = union(base.denyWrite, over.denyWrite);
   if (over.network) {
     if (over.network.allowedDomains !== undefined) {
-      const safe = over.network.allowedDomains.filter((d) => {
-        if (isUnsafeDomain(d)) {
-          onError(`permission-mode: ignoring overly-broad allowedDomains pattern "${d}" in project config`);
-          return false;
-        }
-        return true;
-      });
+      const safe = safeDomains(over.network.allowedDomains, "allowedDomains", "project config", onError);
       result.network!.allowedDomains = intersect(base.network?.allowedDomains, safe);
     }
     if (over.network.deniedDomains !== undefined) {
-      result.network!.deniedDomains = union(base.network?.deniedDomains, over.network.deniedDomains);
+      const safe = safeDomains(over.network.deniedDomains, "deniedDomains", "project config", onError);
+      result.network!.deniedDomains = union(base.network?.deniedDomains, safe);
     }
   }
   return result;

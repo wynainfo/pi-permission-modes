@@ -39,6 +39,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sandbox named as the cause where one applies. Policy denies keep their own
   text. Reported by [@donnielrt](https://github.com/donnielrt) in
   [#19](https://github.com/wynainfo/pi-permission-modes/issues/19).
+- **Network patterns are checked with the runtime's own rule.** A single-label
+  host such as `"storage"` in `allowedDomains` passed the extension's check
+  and failed the sandbox runtime's schema at initialization, taking the whole
+  sandbox down for the mode; a `host:port` entry, which the runtime accepts,
+  was dropped as unsafe. Every `allowedDomains` and `deniedDomains` entry is
+  now validated with the runtime's `NetworkConfigSchema` when the config
+  loads: a rejected pattern is dropped with a warning that names it and the
+  accepted forms, the rest of the list stays. Reported by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#22](https://github.com/wynainfo/pi-permission-modes/issues/22).
 
 ## [2.4.2]
 
