@@ -13,7 +13,9 @@ import {
   stagedSrtWinPath,
   windowsEnvExports,
   windowsEnvFile,
+  windowsRevocationEnv,
   windowsScript,
+  withHomeRead,
 } from "./sandbox-win.ts";
 
 const existsIn = (files: string[]) => (p: string) => files.map((f) => f.toLowerCase()).includes(p.toLowerCase());
@@ -155,4 +157,21 @@ test("windowsScript: sources the env file and runs the command file in a bash -c
   assert.equal(windowsScript("echo hi", odd, ["A='1'", "B='2'"]), "export A='1' B='2'; echo hi");
   assert.equal(windowsScript("echo hi", undefined, []), "echo hi");
   assert.equal(windowsEnvFile(["A='1'", "B='2'"]), "export A='1'\nexport B='2'\n");
+});
+
+test("withHomeRead: grants ~ read access unless the profile names the profile itself in allowRead or denyRead", () => {
+  const p = { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh"] };
+  assert.deepEqual(withHomeRead(p).allowRead, ["~"]);
+  assert.deepEqual(withHomeRead({ ...p, allowRead: ["~/.ssh/known_hosts"] }).allowRead, ["~", "~/.ssh/known_hosts"]);
+  const explicit = { ...p, allowRead: ["$HOME"] };
+  assert.equal(withHomeRead(explicit), explicit);
+  const strict = { ...p, denyRead: ["~"], allowRead: ["~/.gitconfig"] };
+  assert.equal(withHomeRead(strict), strict);
+  const yolo = { enabled: false, writable: true };
+  assert.equal(withHomeRead(yolo), yolo);
+});
+
+test("windowsRevocationEnv: git and cargo skip the revocation check; the caller's git parameters stay ahead", () => {
+  assert.deepEqual(windowsRevocationEnv({}), { GIT_CONFIG_PARAMETERS: "'http.schannelCheckRevoke=false'", CARGO_HTTP_CHECK_REVOKE: "false" });
+  assert.equal(windowsRevocationEnv({ GIT_CONFIG_PARAMETERS: "'core.autocrlf=true'" }).GIT_CONFIG_PARAMETERS, "'core.autocrlf=true' 'http.schannelCheckRevoke=false'");
 });

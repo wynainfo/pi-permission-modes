@@ -28,11 +28,22 @@ import type { ModeDef } from "./schema.ts";
 /** Whether ~/.ssh is under a denied path and not readable again through allowRead. */
 function masksSshKeys(denyRead: string[], allowRead: string[] = []): boolean {
   const ssh = expandHome("~/.ssh");
-  const covers = (p: string) => {
+  // The most specific matching entry decides: a deny of ~/.ssh under an
+  // allow of ~ (the Windows default) still masks, an allow at or below the
+  // deny re-opens.
+  const depth = (p: string): number | undefined => {
     const d = expandHome(p).replace(/\/+$/, "");
-    return ssh === d || ssh.startsWith(`${d}/`);
+    return ssh === d || ssh.startsWith(`${d}/`) ? d.split("/").length : undefined;
   };
-  return denyRead.some(covers) && !allowRead.some(covers);
+  const deepest = (list: readonly string[]): number => Math.max(-1, ...list.map((p) => depth(p) ?? -1));
+  const deny = deepest(denyRead);
+  return deny >= 0 && deepest(allowRead) < deny;
+}
+
+/** True when an allowRead entry grants the whole user profile (`~`, `$HOME`, the expanded home). */
+function grantsHome(allowRead: readonly string[] | undefined): boolean {
+  const home = expandHome("~");
+  return (allowRead ?? []).some((p) => expandHome(p).replace(/[\\/]+$/, "") === home);
 }
 
 export interface AwarenessOptions {
@@ -46,7 +57,7 @@ export interface AwarenessOptions {
   sessionDomains?: string[];
   /** This session's scratch directory (scratch.ts); TMPDIR points there inside bash. */
   scratchDir?: string;
-  /** `process.platform`; the macOS-only lines render only on "darwin". Injected so tests cover both. */
+  /** `process.platform`; the macOS-only lines render only on "darwin", the Windows ones on "win32". Injected so tests cover each. */
   platform?: string;
 }
 
@@ -105,9 +116,24 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   if (sb.denyWrite?.length) {
     lines.push(`- Additionally write-denied: ${sb.denyWrite.join(", ")}.`);
   }
+  const win32 = (opts.platform ?? process.platform) === "win32";
+  if (win32) {
+    // The Windows backend runs commands as another account: reads are what
+    // the profile grants, not "everything but the denies".
+    const home = grantsHome(sb.allowRead);
+    const carve = (sb.allowRead ?? []).filter((p) => !grantsHome([p])).map(renderWritePath);
+    const readable = ["the project", "Windows and Program Files", ...(home ? ["your user profile (~)"] : []), ...carve];
+    lines.push(
+      `- This is the native Windows sandbox: commands run in Git Bash as a separate local account (srt-sandbox). Readable: ${readable.join(", ")}` +
+        `${sb.denyRead?.length ? `, EXCEPT ${sb.denyRead.join(", ")}` : ""}. Anything else reads as absent or "Access is denied"` +
+        `${home ? "" : `, including programs installed for the user only (under the profile); a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
+        ` (see ${docRef("windowsSandbox")}).`,
+      `- TLS revocation checks cannot leave the sandbox: git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke, and CRYPT_E_REVOCATION_OFFLINE (0x80092013) from another schannel tool means the same. PowerShell's Invoke-WebRequest, gh, Node and Python are unaffected (see ${docRef("windowsRevocation")}).`,
+    );
+  }
   if (sb.denyRead?.length) {
-    lines.push(`- Reads are broadly allowed EXCEPT: ${sb.denyRead.join(", ")}.`);
-    if (sb.allowRead?.length) {
+    if (!win32) lines.push(`- Reads are broadly allowed EXCEPT: ${sb.denyRead.join(", ")}.`);
+    if (!win32 && sb.allowRead?.length) {
       lines.push(`- Readable again inside those denied paths: ${sb.allowRead.map(renderWritePath).join(", ")}. Anything else under a denied path reads as absent.`);
     }
     if (masksSshKeys(sb.denyRead, sb.allowRead)) {

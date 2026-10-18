@@ -81,6 +81,11 @@ write, no prompt); add `/tmp` to the mode's `allowWrite` if you need such a
 tool, at the cost of sharing `/tmp` with everything else on the host (and set
 `acknowledgeDefaults` so the outdated-default warning stays quiet).
 
+On Windows the scratch base is `%TEMP%\pi`, and `TMPDIR`, `TEMP` and `TMP`
+inside sandboxed bash all point at the session's scratch directory; the
+`/tmp/pi` entry of the stock `allowWrite` has no effect there. The sandbox
+account's own `%TEMP%` is unrelated and invisible to you.
+
 ## Linux glob limitation
 
 The runtime drops glob patterns from `allowWrite`, `denyRead`, and
@@ -232,6 +237,85 @@ newer when it is not installed setuid; where neither applies nothing limits
 namespaces and the runtime says so under `SRT_DEBUG`
 ([troubleshooting.md, nested sandboxes on Linux](troubleshooting.md#nested-sandboxes-on-linux)).
 
+## Windows
+
+On native Windows the sandbox is the runtime's own Windows backend (alpha in
+`@anthropic-ai/sandbox-runtime`). It is a different mechanism from
+bubblewrap and `sandbox-exec`, with the same profile keys on top:
+
+- Each command runs in Git Bash **as a separate local account**,
+  `srt-sandbox`, started through the bundled `srt-win.exe` helper. Anything
+  the command spawns, by any route, still carries that account.
+- The network allowlist is enforced by a Windows Filtering Platform rule
+  keyed on that account: it can connect only to the extension's loopback
+  proxy, which applies the allowlist and the live prompt as on Linux. DNS
+  lookups are not fenced (the system resolver answers them), connections
+  are.
+- The profile becomes NTFS permission entries for that account, added when
+  the runtime initializes and removed when it resets: `allowWrite` grants
+  Modify, `allowRead` grants Read and Execute, `denyRead` and `denyWrite`
+  add Deny entries that win over a grant above them. The account has no
+  rights of its own on your files, so on Windows reads are what the profile
+  grants, not "everything but the denies". The stock profiles therefore
+  grant your user profile read access (`allowRead: ["~"]` is added unless
+  the mode names the profile itself in `allowRead` or `denyRead`) with the
+  credential `denyRead` list on top: home readable, secrets masked, the
+  Linux result. A strict allowlist is the same shape as on Linux,
+  `denyRead: ["~"]` plus `allowRead` carve-outs
+  ([modes.md, Strict home](modes.md#strict-home)).
+
+**Install.** Git for Windows (for all users, under Program Files, or the
+profile must grant the per-user install read access) and one elevated
+`/sandbox install` per machine (one UAC prompt): it creates the account, a
+random password stored encrypted machine-wide, and the firewall rule.
+`/sandbox uninstall` removes them. Until then the sandboxed modes prompt
+before every bash command, as when the sandbox is unavailable anywhere
+([troubleshooting.md, Windows sandbox install](troubleshooting.md#windows-sandbox-install)).
+
+**Self-check.** The backend only adds entries for its account, so it is as
+tight as the permissions already on the machine. Before the first command
+the extension runs a probe inside the sandbox: the project's parent folder
+and the drive root must not be writable (a folder created directly at a
+drive root grants every local user Modify, so sibling projects would be
+writable), and the parent must be readable (git needs it). A failed probe
+degrades to prompting and says why
+([troubleshooting.md, Windows sandbox self-check](troubleshooting.md#windows-sandbox-self-check)).
+Folders the profile grants write access to are not probed.
+
+**What the command sees.** The sandboxed process starts from the sandbox
+account's own profile with the broker's `PATH` and the proxy variables.
+The extension adds your shell environment minus the account's identity and
+profile paths (`USERNAME`, `USERPROFILE`, `APPDATA`, `HOME`, ...), the temp
+and path variables, and the proxy and CA variables the runtime sets, so
+`PI_*` and your tool settings arrive as on Linux. `TMPDIR`, `TEMP` and `TMP`
+point at the session scratch directory. Your git `user.name` and
+`user.email` are exported, since the account has no `.gitconfig` of yours;
+other global git settings are not applied inside the sandbox. Git and cargo
+are told to skip certificate revocation checks, which cannot leave the
+fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-revocation-on-windows)).
+
+**Differences to Linux and macOS.**
+
+- Plan mode (or any `writable: false` mode) re-initializes the runtime on
+  the switch instead of dropping writes per command: grants are permission
+  entries stamped at initialize time. The switch takes a moment; a bash
+  call that arrives during it is refused with "run the command again".
+- A session block ("Deny and block") still rides along per command: denies
+  are the one per-command filesystem change the backend supports.
+- Programs installed for your user only are reachable only through the
+  profile's read grant ([troubleshooting.md, Per-user tools on Windows](troubleshooting.md#per-user-tools-on-windows)).
+- A project on a mapped network drive or a UNC path is refused
+  ([troubleshooting.md, Mapped drive or UNC project on Windows](troubleshooting.md#mapped-drive-or-unc-project-on-windows)).
+- Loopback services on the host go through the proxy like any other host,
+  so they need the live prompt's approval; there is no `macos`-style
+  loopback switch.
+- Background processes die with the command here too: the runner holds them
+  in a job object.
+
+`/sandbox` shows the account, the Git Bash in use and the staged helper. The
+awareness section tells the model about the account, what is readable, and
+the revocation workaround.
+
 ## Platforms
 
 | Platform | Sandbox | Notes |
@@ -239,7 +323,7 @@ namespaces and the runtime says so under `SRT_DEBUG`
 | Linux, WSL2 | bubblewrap plus a seccomp write observer | needs `bubblewrap`, `socat`, `ripgrep` on `PATH`; Ubuntu 24.04 and newer need an AppArmor exception ([troubleshooting.md](troubleshooting.md#bubblewrap-namespaces)); programs that sandbox themselves need the [Linux](#linux) switch |
 | macOS | `sandbox-exec` | no extra packages; globs allowed in the path lists; loopback services and Go TLS verification need the [macOS](#macos) switches |
 | WSL1 | none | no user namespaces; reported as unsupported, the sandboxed modes prompt instead |
-| Windows | none | the sandboxed modes prompt only, the allowlist is not enforced, `allowWrite` only feeds the prompt bounds. Run pi under WSL2 for containment |
+| Windows | the runtime's native backend (alpha): a separate local account, a firewall rule keyed on it, NTFS permission entries | needs Git for Windows and one elevated `/sandbox install`; see [Windows](#windows). Until then the sandboxed modes prompt instead |
 
 When the sandbox is unavailable, Default, Plan, and Build show
 `(!) <reason>` in the footer, and in-project bash that would have been

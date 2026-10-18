@@ -155,23 +155,44 @@ you can rely on it appropriately. The reference for every setting is in
   `$TMPDIR` under `/var/folders/…`. These are not in your config and cannot be
   removed from it; only `/tmp/claude` is treated as in-bounds by the prompt
   layer, the others still prompt.
-- **Temp-dir narrowing is enforced on Linux, partial on macOS, policy-only on
-  Windows.** On Linux only `allowWrite` (plus the runtime's built-ins) is
-  writable - a tool that hardcodes `/tmp` and ignores `TMPDIR` fails silently
-  (the kernel denies it; the awareness prompt tells the model to ask you). On
-  macOS the per-user `/var/folders/…` temp dir stays writable regardless. On
-  Windows there is no OS sandbox at all: `allowWrite` only feeds the prompt
-  bounds, and the scratch directory lives under `os.tmpdir()`.
+- **Temp-dir narrowing is enforced on Linux and Windows, partial on macOS.**
+  On Linux only `allowWrite` (plus the runtime's built-ins) is writable - a
+  tool that hardcodes `/tmp` and ignores `TMPDIR` fails silently (the kernel
+  denies it; the awareness prompt tells the model to ask you). On macOS the
+  per-user `/var/folders/…` temp dir stays writable regardless. On Windows
+  the sandbox account's own `%TEMP%` is writable (it is not yours) and
+  `TMPDIR`, `TEMP` and `TMP` point at the scratch directory under your
+  `%TEMP%\pi`.
 - **Scratch sweep is hygiene, not a guarantee.** At session start, sibling
   folders under the scratch base untouched for 7 days are deleted (directories
   only - files and symlinks are skipped, never followed; another user's
   folder can't be deleted and is skipped). It keys on directory mtime. Treat
   the scratch base as ephemeral and don't rely on the sweep to remove
   anything sensitive.
-- **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`) and macOS only.
-  **Native Windows has no sandbox**: the sandboxed modes degrade to prompting
-  only, the network allowlist is not enforced, and `allowWrite` only feeds the
-  prompt bounds. Run pi under WSL2 for OS-level enforcement.
+- **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`), macOS, and
+  native Windows (alpha, needs Git for Windows and one elevated
+  `/sandbox install`). Until the Windows backend is installed, or when its
+  self-check fails, the sandboxed modes degrade to prompting only, the
+  network allowlist is not enforced, and `allowWrite` only feeds the prompt
+  bounds.
+- **Windows (alpha) is a different mechanism.** Commands run as the local
+  account `srt-sandbox` in Git Bash; the mode's profile becomes NTFS
+  permission entries for that account and the allowlist is enforced by a
+  Windows Filtering Platform rule keyed on it. The backend only adds entries
+  for that account, so it is as tight as the permissions already on the
+  machine: before trusting it the extension probes the project's parent and
+  the drive root from inside the sandbox and prompts instead when they are
+  writable (a folder created at a drive root grants every local user
+  Modify). Reads are allow-listed by the OS there; the stock profiles grant
+  your user profile read access with the credential `denyRead` list on top,
+  so the result matches Linux. Known gaps, all inherited from the runtime:
+  the proxy token is visible to local principals that can inspect the
+  runner's command line, DNS lookups are not fenced (connections are),
+  revocation checks cannot leave the fence (git and cargo are told to skip
+  them inside the sandbox; System32 curl needs `--ssl-no-revoke`), and the
+  sandboxed command's environment is your shell environment minus identity,
+  path, temp, proxy and CA variables, the same exposure as on Linux
+  ([docs/sandbox.md, Windows](docs/sandbox.md#windows)).
 - **Pinned directories on Linux.** Every existing ancestor of a path the
   sandbox protects (a denied read, a mandatory-deny dotfile, the runtime's
   own binds) is a mount point inside the sandbox. Renaming or removing such a

@@ -93,6 +93,7 @@ import {
 } from "./plan-approval.ts";
 import { decideBashChainDetailed, decideDetailed } from "./resolve.ts";
 import { SandboxController, commandFilesDir, networkFiltered, runtimeInstallDir, withDeniedReads } from "./sandbox.ts";
+import { withHomeRead } from "./sandbox-win.ts";
 import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
   type ModeDef,
@@ -160,7 +161,11 @@ export default async function (pi: ExtensionAPI) {
   // dir. The session's "Deny and block" paths are NOT part of it - they ride
   // along per command (sandbox.bashOps extraDenyRead), so a block never
   // restarts the runtime or its network proxy.
-  const runtimeProfile = (m: ModeDef): SandboxProfile => withScratchDir(m.sandbox, scratchDir);
+  // On Windows the sandbox account reads only what the profile grants, so
+  // the user profile is granted read access unless the mode says otherwise
+  // (sandbox-win.ts withHomeRead): the Linux result, home readable, secrets masked.
+  const platformProfile = (p: SandboxProfile): SandboxProfile => (process.platform === "win32" ? withHomeRead(p) : p);
+  const runtimeProfile = (m: ModeDef): SandboxProfile => withScratchDir(platformProfile(m.sandbox), scratchDir);
   // What bash effectively runs under, for the bounds, the awareness prompt, and /sandbox.
   const effectiveSandbox = (m: ModeDef): SandboxProfile => withDeniedReads(runtimeProfile(m), blocked.list());
 
@@ -641,9 +646,24 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("sandbox", {
-    description: "Show the active mode's sandbox status and configuration",
-    handler: async (_args, ctx) => {
+    description: "Show the active mode's sandbox status and configuration; /sandbox install|uninstall sets up the native Windows sandbox",
+    handler: async (args, ctx) => {
       const m = currentMode();
+      const sub = args.trim().toLowerCase();
+      if (sub === "install" || sub === "uninstall") {
+        if (process.platform !== "win32") {
+          return ctx.ui.notify(`permission-mode: /sandbox ${sub} is for the native Windows sandbox; see ${docRef("sandboxUnavailable")} for this platform`, "info");
+        }
+        ctx.ui.notify(`permission-mode: Windows sandbox ${sub} (one UAC prompt)...`, "info");
+        try {
+          const line = await sandbox.windowsSetup(sub);
+          ctx.ui.notify(`permission-mode: ${line}`, sandbox.ready ? "info" : "warning");
+        } catch (e) {
+          ctx.ui.notify(`permission-mode: Windows sandbox ${sub} failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+        }
+        updateStatus(ctx, currentMode(), sandbox, net.open);
+        return;
+      }
       if (!m.sandbox.enabled) {
         return ctx.ui.notify(`${m.label}: sandbox disabled for this mode (bash runs unsandboxed)`, "info");
       }
@@ -655,6 +675,9 @@ export default async function (pi: ExtensionAPI) {
           `Sandbox: ACTIVE for ${m.label} (${m.sandbox.writable ? "project-writable" : "read-only"})`,
           "",
           `Scratch dir: ${scratchDir ?? "(none)"}`,
+          ...(sandbox.windowsStatus()
+            ? [`Windows: commands run as srt-sandbox in ${sandbox.windowsStatus()!.bash}; helper ${sandbox.windowsStatus()!.srtWinPath}; self-check passed`]
+            : []),
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,

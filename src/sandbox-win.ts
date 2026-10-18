@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { docRef } from "./docs.ts";
+import type { SandboxProfile } from "./schema.ts";
 import { isOutsideWin } from "./win-paths.ts";
 
 const sq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -206,6 +207,36 @@ export function windowsScript(command: string, files: { env: string; cmd: string
 /** Content of the env file `windowsScript` sources. */
 export function windowsEnvFile(exports: readonly string[]): string {
   return exports.map((t) => `export ${t}`).join("\n") + "\n";
+}
+
+/** True for a profile entry that names the user profile itself (`~`, `$HOME`, `~/`). */
+const isHomeEntry = (p: string): boolean => p === "~" || p === "$HOME" || /^~[\\/]$/.test(p);
+
+/**
+ * The Windows default for reads: the sandbox user has no rights on the
+ * caller's files, so without a grant nothing of the user profile is readable
+ * (no `~/.gitconfig`, no `~/.npmrc`, no per-user tool). Granting `~` read
+ * access with the credential `denyRead` list on top gives the Linux result:
+ * home readable, secrets masked. Left alone when an `allowRead` entry already
+ * names the profile, or when a `denyRead` entry does (the strict-home shape,
+ * whose carve-outs are listed explicitly).
+ */
+export function withHomeRead(profile: SandboxProfile): SandboxProfile {
+  if (!profile.enabled) return profile;
+  if ((profile.allowRead ?? []).some(isHomeEntry) || (profile.denyRead ?? []).some(isHomeEntry)) return profile;
+  return { ...profile, allowRead: ["~", ...(profile.allowRead ?? [])] };
+}
+
+/**
+ * Inside the fence, schannel cannot fetch revocation lists (the lookup goes
+ * out over WinHTTP, past the proxy variables), so git over HTTPS and cargo
+ * would fail with CRYPT_E_REVOCATION_OFFLINE. Both read these variables; the
+ * caller's own `GIT_CONFIG_PARAMETERS` stay ahead.
+ */
+export function windowsRevocationEnv(callerEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const existing = callerEnv.GIT_CONFIG_PARAMETERS?.trim();
+  const param = "'http.schannelCheckRevoke=false'";
+  return { GIT_CONFIG_PARAMETERS: existing ? `${existing} ${param}` : param, CARGO_HTTP_CHECK_REVOKE: "false" };
 }
 
 /**

@@ -222,3 +222,29 @@ test("degraded: short note with the reason, no boundary bullets", () => {
   const bare = sandboxAwarenessPrompt(mode(), { active: false });
   assert.match(bare ?? "", /unavailable here\.\n/);
 });
+
+test("win32: the Windows lines name the account, what is readable, the denies and the revocation workaround; the Linux read lines are replaced", () => {
+  const home = sandboxAwarenessPrompt(mode({}, { allowRead: ["~"] }), { active: true, platform: "win32" })!;
+  assert.match(home, /native Windows sandbox: commands run in Git Bash as a separate local account \(srt-sandbox\)\. Readable: the project, Windows and Program Files, your user profile \(~\), EXCEPT ~\/\.ssh, ~\/\.aws, ~\/\.gnupg\./);
+  assert.doesNotMatch(home, /Reads are broadly allowed/);
+  assert.doesNotMatch(home, /Readable again inside/);
+  assert.doesNotMatch(home, /command not found/);
+  assert.match(home, /git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke/);
+  assert.match(home, /docs\/sandbox\.md#windows/);
+  assert.match(home, /docs\/troubleshooting\.md#tls-revocation-on-windows/);
+  // ~/.ssh is denied beneath the ~ grant: the SSH advice still applies.
+  assert.match(home, /SSH keys are unreadable/);
+  const strict = sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.gitconfig"] }), { active: true, platform: "win32" })!;
+  assert.match(strict, /Readable: the project, Windows and Program Files, ~\/\.gitconfig, EXCEPT ~\./);
+  assert.match(strict, /command not found.*docs\/troubleshooting\.md#per-user-tools-on-windows/);
+  const linux = sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!;
+  assert.doesNotMatch(linux, /native Windows sandbox/);
+  assert.match(linux, /Reads are broadly allowed EXCEPT/);
+});
+
+test("masksSshKeys: the most specific entry decides (an allow of ~ above a deny of ~/.ssh still masks; an allow of ~/.ssh re-opens)", () => {
+  const masked = sandboxAwarenessPrompt(mode({}, { allowRead: ["~"] }), { active: true })!;
+  assert.match(masked, /SSH keys are unreadable/);
+  const open = sandboxAwarenessPrompt(mode({}, { allowRead: ["~/.ssh"] }), { active: true })!;
+  assert.doesNotMatch(open, /SSH keys are unreadable/);
+});

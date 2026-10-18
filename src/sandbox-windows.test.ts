@@ -68,7 +68,7 @@ test("windows ops: env file and command file, sourced then run in a bash -c of i
   const fake = fakeWindowsRuntime();
   const dir = mkdtempSync(path.join(tmpdir(), "pi-win-ops-"));
   try {
-    const ops = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Program Files\\Git\\bin\\bash.exe", identity: { GIT_AUTHOR_NAME: "Ann O'Neil" }, tmpdir: "C:\\t\\pi\\s", commandDir: dir });
+    const ops = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Program Files\\Git\\bin\\bash.exe", extraEnv: { GIT_AUTHOR_NAME: "Ann O'Neil" }, tmpdir: "C:\\t\\pi\\s", commandDir: dir });
     const command = "printf '%s|%s|%s|%s|%s\\n' \"$FOO\" \"${USERPROFILE:-unset}\" \"$GIT_AUTHOR_NAME\" \"$TMPDIR\" \"$TEMP\"; exit 3";
     const r = await exec(ops, command, { FOO: "it's a! test", USERPROFILE: "C:\\Users\\me", PATH: process.env.PATH });
     assert.equal(r.exitCode, 3);
@@ -91,7 +91,7 @@ test("windows ops: env file and command file, sourced then run in a bash -c of i
 
 test("windows ops: extra denies ride as per-exec denyRead only; without a command dir the exports are inlined", async () => {
   const fake = fakeWindowsRuntime();
-  const ops = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Git\\bin\\bash.exe", identity: {}, extraDenyRead: ["C:\\Users\\me\\secret"] });
+  const ops = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Git\\bin\\bash.exe", extraEnv: {}, extraDenyRead: ["C:\\Users\\me\\secret"] });
   const r = await exec(ops, "echo \"$FOO\"", { FOO: "bar" });
   assert.equal(r.out, "bar\n");
   const w = fake.wraps[0];
@@ -101,7 +101,7 @@ test("windows ops: extra denies ride as per-exec denyRead only; without a comman
 
 test("windows ops: a timeout kills the child and rejects", async () => {
   const fake = fakeWindowsRuntime();
-  const ops = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Git\\bin\\bash.exe", identity: {} });
+  const ops = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Git\\bin\\bash.exe", extraEnv: {} });
   await assert.rejects(exec(ops, "sleep 1.5; echo late", { PATH: process.env.PATH }, 0.3), /timeout:0.3/);
   assert.ok(fake.calls.includes("cleanup"));
 });
@@ -160,8 +160,8 @@ test("controller (win32): provisioned, probe passes; read-only is applied at ini
   assert.match(fake.wraps[0].script, /PI-SRT-PROBE/);
   // Build: writable ops run; a read-only request must wait for the re-init.
   const ops = c.bashOps({ readOnly: false })!;
-  const r = await exec(ops, "echo \"$GIT_AUTHOR_NAME $GIT_COMMITTER_EMAIL\"", { PATH: process.env.PATH });
-  assert.equal(r.out, "Ann ann@x.io\n");
+  const r = await exec(ops, "echo \"$GIT_AUTHOR_NAME $GIT_COMMITTER_EMAIL $GIT_CONFIG_PARAMETERS $CARGO_HTTP_CHECK_REVOKE\"", { PATH: process.env.PATH });
+  assert.equal(r.out, "Ann ann@x.io 'http.schannelCheckRevoke=false' false\n");
   await assert.rejects(c.bashOps({ readOnly: true })!.exec("true", process.cwd(), { onData: () => {} }), /re-initialized for this mode/);
   // Plan: the runtime is re-initialized with only the scratch dir writable, no second probe.
   await c.applyProfile({ enabled: true, writable: false, allowWrite: ["."] });

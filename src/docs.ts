@@ -33,6 +33,9 @@ export const DOC_REFS = {
   linuxNamespaces: "troubleshooting.md#nested-sandboxes-on-linux",
   windowsSelfCheck: "troubleshooting.md#windows-sandbox-self-check",
   windowsInstall: "troubleshooting.md#windows-sandbox-install",
+  windowsSandbox: "sandbox.md#windows",
+  windowsRevocation: "troubleshooting.md#tls-revocation-on-windows",
+  windowsTools: "troubleshooting.md#per-user-tools-on-windows",
 } as const;
 
 export type DocRefKey = keyof typeof DOC_REFS;

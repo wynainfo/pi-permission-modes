@@ -7,6 +7,32 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Windows: the sandboxed modes contain bash on native Windows (alpha).**
+  The runtime's Windows backend runs each command as a separate local
+  account (`srt-sandbox`) in Git Bash, behind a firewall rule keyed on that
+  account; the mode's profile becomes NTFS permission entries for it. One
+  elevated `/sandbox install` per machine (`/sandbox uninstall` removes it).
+  The stock profiles grant the user profile read access with the credential
+  `denyRead` list on top, so the result matches Linux: home readable,
+  secrets masked, the project writable, the allowlist enforced. Before
+  trusting the sandbox the extension probes the project's parent and the
+  drive root from inside it and prompts instead when they are writable (a
+  folder created at a drive root grants every local user Modify) or the
+  parent is unreadable. Plan mode re-initializes the runtime read-only on
+  the switch (grants are stamped at initialize time there). The sandboxed
+  command gets your shell environment minus identity, path, temp, proxy and
+  CA variables, your git identity, and `TMPDIR`, `TEMP`, `TMP` pointing at
+  the scratch directory; git and cargo are told to skip the revocation
+  check that cannot leave the fence. The bash escape heuristic understands
+  Windows paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script
+  arguments, and `runas` / `gsudo`. Limits, the runtime's: per-user tool
+  installs need the profile's read grant, mapped-drive and UNC projects are
+  refused, DNS is not fenced, System32 curl needs `--ssl-no-revoke`
+  ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). Built on the work
+  of [@ammoniak](https://github.com/ammoniak) in
+  [#9](https://github.com/wynainfo/pi-permission-modes/pull/9): the path
+  heuristics, the Git Bash lookup, the staged helper and the self-check
+  come from there.
 - **A shipped `docs/` reference, and every hint points into it.** The
   package now carries `docs/` (configuration, modes, permissions, sandbox,
   network, troubleshooting, architecture). The system prompt names the

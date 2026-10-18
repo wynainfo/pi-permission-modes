@@ -30,6 +30,7 @@ import {
   stageSrtWin,
   windowsEnvExports,
   windowsEnvFile,
+  windowsRevocationEnv,
   windowsScript,
 } from "./sandbox-win.ts";
 import type { SandboxProfile } from "./schema.ts";
@@ -351,8 +352,8 @@ export function createSandboxedBashOps(
 export interface WindowsOpsOptions {
   /** Git Bash `bash.exe` the sandbox user can run. */
   bash: string;
-  /** The host's git identity as environment (the sandbox user has no gitconfig of the host's). */
-  identity: Record<string, string>;
+  /** Variables set on top of the caller's environment: the host's git identity (the sandbox user has no gitconfig of the host's) and the revocation knobs. */
+  extraEnv: Record<string, string>;
   /** TMPDIR, TEMP and TMP inside the command (the session scratch dir). */
   tmpdir?: string;
   /** Paths masked for this command on top of the session's permission entries (per-exec denies are the one per-command filesystem change the Windows backend supports). */
@@ -400,7 +401,7 @@ export function createWindowsSandboxedBashOps(
       if (signal?.aborted) throw new Error("aborted");
       // TMPDIR in the form msys tools read, TEMP and TMP as Windows programs do.
       const tmp: Record<string, string> = opts.tmpdir ? { TMPDIR: opts.tmpdir.replace(/\\/g, "/"), TEMP: opts.tmpdir, TMP: opts.tmpdir } : {};
-      const exports = windowsEnvExports(env ?? process.env, { ...opts.identity, ...tmp });
+      const exports = windowsEnvExports(env ?? process.env, { ...opts.extraEnv, ...tmp });
       const envFile = opts.commandDir ? writeCommandFile(windowsEnvFile(exports), opts.commandDir, "env") : undefined;
       const cmdFile = envFile ? writeCommandFile(command, opts.commandDir) : undefined;
       const files = envFile && cmdFile ? { env: envFile, cmd: cmdFile } : undefined;
@@ -638,8 +639,8 @@ export const WINDOWS_NOT_INSTALLED_WARN = "Windows sandbox not installed (/sandb
 interface WindowsBackend {
   bash: string;
   srtWinPath: string;
-  /** `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from the host's git config. */
-  identity: Record<string, string>;
+  /** `GIT_AUTHOR_*` and `GIT_COMMITTER_*` from the host's git config, plus the revocation knobs. */
+  extraEnv: Record<string, string>;
   commandDir: string | undefined;
   /** The in-sandbox self-check passed for this init. */
   probed: boolean;
@@ -725,6 +726,11 @@ export class SandboxController {
     return this.win !== undefined;
   }
 
+  /** What the Windows backend runs with, for `/sandbox`; undefined off Windows or while degraded. */
+  windowsStatus(): { bash: string; srtWinPath: string; readOnly: boolean } | undefined {
+    return this.win ? { bash: this.win.bash, srtWinPath: this.win.srtWinPath, readOnly: this.win.readOnly } : undefined;
+  }
+
   /**
    * Wrap a fresh BashOperations around the active runtime, or null when
    * unavailable. With `readOnly`, the command runs with project writes
@@ -751,7 +757,7 @@ export class SandboxController {
         this.manager,
         {
           bash: this.win.bash,
-          identity: this.win.identity,
+          extraEnv: this.win.extraEnv,
           tmpdir: opts.tmpdir,
           extraDenyRead: opts.extraDenyRead,
           commandDir: this.win.commandDir,
@@ -974,7 +980,8 @@ export class SandboxController {
       );
     }
     this.manager = rt.SandboxManager;
-    this.win = { bash, srtWinPath: staged, identity: gitIdentityEnv(id.name, id.email), commandDir, probed: false, readOnly: !profile.writable };
+    const extraEnv = { ...gitIdentityEnv(id.name, id.email), ...windowsRevocationEnv(env) };
+    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, probed: false, readOnly: !profile.writable };
     await this.applyProfile(profile);
   }
 
@@ -990,7 +997,7 @@ export class SandboxController {
     const targets = probeTargets(this.cwd, win.srtWinPath).filter((t) => !writable.some((w) => !isOutsideWin(w, t)));
     let out = "";
     try {
-      const ops = createWindowsSandboxedBashOps(manager, { bash: win.bash, identity: {}, commandDir: win.commandDir });
+      const ops = createWindowsSandboxedBashOps(manager, { bash: win.bash, extraEnv: {}, commandDir: win.commandDir });
       const script = probeScript(this.cwd, targets, randomBytes(6).toString("hex"));
       await ops.exec(script, this.cwd, { onData: (d) => (out += String(d)), timeout: 120 });
     } catch (err) {

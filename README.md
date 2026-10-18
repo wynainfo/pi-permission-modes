@@ -67,9 +67,12 @@ Go tools (`gh`, `kubectl`, `terraform`) and loopback services (a local
 database, a dev server) need an opt-in switch per mode:
 [docs/sandbox.md](docs/sandbox.md#macos).
 
-> **Native Windows: no sandbox.** The sandboxed modes degrade to *prompting
-> only*: every in-project `bash` command asks for confirmation and the network
-> allowlist is not enforced. For real containment run pi under **WSL2**.
+> **Native Windows (alpha).** The sandbox is the runtime's Windows backend:
+> commands run as a separate local account behind a firewall rule keyed on
+> it, with the profile as NTFS permissions. It needs Git for Windows installed
+> for all users and one `/sandbox install` in pi (one UAC prompt). Until then
+> the sandboxed modes degrade to *prompting only*. Details and limits:
+> [docs/sandbox.md](docs/sandbox.md#windows).
 
 ### Verify
 

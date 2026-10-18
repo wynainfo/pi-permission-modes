@@ -261,6 +261,45 @@ point on Linux. Run the removal outside the sandbox; it prompts.
 `~/.gitconfig` is masked. Add it to `allowRead`
 ([modes.md, Strict home](modes.md#strict-home)).
 
+On Windows the sandbox account has no `.gitconfig` of yours, whatever the
+profile grants; the extension exports your `user.name` and `user.email` as
+`GIT_AUTHOR_*` and `GIT_COMMITTER_*` into every sandboxed command, so
+commits carry your identity. Other global git settings (aliases,
+`core.autocrlf`) are not applied inside the sandbox; set the ones a project
+needs in its `.git/config`.
+
+## TLS revocation on Windows
+
+Inside the Windows sandbox, schannel (the TLS stack of System32 `curl`,
+default-backend `git`, .NET and PowerShell) fetches certificate revocation
+lists over WinHTTP, outside the proxy variables, and the firewall rule
+blocks that. Tools that check revocation by default fail with
+`CRYPT_E_REVOCATION_OFFLINE` (`0x80092013`). The extension exports
+`GIT_CONFIG_PARAMETERS='http.schannelCheckRevoke=false'` and
+`CARGO_HTTP_CHECK_REVOKE=false` into every sandboxed command, so git and
+cargo work; for System32 curl pass `--ssl-no-revoke`. `gh`, PowerShell's
+`Invoke-WebRequest` and .NET do not check revocation by default, and tools
+on OpenSSL (Node, Python, cargo's own TLS) are unaffected.
+
+## Per-user tools on Windows
+
+The sandboxed command runs as `srt-sandbox`, not as you. A tool installed
+for your user only (`%LOCALAPPDATA%\Programs`, Scoop, nvm or fnm Node,
+`pip install --user`, `winget` without `--scope machine`) is on the
+inherited `PATH` but fails with "command not found" or "Access is denied"
+unless the mode's profile lets the sandbox account read it. The stock
+profiles grant `%USERPROFILE%` read access (`allowRead: ["~"]`), so this
+concerns custom modes that drop it: add the tool's folder to `allowRead`,
+or install the tool for all users.
+
+## Mapped drive or UNC project on Windows
+
+The Windows backend refuses to start a command whose working directory is
+on a mapped network drive or a UNC path (exit 16, the runtime's
+`mapped_drive_cwd` error, reported after the command's output). Drive
+mappings belong to your logon session and the sandbox account has none.
+Work on a local drive.
+
 ## Outdated defaults notice
 
 ```
