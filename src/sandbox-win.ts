@@ -338,12 +338,24 @@ export function parseProbe(output: string): ProbeResult {
   return result;
 }
 
-/** Footer-sized reason the probe rejects the sandbox, or undefined when it passes. */
+/**
+ * Footer-sized reason the probe rejects the sandbox, or undefined when it
+ * passes. A parent the sandbox user cannot read is not a rejection: that
+ * makes the sandbox tighter, not weaker (see `probeNotice`).
+ */
 export function probeProblem(r: ProbeResult): string | undefined {
   if (!r.done) return "Windows sandbox self-check did not complete";
   if (r.writable.length) return `Windows sandbox off: ${r.writable.join(", ")} writable by the sandbox user`;
-  if (r.hiddenParent) return `Windows sandbox off: sandbox user can't see ${r.hiddenParent} (git would fail)`;
   return undefined;
+}
+
+/** A one-time notice for a probe that passed with a finding worth knowing, or undefined. */
+export function probeNotice(r: ProbeResult): string | undefined {
+  if (!r.hiddenParent) return undefined;
+  return (
+    `The sandbox user cannot read ${r.hiddenParent}, the project's parent folder (the mode grants it nothing there). The sandbox is active; ` +
+    `should git or another tool fail inside it with a permission error on that path, add the parent to the mode's allowRead or move the project; see ${docRef("windowsSelfCheck")}.`
+  );
 }
 
 /** Longer explanation plus fix for a failed probe, for the one-time notification. */
@@ -355,13 +367,6 @@ export function probeAdvice(r: ProbeResult): string {
       `The sandbox user can write to ${r.writable.join(", ")}. The Windows sandbox only adds permissions for ` +
       "its own user, and a folder created at a drive root grants every local user Modify rights, so sibling " +
       `projects (or the sandbox helper itself) would be writable. Tighten the folder's ACL or move the project; ${ref}. ` +
-      "Until then bash asks before every command."
-    );
-  }
-  if (r.hiddenParent) {
-    return (
-      `The sandbox user can't read ${r.hiddenParent}, so git and other tools fail inside the sandbox. ` +
-      `The mode's profile grants no read access to the folders above the project; add the parent to sandbox.allowRead or move the project; ${ref}. ` +
       "Until then bash asks before every command."
     );
   }

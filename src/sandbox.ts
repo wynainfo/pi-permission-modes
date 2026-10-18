@@ -23,6 +23,7 @@ import {
   grantReadExecute,
   parseProbe,
   probeAdvice,
+  probeNotice,
   probeProblem,
   probeScript,
   probeTargets,
@@ -1023,6 +1024,8 @@ export class SandboxController {
     const problem = probeProblem(result);
     if (!problem) {
       win.probed = true;
+      const notice = probeNotice(result);
+      if (notice && this.hasUI) this.notifyFn(`permission-mode: ${notice}`);
       return true;
     }
     this.ready = false;

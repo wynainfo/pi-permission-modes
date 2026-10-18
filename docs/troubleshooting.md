@@ -172,11 +172,14 @@ icacls C:\src /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /grant:r "SYSTEM:(O
 Projects under your user profile (`C:\Users\<you>\...`) do not have this
 problem: the profile grants other local users nothing.
 
-`sandbox user can't see <parent>`: the sandbox user cannot stat the project's
-parent, so git fails inside the sandbox. The mode's profile grants no read
-access to the folders above the project (the stock defaults grant
-`%USERPROFILE%` read access, a custom mode may not). Add the parent to
-`sandbox.allowRead` or move the project.
+`The sandbox user cannot read <parent>`: a notice, not a refusal. The
+project's parent folder is not readable for the sandbox user (the usual
+case for a project inside your user profile, which grants other accounts
+nothing), so the sandbox is tighter than on Linux, where the parent would be
+readable. The sandbox stays active. Should git or another tool fail inside
+it with a permission error on that path, add the parent to the mode's
+`allowRead` (a read grant is copied onto every file below the folder, so
+prefer a small parent) or move the project.
 
 `self-check did not complete`: the probe produced no result. `/sandbox`
 shows the runtime's own status and the last error.

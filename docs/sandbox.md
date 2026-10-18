@@ -286,8 +286,9 @@ tight as the permissions already on the machine. Before the first command
 the extension runs a probe inside the sandbox: the project's parent folder
 and the drive root must not be writable (a folder created directly at a
 drive root grants every local user Modify, so sibling projects would be
-writable), and the parent must be readable (git needs it). A failed probe
-degrades to prompting and says why
+writable). A parent the account cannot read (a project inside your profile)
+is reported once but keeps the sandbox active: that is tighter, not weaker.
+A failed probe degrades to prompting and says why
 ([troubleshooting.md, Windows sandbox self-check](troubleshooting.md#windows-sandbox-self-check)).
 Folders the profile grants write access to are not probed.
 

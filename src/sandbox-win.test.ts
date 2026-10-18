@@ -6,6 +6,7 @@ import {
   grantReadExecute,
   parseProbe,
   probeAdvice,
+  probeNotice,
   probeProblem,
   probeScript,
   probeTargets,
@@ -89,8 +90,9 @@ test("parseProbe + probeProblem + probeAdvice: pass, writable, hidden parent, in
   assert.match(probeAdvice(w), /Tighten the folder's ACL/);
   assert.match(probeAdvice(w), /docs\/troubleshooting\.md#windows-sandbox-self-check/);
   const h = parseProbe("PI-SRT-PROBE HIDDEN C:\\Users\\me\\code\nPI-SRT-PROBE DONE\n");
-  assert.match(probeProblem(h)!, /can't see C:\\Users\\me\\code/);
-  assert.match(probeAdvice(h), /sandbox\.allowRead/);
+  assert.equal(probeProblem(h), undefined, "an unreadable parent keeps the sandbox active");
+  assert.match(probeNotice(h)!, /cannot read C:\\Users\\me\\code, the project's parent folder.*add the parent to the mode's allowRead/);
+  assert.equal(probeNotice(ok), undefined);
   const partial = parseProbe("PI-SRT-PROBE WRITABLE C:\\ws\n");
   assert.match(probeProblem(partial)!, /did not complete/);
   assert.match(probeAdvice(partial), /did not complete/);
