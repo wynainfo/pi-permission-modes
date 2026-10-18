@@ -19,15 +19,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `allowRead` replaces that list. Before
   trusting the sandbox the extension probes the project's parent and the
   drive root from inside it and prompts instead when they are writable (a
-  folder created at a drive root grants every local user Modify) or the
-  parent is unreadable. Plan mode re-initializes the runtime read-only on
-  the switch (grants are stamped at initialize time there). The sandboxed
-  command gets your shell environment minus identity, path, temp, proxy and
-  CA variables, your git identity, and `TMPDIR`, `TEMP`, `TMP` pointing at
-  the scratch directory; git and cargo are told to skip the revocation
-  check that cannot leave the fence. The bash escape heuristic understands
-  Windows paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script
-  arguments, and `runas` / `gsudo`. Limits, the runtime's: per-user tool
+  folder created at a drive root grants every local user Modify; a project
+  inside another pi session's project is named as such, the two share the
+  sandbox account). Plan mode re-initializes the runtime read-only on the
+  switch (grants are stamped at initialize time there, which takes a
+  moment), so a switch starts one quiet second after the last cycle step
+  and cycling pays for the last mode only. The sandboxed command gets your
+  shell environment minus identity, path, temp, proxy and CA variables,
+  your git identity, and `TMPDIR`, `TEMP`, `TMP` pointing at the scratch
+  directory; git sends its proxy credentials up front, never waits on a
+  credential prompt, and, with cargo, skips the revocation check that
+  cannot leave the fence. The bash escape heuristic understands Windows
+  paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script arguments,
+  and `runas` / `gsudo`; Git Bash's `/tmp` is not an escape. Limits, the runtime's: per-user tool
   installs need the profile's read grant, mapped-drive and UNC projects are
   refused, DNS is not fenced, System32 curl needs `--ssl-no-revoke`
   ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). Built on the work
