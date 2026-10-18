@@ -138,6 +138,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
         `${home ? "" : `, including programs installed for the user only whose folder is not listed; a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
         ` (see ${docRef("windowsSandbox")}).`,
       `- TLS revocation checks cannot leave the sandbox: git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke, and CRYPT_E_REVOCATION_OFFLINE (0x80092013) from another schannel tool means the same. PowerShell's Invoke-WebRequest, gh, Node and Python are unaffected (see ${docRef("windowsRevocation")}).`,
+      "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session. A server you start listens for real: the user can open it in a browser while the command runs, and it ends with the command, so start, use and stop it within one command (`server & sleep 30; curl ...; kill %1`); bind it to 127.0.0.1.",
     );
   }
   if (sb.denyRead?.length) {

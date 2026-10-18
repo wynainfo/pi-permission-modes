@@ -232,6 +232,8 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   assert.match(home, /git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke/);
   assert.match(home, /docs\/sandbox\.md#windows/);
   assert.match(home, /docs\/troubleshooting\.md#tls-revocation-on-windows/);
+  assert.match(home, /A server you start listens for real: the user can open it in a browser while the command runs/);
+  assert.doesNotMatch(sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!, /listens for real/);
   // ~/.ssh is denied beneath the ~ grant: the SSH advice still applies.
   assert.match(home, /SSH keys are unreadable/);
   const strict = sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.gitconfig"] }), { active: true, platform: "win32" })!;

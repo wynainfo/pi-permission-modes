@@ -322,10 +322,17 @@ fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-re
 - A project on a mapped network drive or a UNC path is refused
   ([troubleshooting.md, Mapped drive or UNC project on Windows](troubleshooting.md#mapped-drive-or-unc-project-on-windows)).
 - Loopback services on the host go through the proxy like any other host,
-  so they need the live prompt's approval; there is no `macos`-style
-  loopback switch.
+  so `localhost` needs the live prompt's approval once per session; there
+  is no `macos`-style loopback switch.
+- A sandboxed command can listen on a port, and anything on this machine
+  can connect to it while the command runs: the fence stops the account's
+  outbound connects, not inbound ones, so a dev server started inside a
+  command is reachable from your browser (on Linux the sandbox's loopback is
+  its own and it is not). Bind servers to `127.0.0.1`; one bound to
+  `0.0.0.0` answers on the LAN as far as Windows Firewall lets it.
 - Background processes die with the command here too: the runner holds them
-  in a job object.
+  in a job object, so a server has to be started and used within one
+  command (`server & sleep 30; curl ...; kill %1`).
 
 `/sandbox` shows the account, the Git Bash in use and the staged helper. The
 awareness section tells the model about the account, what is readable, and

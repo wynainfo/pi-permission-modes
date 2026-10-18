@@ -190,7 +190,10 @@ you can rely on it appropriately. The reference for every setting is in
   the grants are dropped. Known gaps, all inherited from the runtime:
   the proxy token is visible to local principals that can inspect the
   runner's command line, DNS lookups are not fenced (connections are),
-  revocation checks cannot leave the fence (git and cargo are told to skip
+  inbound connections are not fenced either (a sandboxed command may listen
+  on a port and anything on the machine, or on the LAN for `0.0.0.0` as
+  far as Windows Firewall allows, can connect while the command runs; the
+  listener ends with the command), revocation checks cannot leave the fence (git and cargo are told to skip
   them inside the sandbox; System32 curl needs `--ssl-no-revoke`), and the
   sandboxed command's environment is your shell environment minus identity,
   path, temp, proxy and CA variables, the same exposure as on Linux
