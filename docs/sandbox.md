@@ -25,7 +25,7 @@ config may do with the key ([configuration.md, Project config](configuration.md#
 | `network.deniedDomains` | string[] | `[]` | Hosts always refused, even when the network is open for the session | may add entries |
 | `insideRoots` | string[] | `[]` | Roots the bash escape heuristic treats as inside, for remote paths named in `ssh` commands and the like ([Inside roots](#inside-roots)). Bash only; no file-tool or sandbox access | may remove entries |
 | `askOnBlockedHost` | boolean | true | Prompt live when bash tries a host outside the allowlist. `false` denies silently | may set `false` |
-| `macos.allowLocalBinding` | boolean | unset | macOS only. Direct loopback TCP and binding local ports from sandboxed bash, for database drivers and dev servers ([macOS](#macos)) | may set `false` |
+| `allowLocalBinding` | boolean | true | A sandboxed command may listen on local ports and this machine may connect to them while the command runs; on macOS also direct loopback TCP, past the proxy ([Local binding](#local-binding)) | may set `false` |
 | `macos.enableWeakerNetworkIsolation` | boolean | unset | macOS only. Allow the `trustd` lookup Go programs need to verify TLS certificates ([macOS](#macos)) | may set `false` |
 | `linux.allowNestedUserNamespaces` | boolean | unset | Linux only. Let a sandboxed command create user and mount namespaces of its own, for Chromium, Electron, rootless podman ([Linux](#linux)) | may set `false` |
 
@@ -139,35 +139,58 @@ layout git itself creates: a worktree whose git dir points back at this
 `.git` file, or a submodule whose `core.worktree` is this project. Anything
 else grants nothing. In Plan mode the git directories stay read-only.
 
+## Local binding
+
+`sandbox.allowLocalBinding` says whether a sandboxed command may listen on a
+local port and whether this machine may connect to it while the command
+runs: a dev server under test, a preview you open in the browser. It is on
+unless set; a project config may set it to `false`, never back to `true`.
+What it does differs per platform:
+
+- **macOS.** The profile otherwise allows direct TCP only to the proxy's own
+  ports, so nothing can listen and a raw TCP client that does not speak
+  proxy protocols (`libpq`, database CLIs) cannot reach a loopback service.
+  The key maps to the runtime's `network.allowLocalBinding`: sandboxed bash
+  may bind or accept on local ports and connect to loopback directly;
+  every other host still goes through the allowlist. The runtime cannot
+  separate the two, so turning it on opens loopback services without a
+  prompt. Costs: loopback services are not sandboxed (a Postgres with
+  `trust` authentication on loopback, the `initdb` default, is passwordless
+  superuser access for any sandboxed command, so give the agent its own role
+  and password), bind and inbound are allowed on all interfaces (a `0.0.0.0`
+  dev server is reachable from the LAN while it runs; bind `127.0.0.1`), and
+  a process that backgrounds itself survives the command on macOS with its
+  profile still applied. `false` restores the runtime default: no listening,
+  loopback through the proxy and its prompt only
+  ([troubleshooting.md, macOS loopback services](troubleshooting.md#macos-loopback-services)).
+- **Windows.** The fence stops the sandbox account's outbound connects, not
+  inbound ones, so a listener is reachable from this machine while the
+  command runs and dies with it. That is the `true` behaviour, and it is
+  all the backend can do: `false` is not enforced (Windows Firewall rules
+  need an administrator and do not filter loopback). `/sandbox` and the
+  awareness section say so when a mode sets it.
+- **Linux.** The sandbox has a network namespace of its own, so a sandboxed
+  command may listen but this machine cannot reach it, whatever the key
+  says. Managed jobs will relay declared ports to the host; until then the
+  key has no effect on Linux.
+
+Loopback services on this machine are otherwise reached through the proxy
+like any other host: `localhost` needs the live prompt's approval once per
+session, on every platform ([network.md, Allowlist](network.md#allowlist)).
+
 ## macOS
 
-Two switches the runtime offers only on macOS, grouped under `sandbox.macos`
-with the runtime's own names. Both are off unless set, accepted but without
-effect on Linux and Windows, and settable only in the global config: a
-project may turn one off, never on. Enable them for one mode (a custom
-"Build + DB" mode, say) rather than for every sandboxed mode.
+One switch the runtime offers only on macOS, under `sandbox.macos` with the
+runtime's own name. It is off unless set, accepted but without effect on
+Linux and Windows, and settable only in the global config: a project may
+turn it off, never on. Enable it for one mode (a custom "Build + cloud"
+mode, say) rather than for every sandboxed mode.
 
 ```jsonc
 "sandbox": {
-  "macos": { "allowLocalBinding": true, "enableWeakerNetworkIsolation": true }
+  "macos": { "enableWeakerNetworkIsolation": true }
 }
 ```
-
-**`allowLocalBinding`.** The macOS profile allows direct TCP only to the
-proxy's own ports; every other connection goes through the proxy, and the
-allowlist is enforced there. A raw TCP client that does not speak proxy
-protocols (`libpq`, database CLIs) therefore cannot reach a loopback service,
-and nothing can listen on a port. With the switch on, sandboxed bash may
-connect to loopback directly and bind or accept on local ports; every other
-host still goes through the allowlist. Costs: loopback services are not
-sandboxed (a Postgres with `trust` authentication on loopback, the `initdb`
-default, is passwordless superuser access for any sandboxed command, so give
-the agent its own role and password), bind and inbound are allowed on all
-interfaces (a `0.0.0.0` dev server is reachable from the LAN while it runs;
-bind `127.0.0.1`), and a process that backgrounds itself survives the
-command on macOS with its profile still applied. On Linux the sandbox's
-network namespace has its own loopback and the switch does nothing
-([troubleshooting.md, macOS loopback services](troubleshooting.md#macos-loopback-services)).
 
 **`enableWeakerNetworkIsolation`.** On macOS, Go programs verify TLS
 certificates through the system's `trustd` daemon over Mach IPC, not through
@@ -180,9 +203,8 @@ through a crafted certificate. The runtime calls the switch "weaker network
 isolation" for that reason
 ([troubleshooting.md, macOS Go TLS](troubleshooting.md#macos-go-tls)).
 
-`/sandbox` shows both switches; off macOS it says "no effect here". The
-awareness section tells the model about the loopback carve-out when it is
-on, and about the Go TLS limit when the second switch is off.
+`/sandbox` shows the switch; off macOS it says "no effect here". The
+awareness section tells the model about the Go TLS limit while it is off.
 
 ## Inside roots
 
@@ -322,14 +344,15 @@ fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-re
 - A project on a mapped network drive or a UNC path is refused
   ([troubleshooting.md, Mapped drive or UNC project on Windows](troubleshooting.md#mapped-drive-or-unc-project-on-windows)).
 - Loopback services on the host go through the proxy like any other host,
-  so `localhost` needs the live prompt's approval once per session; there
-  is no `macos`-style loopback switch.
+  so `localhost` needs the live prompt's approval once per session.
 - A sandboxed command can listen on a port, and anything on this machine
   can connect to it while the command runs: the fence stops the account's
   outbound connects, not inbound ones, so a dev server started inside a
   command is reachable from your browser (on Linux the sandbox's loopback is
   its own and it is not). Bind servers to `127.0.0.1`; one bound to
   `0.0.0.0` answers on the LAN as far as Windows Firewall lets it.
+  `sandbox.allowLocalBinding: false` cannot be enforced here
+  ([Local binding](#local-binding)).
 - Background processes die with the command here too: the runner holds them
   in a job object, so a server has to be started and used within one
   command (`server & sleep 30; curl ...; kill %1`).
@@ -343,7 +366,7 @@ the revocation workaround.
 | Platform | Sandbox | Notes |
 |---|---|---|
 | Linux, WSL2 | bubblewrap plus a seccomp write observer | needs `bubblewrap`, `socat`, `ripgrep` on `PATH`; Ubuntu 24.04 and newer need an AppArmor exception ([troubleshooting.md](troubleshooting.md#bubblewrap-namespaces)); programs that sandbox themselves need the [Linux](#linux) switch |
-| macOS | `sandbox-exec` | no extra packages; globs allowed in the path lists; loopback services and Go TLS verification need the [macOS](#macos) switches |
+| macOS | `sandbox-exec` | no extra packages; globs allowed in the path lists; [local binding](#local-binding) opens loopback directly; Go TLS verification needs the [macOS](#macos) switch |
 | WSL1 | none | no user namespaces; reported as unsupported, the sandboxed modes prompt instead |
 | Windows | the runtime's native backend (alpha): a separate local account, a firewall rule keyed on it, NTFS permission entries | needs Git for Windows and one elevated `/sandbox install`; see [Windows](#windows). Until then the sandboxed modes prompt instead |
 

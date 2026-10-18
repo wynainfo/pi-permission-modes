@@ -114,6 +114,15 @@ export interface SandboxProfile {
    */
   askOnBlockedHost?: boolean;
   /**
+   * A sandboxed command may listen on local ports and this machine may
+   * connect to them while the command runs (default true). macOS: also
+   * direct TCP to loopback from sandboxed bash, past the proxy (the
+   * runtime's `network.allowLocalBinding`). Linux: no effect until managed
+   * jobs (the sandbox's loopback is its own). Windows: `false` cannot be
+   * enforced. Project configs may set false, never true.
+   */
+  allowLocalBinding?: boolean;
+  /**
    * Roots the bash escape heuristic treats as inside: a path under one (a
    * remote path in `ssh nas ls /mnt/user`, say) is not an out-of-project
    * escape, so the command runs sandboxed as usual instead of prompting and
@@ -123,7 +132,7 @@ export interface SandboxProfile {
    */
   insideRoots?: string[];
   /**
-   * macOS-only runtime options, forwarded to sandbox-runtime under its own
+   * macOS-only runtime options, forwarded to sandbox-runtime under their own
    * names and without effect on other platforms. Off unless set. Project
    * configs may set a key to false, never to true.
    */
@@ -147,14 +156,12 @@ export const LINUX_KEYS = ["allowNestedUserNamespaces"] as const;
 
 /** The runtime's macOS-only switches a mode may opt into (`sandbox.macos`). */
 export interface MacosOptions {
-  /** Direct loopback TCP plus local bind/inbound (`network.allowLocalBinding`). */
-  allowLocalBinding?: boolean;
   /** Let Go programs reach trustd for TLS verification (`enableWeakerNetworkIsolation`). */
   enableWeakerNetworkIsolation?: boolean;
 }
 
 /** The keys of `sandbox.macos`, for the loader and the status line. */
-export const MACOS_KEYS = ["allowLocalBinding", "enableWeakerNetworkIsolation"] as const;
+export const MACOS_KEYS = ["enableWeakerNetworkIsolation"] as const;
 
 /** One named mode. */
 export interface ModeDef {

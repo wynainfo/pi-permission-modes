@@ -77,6 +77,7 @@
         "enabled": { "type": "boolean", "description": "false = run bash unsandboxed (YOLO-style)." },
         "writable": { "type": "boolean", "description": "false = bash runs read-only (Plan-style)." },
         "askOnBlockedHost": { "type": "boolean", "description": "Ask the user live when bash tries a host outside the allowlist (default true). false = silent deny. Projects may set false, never true." },
+        "allowLocalBinding": { "type": "boolean", "description": "A sandboxed command may listen on local ports and this machine may connect to them while the command runs (default true). macOS: also direct loopback TCP from sandboxed bash, past the proxy (database drivers). Linux: no effect until managed jobs. Windows: false is not enforced. Projects may set false, never true." },
         "allowWrite": { "type": "array", "items": { "type": "string" } },
         "denyWrite": { "type": "array", "items": { "type": "string" } },
         "denyRead": { "type": "array", "items": { "type": "string" } },
@@ -95,7 +96,6 @@
           "additionalProperties": false,
           "description": "macOS-only runtime options, off unless set and without effect elsewhere. Projects may set a key to false, never true.",
           "properties": {
-            "allowLocalBinding": { "type": "boolean", "description": "Direct loopback TCP plus binding local ports from sandboxed bash (database drivers, dev servers). Loopback services are not sandboxed; a 0.0.0.0 server is LAN-reachable." },
             "enableWeakerNetworkIsolation": { "type": "boolean", "description": "Let Go programs (gh, kubectl, terraform, gcloud) verify TLS by allowing the trustd lookup. trustd fetches revocation and issuer URLs outside the proxy, so this is an exfiltration channel." }
           }
         },

@@ -101,10 +101,11 @@ you can rely on it appropriately. The reference for every setting is in
   allowlist, exactly like approving an out-of-project command. "Allow forever"
   persists to the global config against the stock+global base - a project's
   tighten-only intersection is never baked in.
-- **The macOS switches widen the sandbox on purpose.** `sandbox.macos` is
-  off unless set, global-config only (a project may turn a switch off, never
-  on), and without effect elsewhere. `allowLocalBinding` lets sandboxed bash
-  dial loopback directly and bind or accept on all local interfaces: the
+- **Local binding is on by default, and on macOS it opens loopback.**
+  `sandbox.allowLocalBinding` (default true; a project may set it to false,
+  never back to true) lets a sandboxed command listen on a local port that
+  this machine can reach while the command runs. On macOS the runtime cannot
+  grant that without also letting sandboxed bash dial loopback directly: the
   resolved-address guard above governs the proxy path, this is a separate,
   explicit path past it. Loopback services are not sandboxed, so containment
   becomes the weaker of the sandbox and the service's own authentication
@@ -113,12 +114,19 @@ you can rely on it appropriately. The reference for every setting is in
   password, never `trust`); a `0.0.0.0` server is LAN-reachable while it
   runs (bind `127.0.0.1`); and on macOS a process that backgrounds itself
   survives the command with its profile still applied, so a bound port does
-  not close with the command. `enableWeakerNetworkIsolation` allows the
-  `trustd` lookup Go programs need for TLS verification; `trustd` fetches
-  revocation and issuer URLs named in a certificate the sandboxed process
-  presents, outside the proxy and the allowlist, which is an exfiltration
-  channel the runtime itself warns about. Enable either for one mode and
-  only where the workflow needs it.
+  not close with the command. Set it to false for the modes that work next
+  to a trusting loopback service. On Windows the inbound side is always
+  open (the fence filters outbound connects only), so false is reported
+  as not enforced; on Linux the sandbox's loopback is its own and nothing
+  is reachable either way ([docs/sandbox.md, Local binding](docs/sandbox.md#local-binding)).
+- **The macOS switch widens the sandbox on purpose.** `sandbox.macos` is
+  off unless set, global-config only (a project may turn the switch off,
+  never on), and without effect elsewhere. `enableWeakerNetworkIsolation`
+  allows the `trustd` lookup Go programs need for TLS verification; `trustd`
+  fetches revocation and issuer URLs named in a certificate the sandboxed
+  process presents, outside the proxy and the allowlist, which is an
+  exfiltration channel the runtime itself warns about. Enable it for one
+  mode and only where the workflow needs it.
 - **The Linux switch widens the sandbox on purpose.** `sandbox.linux.allowNestedUserNamespaces`
   is off unless set, global-config only, and lets a sandboxed command create
   user and mount namespaces of its own, which runtime 0.0.80 and newer refuse
@@ -199,9 +207,9 @@ you can rely on it appropriately. The reference for every setting is in
   connects only, so a server a sandboxed command starts is reachable from
   the host while the command runs (previews, tests), and ends with it. The
   cost to know: bound to `0.0.0.0` it answers on the LAN as far as Windows
-  Firewall allows, so servers belong on `127.0.0.1`. Linux (private network
-  namespace) and macOS (without `allowLocalBinding`) do not reach such a
-  server from the host today; parity is planned with managed jobs.
+  Firewall allows, so servers belong on `127.0.0.1`. macOS reaches such a
+  server through `sandbox.allowLocalBinding` (on by default); Linux (private
+  network namespace) does not today; parity is planned with managed jobs.
 - **Pinned directories on Linux.** Every existing ancestor of a path the
   sandbox protects (a denied read, a mandatory-deny dotfile, the runtime's
   own binds) is a mount point inside the sandbox. Renaming or removing such a

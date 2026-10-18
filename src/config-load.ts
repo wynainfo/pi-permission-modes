@@ -99,6 +99,7 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
       case "enabled":
       case "writable":
       case "askOnBlockedHost":
+      case "allowLocalBinding":
         if (typeof v === "boolean") out[k] = v;
         else drop(k);
         break;
@@ -115,8 +116,8 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
           drop(k);
           break;
         }
-        // An unknown nested key must not silently do nothing (a runtime-shaped
-        // `network.allowLocalBinding` here belongs under `macos`).
+        // An unknown nested key must not silently do nothing (the runtime-shaped
+        // `network.allowLocalBinding` is the top-level `allowLocalBinding` here).
         for (const nk of Object.keys(v)) {
           if (nk !== "allowedDomains" && nk !== "deniedDomains") onError(`permission-mode: ignoring unknown sandbox.network field "${nk}" in ${where}`);
         }
@@ -239,7 +240,8 @@ export function profileToConfig(p: SandboxProfile): SandboxConfig {
     network: {
       allowedDomains: p.network?.allowedDomains,
       deniedDomains: p.network?.deniedDomains ?? [],
-      ...(p.macos?.allowLocalBinding === true ? { allowLocalBinding: true } : {}),
+      // Default true; the runtime reads the key on macOS only.
+      ...(p.allowLocalBinding !== false ? { allowLocalBinding: true } : {}),
     },
     ...(p.macos?.enableWeakerNetworkIsolation === true ? { enableWeakerNetworkIsolation: true } : {}),
     ...(p.linux?.allowNestedUserNamespaces === true ? { allowNestedUserNamespaces: true } : {}),
@@ -507,6 +509,10 @@ function tightenSandbox(base: SandboxProfile, rawOver: unknown, where: string, o
   }
   if (over.writable === false) result.writable = false; // can force read-only, never re-enable writes
   if (over.askOnBlockedHost === false) result.askOnBlockedHost = false; // silent-deny is stricter than asking
+  if (over.allowLocalBinding === false) result.allowLocalBinding = false; // closing local ports is stricter
+  if (over.allowLocalBinding === true && base.allowLocalBinding === false) {
+    onError(`permission-mode: project config cannot enable sandbox.allowLocalBinding; ignoring (see ${docRef("projectConfig")})`);
+  }
   if (over.macos) {
     // Each switch opens something, so a project may only turn one OFF.
     // Repeating the inherited value is a harmless no-op; `true` over an

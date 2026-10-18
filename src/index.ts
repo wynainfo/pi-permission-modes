@@ -51,7 +51,7 @@ import path from "node:path";
 import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 import { withGitHubTokenHelper } from "./git-auth.ts";
 import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
-import { sandboxAwarenessPrompt } from "./awareness.ts";
+import { localBindingNote, sandboxAwarenessPrompt } from "./awareness.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
@@ -711,10 +711,9 @@ export default async function (pi: ExtensionAPI) {
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
+          `Local binding: ${c.network.allowLocalBinding ? "on" : "off"}${localBindingNote(Boolean(c.network.allowLocalBinding), process.platform)}`,
           ...(m.sandbox.macos || process.platform === "darwin"
-            ? [
-                `macOS options: allowLocalBinding ${c.network.allowLocalBinding ? "on" : "off"}, enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`,
-              ]
+            ? [`macOS options: enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`]
             : []),
           ...(m.sandbox.linux || process.platform === "linux"
             ? [

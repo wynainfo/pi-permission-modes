@@ -62,28 +62,40 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pi's prompt points the model at (writing to them still is). A test keeps every reference
   pointing at an existing heading and every schema key documented. The
   README is the short version now.
-- **`sandbox.macos`: the runtime's macOS-only switches, opt-in per mode.**
-  `allowLocalBinding` lets sandboxed bash reach loopback services and bind
-  local ports (database drivers, dev servers under test); on macOS the
-  profile otherwise allows direct TCP only to the proxy, so no allowlist
-  entry could help. `enableWeakerNetworkIsolation` allows the `trustd`
-  lookup Go programs (`gh`, `kubectl`, `terraform`, `gcloud`) need to verify
-  TLS certificates, which otherwise fails with `x509: OSStatus -26276` and a
-  misleading "token invalid" from `gh`. Both are off unless set, forwarded
-  under the runtime's own names, accepted but without effect on Linux and
-  Windows, and settable only in the global config (a project may turn a
-  switch off, never on). The awareness section tells the model about the
-  loopback carve-out when it is on and about the Go TLS limit when the
-  second switch is off; `/sandbox` shows both. The costs (unsandboxed
-  loopback services, LAN exposure of `0.0.0.0` servers, the `trustd`
-  exfiltration channel) are in SECURITY.md and `docs/sandbox.md`. An unknown
-  key inside `sandbox.network` now warns instead of doing nothing. Requested
-  by [@MagneticNeedle](https://github.com/MagneticNeedle) in
-  [#18](https://github.com/wynainfo/pi-permission-modes/issues/18) and by
+- **`sandbox.allowLocalBinding`: a server a sandboxed command starts is
+  reachable from this machine.** One top-level key with one meaning on
+  every platform: a sandboxed command may listen on a local port and this
+  machine may connect to it while the command runs (a dev server under
+  test, a preview in the browser); the command's end closes it. On by
+  default; a project config may set it to `false`, never back to `true`.
+  On macOS it maps to the runtime's `network.allowLocalBinding`, which also
+  lets sandboxed bash reach loopback services directly (database drivers,
+  `psql`), past the proxy and its prompt: the profile otherwise allows
+  direct TCP only to the proxy, so no allowlist entry could help. On
+  Windows the inbound side is open regardless, so `false` is reported as
+  not enforced in `/sandbox` and in the awareness section; on Linux the
+  sandbox's loopback is its own, so nothing is reachable from the host
+  until managed jobs relay declared ports. The awareness section tells the
+  model what a server it starts can do on the current platform. The costs
+  (unsandboxed loopback services, LAN exposure of `0.0.0.0` servers) are in
+  SECURITY.md and `docs/sandbox.md`. An unknown key inside `sandbox.network`
+  now warns instead of doing nothing. Requested for macOS by
   [@TheLastFix](https://github.com/TheLastFix) in
   [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
   [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
   tighten-only logic, tests, and security notes this takes over.
+- **`sandbox.macos.enableWeakerNetworkIsolation`: the runtime's macOS-only
+  switch for Go TLS, opt-in per mode.** It allows the `trustd` lookup Go
+  programs (`gh`, `kubectl`, `terraform`, `gcloud`) need to verify TLS
+  certificates, which otherwise fails with `x509: OSStatus -26276` and a
+  misleading "token invalid" from `gh`. Off unless set, forwarded under the
+  runtime's own name, accepted but without effect on Linux and Windows, and
+  settable only in the global config (a project may turn it off, never on).
+  The awareness section tells the model about the Go TLS limit while the
+  switch is off; `/sandbox` shows it. The cost (the `trustd` exfiltration
+  channel) is in SECURITY.md and `docs/sandbox.md`. Requested by
+  [@MagneticNeedle](https://github.com/MagneticNeedle) in
+  [#18](https://github.com/wynainfo/pi-permission-modes/issues/18).
 - **`sandbox.linux.allowNestedUserNamespaces`: opt-in for programs that
   sandbox themselves.** Runtime 0.0.80 keeps a sandboxed command in the
   namespaces made for it, so Chromium and Electron (Playwright, Puppeteer),

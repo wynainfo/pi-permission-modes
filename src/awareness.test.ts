@@ -135,33 +135,56 @@ test("sandbox.linux: the nested-namespace line renders on linux only, and only w
   assert.doesNotMatch(darwin, ns);
 });
 
-test("sandbox.macos: the loopback line and the Go TLS line render on darwin only", () => {
-  const loop = /Loopback is directly reachable/;
+test("sandbox.allowLocalBinding: the server line per platform, the direct-loopback sentence on darwin, the Go TLS line on darwin only", () => {
+  const loop = /Loopback services .* reachable directly/;
+  const listens = /A server you start within a command listens for real/;
+  const inside = /listens inside the sandbox only/;
   const go = /Go programs .* cannot verify TLS/;
-  // Linux: neither line, whatever the flags say.
-  const linux = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true } }), { active: true, platform: "linux" })!;
-  assert.doesNotMatch(linux, loop);
-  assert.doesNotMatch(linux, go);
-  // darwin, stock: no loopback line; the Go TLS line names the trustd denial and its docs section.
+  // Linux: the server is unreachable from the host whatever the setting says; no darwin lines.
+  for (const sb of [{}, { allowLocalBinding: false }]) {
+    const linux = sandboxAwarenessPrompt(mode({}, sb), { active: true, platform: "linux" })!;
+    assert.match(linux, inside);
+    assert.doesNotMatch(linux, listens);
+    assert.doesNotMatch(linux, loop);
+    assert.doesNotMatch(linux, go);
+  }
+  // darwin, stock (local binding on by default): server line, direct loopback; the Go TLS line names the trustd denial and its docs section.
   const stock = sandboxAwarenessPrompt(mode(), { active: true, platform: "darwin" })!;
-  assert.doesNotMatch(stock, loop);
+  assert.match(stock, listens);
+  assert.match(stock, loop);
   assert.match(stock, go);
   assert.match(stock, /docs\/troubleshooting\.md#macos-go-tls/);
-  // darwin, both on: the loopback line in both ask variants, no Go TLS line.
-  const on = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true, enableWeakerNetworkIsolation: true } }), { active: true, platform: "darwin" })!;
+  // darwin, both open: no Go TLS line.
+  const on = sandboxAwarenessPrompt(mode({}, { macos: { enableWeakerNetworkIsolation: true } }), { active: true, platform: "darwin" })!;
   assert.match(on, loop);
   assert.doesNotMatch(on, go);
-  const silent = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true }, askOnBlockedHost: false }), { active: true, platform: "darwin" })!;
+  const silent = sandboxAwarenessPrompt(mode({}, { askOnBlockedHost: false }), { active: true, platform: "darwin" })!;
   assert.match(silent, loop);
   assert.match(silent, /silently unreachable/);
-  // Both lines belong to the filtered branch only.
-  const noNet = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true }, network: undefined }), { active: true, platform: "darwin" })!;
+  // darwin, off: no listening, loopback through the proxy only, with the docs section.
+  const off = sandboxAwarenessPrompt(mode({}, { allowLocalBinding: false }), { active: true, platform: "darwin" })!;
+  assert.doesNotMatch(off, listens);
+  assert.doesNotMatch(off, loop);
+  assert.match(off, /Local binding is off .* cannot listen on a port/);
+  assert.match(off, /docs\/troubleshooting\.md#macos-loopback-services/);
+  // The direct-loopback sentence and the Go TLS line belong to the filtered branch only; the server line stays.
+  const noNet = sandboxAwarenessPrompt(mode({}, { network: undefined }), { active: true, platform: "darwin" })!;
   assert.match(noNet, /Network is unrestricted/);
+  assert.match(noNet, listens);
   assert.doesNotMatch(noNet, loop);
   assert.doesNotMatch(noNet, go);
-  const open = sandboxAwarenessPrompt(mode({}, { macos: { allowLocalBinding: true } }), { active: true, platform: "darwin", networkOpen: true })!;
+  const open = sandboxAwarenessPrompt(mode(), { active: true, platform: "darwin", networkOpen: true })!;
+  assert.match(open, listens);
   assert.doesNotMatch(open, loop);
   assert.doesNotMatch(open, go);
+  // Windows: the server line always (the fence stops outbound connects only); false is named as unenforced.
+  const win = sandboxAwarenessPrompt(mode(), { active: true, platform: "win32" })!;
+  assert.match(win, listens);
+  assert.doesNotMatch(win, /cannot enforce/);
+  assert.doesNotMatch(win, loop);
+  const winOff = sandboxAwarenessPrompt(mode({}, { allowLocalBinding: false }), { active: true, platform: "win32" })!;
+  assert.match(winOff, listens);
+  assert.match(winOff, /Windows cannot enforce/);
 });
 
 test("denyWrite entries are listed when present", () => {
@@ -232,7 +255,7 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   assert.match(home, /git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke/);
   assert.match(home, /docs\/sandbox\.md#windows/);
   assert.match(home, /docs\/troubleshooting\.md#tls-revocation-on-windows/);
-  assert.match(home, /A server you start listens for real: the user can open it in a browser while the command runs/);
+  assert.match(home, /A server you start within a command listens for real: the user can open it in a browser while the command runs/);
   assert.doesNotMatch(sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!, /listens for real/);
   // ~/.ssh is denied beneath the ~ grant: the SSH advice still applies.
   assert.match(home, /SSH keys are unreadable/);

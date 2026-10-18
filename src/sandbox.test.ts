@@ -181,7 +181,7 @@ test("bashCustomConfig: blocks and read-only ride along per command, on top of t
   assert.equal(bashCustomConfig(profile, { extraDenyRead: [] }), undefined);
   const blocked = bashCustomConfig(profile, { extraDenyRead: ["/home/u/secret.txt"] })!;
   assert.deepEqual(blocked.filesystem, { denyRead: ["~/.ssh", "/home/u/secret.txt"], allowWrite: [".", "/tmp/pi"], denyWrite: [] });
-  assert.deepEqual(blocked.network, { allowedDomains: ["a"], deniedDomains: [] });
+  assert.deepEqual(blocked.network, { allowedDomains: ["a"], deniedDomains: [], allowLocalBinding: true });
   const ro = bashCustomConfig(profile, { readOnly: true, keepWritable: ["/tmp/pi/s1"], extraDenyRead: ["/home/u/secret.txt"] })!;
   assert.deepEqual(ro.filesystem, { denyRead: ["~/.ssh", "/home/u/secret.txt"], allowWrite: ["/tmp/pi/s1"], denyWrite: [] });
   assert.deepEqual(bashCustomConfig(profile, { readOnly: true })!.filesystem.allowWrite, []);

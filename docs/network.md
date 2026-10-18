@@ -26,8 +26,9 @@ pointed at local services through DNS. `localhost` (and names under
 in the allowlist or for the session, lets sandboxed bash reach services
 on this machine through the proxy (a dev server on port 8000, say), on
 every platform; an IP literal such as `127.0.0.1:8000` works as an entry
-too. Only clients that do not speak to a proxy (database drivers, raw
-TCP) need macOS's `allowLocalBinding` for loopback.
+too. Clients that do not speak to a proxy (database drivers, raw TCP)
+reach loopback on macOS through `sandbox.allowLocalBinding`, on by default
+([sandbox.md, Local binding](sandbox.md#local-binding)).
 
 ## Requesting access
 

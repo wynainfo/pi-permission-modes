@@ -99,14 +99,15 @@ deny network-outbound ... 127.0.0.1:5432
 deny network-bind
 ```
 
-On macOS the sandbox allows direct TCP only to its proxy, so a raw TCP client
-(a database driver, `psql`, `redis-cli`) cannot reach a service on loopback,
-and nothing can listen on a port. No allowlist entry changes that
-(`localhost` included). The fix is the mode's
-`sandbox.macos.allowLocalBinding` switch, with the costs described in
-[sandbox.md, macOS](sandbox.md#macos). On Linux this does not apply: the
-sandbox's network namespace has its own loopback, and a service on the host's
-loopback is unreachable by design.
+A mode with `sandbox.allowLocalBinding` set to `false` (it is on unless
+set; a project config may turn it off). On macOS the sandbox then allows
+direct TCP only to its proxy, so a raw TCP client (a database driver,
+`psql`, `redis-cli`) cannot reach a service on loopback, and nothing can
+listen on a port. No allowlist entry changes that (`localhost` included).
+The fix is `true` again, with the costs described in
+[sandbox.md, Local binding](sandbox.md#local-binding). On Linux this does
+not apply: the sandbox's network namespace has its own loopback, and a
+service on the host's loopback is unreachable by design.
 
 ## Nested sandboxes on Linux
 

@@ -67,7 +67,7 @@ export interface AwarenessOptions {
   /** This session's scratch directory (scratch.ts); TMPDIR points there inside bash. */
   scratchDir?: string;
   /** `process.platform`; the macOS-only lines render only on "darwin", the Windows ones on "win32". Injected so tests cover each. */
-  platform?: string;
+  platform?: NodeJS.Platform;
 }
 
 /** The one-sentence scratch-directory instruction, shared by every variant. */
@@ -86,6 +86,34 @@ const renderWritePath = (p: string): string => (p === "." || p === "./" ? "the p
  * unsandboxed mode WITH a scratch directory gets a short section naming it:
  * keeping temp files per session is worth it even when nothing confines bash.
  */
+/**
+ * The `/sandbox` suffix for the local-binding line: what the setting means
+ * on this platform.
+ */
+export function localBindingNote(on: boolean, platform: NodeJS.Platform): string {
+  if (platform === "win32") return on ? " (a server a command starts is reachable from this machine while the command runs)" : " (not enforced on Windows: a listener is reachable regardless)";
+  if (platform === "darwin") return on ? " (a server a command starts is reachable from this machine while the command runs; loopback is reached directly, past the proxy)" : " (no listening; loopback through the proxy only)";
+  return " (the sandbox's loopback is its own on Linux: a server is reachable from this machine with managed jobs only)";
+}
+
+/**
+ * The awareness line about servers a sandboxed command starts: whether this
+ * machine can reach one, and that it ends with the command.
+ */
+export function localBindingLine(on: boolean, platform: NodeJS.Platform): string {
+  const within = "it ends with the command, so start, use and stop it within one command (`server & sleep 30; curl ...; kill %1`)";
+  if (platform === "linux") {
+    return `- A server you start within a command listens inside the sandbox only: this machine cannot reach it (the sandbox has a loopback of its own), and ${within}.`;
+  }
+  if (on || platform === "win32") {
+    return (
+      `- A server you start within a command listens for real: the user can open it in a browser while the command runs, and ${within}; bind it to 127.0.0.1.` +
+      (on ? "" : " (This mode sets sandbox.allowLocalBinding false, which Windows cannot enforce: a listener is reachable regardless.)")
+    );
+  }
+  return `- Local binding is off in this mode: a sandboxed command cannot listen on a port, and a raw TCP client (database drivers, psql, redis-cli) cannot reach a service on localhost; proxy-aware clients (curl, package managers) reach localhost after the user's approval (see ${docRef("macosLoopback")}).`;
+}
+
 export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): string | undefined {
   if (mode.injectSandboxInfo === false) return undefined;
   const sb = mode.sandbox;
@@ -125,7 +153,8 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   if (sb.denyWrite?.length) {
     lines.push(`- Additionally write-denied: ${sb.denyWrite.join(", ")}.`);
   }
-  const win32 = (opts.platform ?? process.platform) === "win32";
+  const platform = opts.platform ?? process.platform;
+  const win32 = platform === "win32";
   if (win32) {
     // The Windows backend runs commands as another account: reads are what
     // the profile grants, not "everything but the denies".
@@ -138,7 +167,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
         `${home ? "" : `, including programs installed for the user only whose folder is not listed; a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
         ` (see ${docRef("windowsSandbox")}).`,
       `- TLS revocation checks cannot leave the sandbox: git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke, and CRYPT_E_REVOCATION_OFFLINE (0x80092013) from another schannel tool means the same. PowerShell's Invoke-WebRequest, gh, Node and Python are unaffected (see ${docRef("windowsRevocation")}).`,
-      "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session. A server you start listens for real: the user can open it in a browser while the command runs, and it ends with the command, so start, use and stop it within one command (`server & sleep 30; curl ...; kill %1`); bind it to 127.0.0.1.",
+      "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session.",
     );
   }
   if (sb.denyRead?.length) {
@@ -169,12 +198,12 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     );
   } else {
     const domains = [...new Set([...(sb.network?.allowedDomains ?? []), ...(opts.sessionDomains ?? [])])];
-    const darwin = (opts.platform ?? process.platform) === "darwin";
-    // The loopback carve-out bypasses the proxy (macOS only): say so, or the
+    const darwin = platform === "darwin";
+    // Local binding opens loopback past the proxy on macOS: say so, or the
     // model rediscovers it through failed commands.
     const loopback =
-      darwin && sb.macos?.allowLocalBinding
-        ? " Loopback is directly reachable and local ports can be bound (bind servers to 127.0.0.1); everything else still goes through the allowlist."
+      darwin && sb.allowLocalBinding !== false
+        ? " Loopback services (a database on localhost) are reachable directly, without the proxy or a prompt; everything else still goes through the allowlist."
         : "";
     const scope = `${
       domains.length
@@ -194,7 +223,8 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       );
     }
   }
-  if ((opts.platform ?? process.platform) === "linux" && !sb.linux?.allowNestedUserNamespaces) {
+  lines.push(localBindingLine(sb.allowLocalBinding !== false, platform));
+  if (platform === "linux" && !sb.linux?.allowNestedUserNamespaces) {
     // The runtime refuses nested user namespaces since 0.0.80; the programs
     // that need one fail with EPERM and a message that does not name the cause.
     lines.push(
