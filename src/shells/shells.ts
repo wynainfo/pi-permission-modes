@@ -17,6 +17,9 @@ import path from "node:path";
 
 export type ShellStatus = "running" | "exited" | "killed" | "stopped" | "failed";
 
+/** The stop reason of a shell ended because the sandbox restarts under another profile (status `stopped`, not `killed`). */
+export const PROFILE_CHANGED_REASON = "sandbox profile changed";
+
 /** What is persisted per shell (`meta.json`), and what the tools and `/shells` show. */
 export interface ShellRecord {
   id: string;
@@ -435,7 +438,7 @@ export class ShellManager {
     const signal = opts.signal ?? "TERM";
     const grace = opts.graceSeconds ?? DEFAULT_GRACE_SECONDS;
     const by = opts.by ?? "kill_shell";
-    if (!opts.notice) live.ordered = opts.reason === "sandbox profile changed" ? "stopped" : "killed";
+    if (!opts.notice) live.ordered = opts.reason === PROFILE_CHANGED_REASON ? "stopped" : "killed";
     if (this.platform === "win32") {
       r.reason = opts.reason ?? `${by}, forced`;
       (this.opts.killTree ?? ((c) => c.kill("SIGKILL")))(live.child);
@@ -483,8 +486,26 @@ export class ShellManager {
   /** Stop every running shell (shutdown, a profile change): SIGTERM, SIGKILL after `graceSeconds`. */
   async stopAll(reason: string, graceSeconds = 5): Promise<ShellRecord[]> {
     const stopped = this.running();
-    await Promise.all(stopped.map((r) => this.stop(r.id, { signal: "TERM", graceSeconds, reason, by: reason })));
+    await Promise.all(
+      stopped.map(async (r) => {
+        await this.stop(r.id, { signal: "TERM", graceSeconds, reason, by: reason });
+        // The caller restarts or ends the session next: wait for the close
+        // (SIGKILL follows after the grace), so no shell outlives what comes.
+        const live = this.shells.get(r.id);
+        if (live && r.status === "running") await Promise.race([live.closed, new Promise((res) => setTimeout(res, graceSeconds * 1000 + 1500))]);
+      }),
+    );
     return stopped;
+  }
+
+  /**
+   * Point the callbacks (and the limit) at a new extension instance: after
+   * a `/reload` the previous instance hands its manager over with the shells
+   * still running (index.ts Handoff), and its closures are stale.
+   */
+  rebind(opts: Partial<Pick<ShellManagerOptions, "notify" | "onChange" | "killTree" | "maxConcurrent">>): this {
+    Object.assign(this.opts, opts);
+    return this;
   }
 
   /**

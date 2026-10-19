@@ -21,8 +21,8 @@ bash. `timeout` is the shell's kill timer in seconds (none by default).
 The call returns within half a second: the shell's id and log path, or the
 exit code when the command already ended (a typo, a missing program). The
 shell keeps running while the model works on; each shell holds the sandbox
-it started with, so an in-place mode switch does not touch it
-([sandbox.md, How a profile reaches the runtime](sandbox.md#how-a-profile-reaches-the-runtime)).
+it started with, so an in-place mode switch does not touch it, and a switch
+that restarts the runtime asks first ([Lifetime](#lifetime)).
 
 Refused, always with a sentence and never as a silent foreground run: shells
 disabled in the config, the concurrency limit reached.
@@ -70,11 +70,28 @@ lists the shells of the earlier process as ended; nothing is re-attached.
 
 ## Lifetime
 
-Background shells end with the session: on quit, on switching or forking
-the session, and on `/reload`. The sandbox they run in cannot survive a
-runtime restart (a restart detaches a running sandbox's protections), so
-nothing is left behind. A mode switch that needs such a restart asks you
-first while shells run ([sandbox.md](sandbox.md#how-a-profile-reaches-the-runtime)).
+Background shells end with the session: on quit, and when the session is
+replaced (`/new`, `/resume`, `/fork`). The sandbox they run in cannot
+survive a runtime restart (a restart detaches a running sandbox's
+protections), so nothing is left behind, and the records show
+`killed (session ended)` when the session is resumed later.
+
+A mode switch is applied in place where the runtime allows it, and a shell
+keeps the sandbox it started with. A switch that needs a runtime restart
+(on Windows every change of profile; elsewhere one between a mode with a
+network allowlist and one without, see
+[sandbox.md](sandbox.md#how-a-profile-reaches-the-runtime)) asks you first
+while shells run. No keeps the mode and the shells; Yes stops them (status
+`stopped (sandbox profile changed)`, the model is told in its next turn)
+and switches. The same question precedes `/sandbox install` on Windows.
+Headless, the shells are stopped without asking.
+
+`/reload` keeps running shells: the new extension instance takes them over
+with the runtime they run under, and `/shells` lists them as before. When
+the reload picked up a changed configuration whose profile would need a
+restart, the shells' profile stays in force for every command until the
+last of them ends; the footer says `(sandbox profile pending: N shell(s))`,
+`/sandbox` names it, and `/shells stop all` applies the new profile at once.
 
 ## Configuration
 

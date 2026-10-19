@@ -453,3 +453,60 @@ test("controller: a runtime without updateConfig, and the Windows backend, resta
   assert.equal(win.calls[0], "reset", "Windows stamps permission entries per session: no in-place update");
   assert.ok(!win.calls.includes("updateConfig"));
 });
+
+test("controller: switchNeedsRestart, a restart held for running shells, retryPending, handoff and adopt", async () => {
+  const { c, calls, profile } = switchHarness({ filtered: true });
+  assert.equal(c.switchNeedsRestart(profile), false, "unchanged profile");
+  assert.equal(c.switchNeedsRestart({ ...profile, allowWrite: [".", "/other"] }), false, "same network shape: in place");
+  assert.equal(c.switchNeedsRestart({ ...profile, enabled: false }), false, "a non-sandboxing profile applies nothing");
+  const unfiltered = { ...profile, network: undefined };
+  assert.equal(c.switchNeedsRestart(unfiltered), true, "filtered to unfiltered restarts");
+  const win = switchHarness({ win: true });
+  assert.equal(win.c.switchNeedsRestart({ ...win.profile, allowWrite: [".", "/x"] }), true, "Windows restarts on any change");
+
+  // A restart while background shells run is held: the applied profile stays, nothing is reset.
+  Object.assign(c, { shells: 1 });
+  await c.applyProfile(unfiltered);
+  assert.equal(c.pendingProfile, unfiltered);
+  assert.deepEqual(calls, []);
+  assert.ok(c.ready);
+  assert.equal(c.retryPending(), undefined, "still running: nothing to retry");
+  Object.assign(c, { shells: 0 });
+  await c.retryPending();
+  assert.equal(c.pendingProfile, undefined);
+  assert.deepEqual(calls, ["reset", "initialize"]);
+  assert.equal(c.lastSwitch, "full");
+
+  // Handoff: the runtime leaves this controller initialized as it is; its own reset() is a no-op afterwards.
+  const parked = (await c.handoff())!;
+  assert.ok(parked);
+  assert.equal(c.ready, false);
+  assert.equal(c.sandboxManager, null);
+  await c.reset();
+  assert.deepEqual(calls, ["reset", "initialize"], "no reset after the handoff");
+  assert.equal(await c.handoff(), undefined, "nothing left to hand over");
+
+  // Adopt with the same profile: ready at once, nothing applied; the adopted shells count.
+  let adopted = 1;
+  const base = { cwd: process.cwd(), noSandbox: false, hasUI: false, notify: () => {}, platform: "linux" as const, loadRuntime: async () => assert.fail("the adopted runtime is used, none is loaded") };
+  const n = new SandboxController();
+  await n.init({ ...base, profile: unfiltered, adopt: parked, adoptedShells: () => adopted });
+  assert.ok(n.ready);
+  assert.equal(n.shellsRunning, 1);
+  assert.equal(n.pendingProfile, undefined, "same key: nothing to apply");
+  assert.deepEqual(calls, ["reset", "initialize"]);
+
+  // Adopt with a changed profile (the config changed before the reload): pending until the shells end.
+  const m = new SandboxController();
+  const changed = { ...unfiltered, network: { allowedDomains: ["a.example"] } };
+  await m.init({ ...base, profile: changed, adopt: (await n.handoff())!, adoptedShells: () => adopted });
+  assert.ok(m.ready);
+  assert.equal(m.pendingProfile, changed);
+  assert.deepEqual(calls, ["reset", "initialize"], "the shells' profile stays in force");
+  adopted = 0;
+  assert.equal(m.shellsRunning, 0);
+  await m.retryPending();
+  assert.equal(m.pendingProfile, undefined);
+  assert.deepEqual(calls, ["reset", "initialize", "reset", "initialize"]);
+  assert.equal(m.lastSwitch, "full");
+});

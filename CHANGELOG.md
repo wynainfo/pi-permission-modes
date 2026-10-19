@@ -22,9 +22,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in the next turn (`note`), or nothing (`none`). `/shells` lists, stops,
   reads and cleans up; the footer shows `Shells: N`. A shell keeps the
   sandbox it started with (an in-place mode switch does not touch it) and
-  its launch allowlist (registered with the runtime under its own id), and
-  ends with the session. Config block `shells` (`enabled`, `maxConcurrent`,
-  `notify`); a project may only tighten. Documented in `docs/shells.md`.
+  its launch allowlist (registered with the runtime under its own id). A
+  switch that must restart the runtime (Windows: every change; elsewhere
+  between a filtered and an unfiltered network) asks before it stops them;
+  No keeps the mode. `/reload` keeps them: the new extension instance
+  takes over the shells and the runtime they run under, and a changed
+  profile waits until the last shell ends (the footer and `/sandbox` say
+  so; `/shells stop all` applies it now). Otherwise shells end with the
+  session. Config block `shells` (`enabled`, `maxConcurrent`, `notify`); a
+  project may only tighten. Documented in `docs/shells.md`.
 - **Windows: the sandboxed modes contain bash on native Windows (alpha).**
   The runtime's Windows backend runs each command as a separate local
   account (`srt-sandbox`) in Git Bash, behind a firewall rule keyed on that

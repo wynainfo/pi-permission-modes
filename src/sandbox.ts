@@ -731,6 +731,18 @@ export function bashCustomConfig(profile: SandboxProfile, opts: BashOpsOptions, 
 /** How the caller surfaces warnings (e.g. a TUI notify), only used when there's a UI. */
 type Notify = (message: string) => void;
 
+/** What a controller hands to its successor across a `/reload` (see `handoff()`). */
+export interface AdoptedRuntime {
+  manager: SandboxManagerType;
+  /** The runtime module (kept on Windows for its helper exports). */
+  rt: SandboxRuntime | undefined;
+  appliedKey: string;
+  appliedCfg: SandboxConfig;
+  win?: WindowsBackend;
+  extras: RuntimeExtras | undefined;
+  dependencyWarnings: string[];
+}
+
 export interface InitOptions {
   cwd: string;
   noSandbox: boolean;
@@ -754,6 +766,16 @@ export interface InitOptions {
   platform?: NodeJS.Platform;
   /** Loads the runtime module (injected in tests). */
   loadRuntime?: () => Promise<SandboxRuntime>;
+  /**
+   * A runtime handed over by the previous extension instance of this process
+   * (a `/reload` while background shells run, see Handoff in index.ts): the
+   * controller uses it as it stands instead of resetting it, so the shells
+   * keep their mounts and their proxy. The profile it was initialized with
+   * stays in force; a different one is applied once the last shell ends.
+   */
+  adopt?: AdoptedRuntime;
+  /** With `adopt`: how many background shells still run under the adopted runtime (they belong to the caller's ShellManager). */
+  adoptedShells?: () => number;
   /** Windows backend hooks (injected in tests). */
   windows?: WindowsHooks;
   /**
@@ -908,6 +930,12 @@ export class SandboxController {
   lastResetMs: number | undefined;
   /** How the most recent profile switch was applied: in place (`updateConfig`) or with a runtime restart. */
   lastSwitch: "hot" | "full" | undefined;
+  /**
+   * A profile whose restart waits for the running background shells to end
+   * (set by a reload that found a changed config; cleared by `retryPending`).
+   * The applied profile stays in force for every command meanwhile.
+   */
+  pendingProfile: SandboxProfile | undefined;
   private identity: { name?: string; email?: string } | undefined;
 
   /** True while a profile switch is queued or running (the footer marks it). */
@@ -968,10 +996,12 @@ export class SandboxController {
   private idleWaiters: Array<() => void> = [];
   /** Background shells running under this runtime; counted apart from `inflight`: a switch never waits for them. */
   private shells = 0;
+  /** Shells started by the previous extension instance under an adopted runtime (their close hooks count down there). */
+  private adoptedShells: (() => number) | undefined;
 
   /** Background shells running under this runtime (a restart would strip their mounts and network). */
   get shellsRunning(): number {
-    return this.shells;
+    return this.shells + (this.adoptedShells?.() ?? 0);
   }
 
   private shellStarted(): () => void {
@@ -1054,11 +1084,40 @@ export class SandboxController {
     this.keepWritable = opts.keepWritable ?? [];
     this.switchDelayMs = opts.switchDelayMs ?? ((opts.platform ?? process.platform) === "win32" ? 1000 : 0);
     this.lastInit = opts;
+    this.pendingProfile = undefined;
+    this.adoptedShells = undefined;
 
     if (noSandbox) {
       this.disabled = true;
       this.degraded = true;
       this.profile = profile;
+      return;
+    }
+
+    if (opts.adopt) {
+      // The previous instance's runtime, still initialized, with background
+      // shells running under it: no reset (it would strip their mounts and
+      // network). Its profile stays applied; the new mode's profile is a
+      // no-op when its key matches and otherwise waits for the shells.
+      const a = opts.adopt;
+      this.manager = a.manager;
+      this.rt = a.rt;
+      this.win = a.win;
+      this.extras = a.extras;
+      this.dependencyWarnings = a.dependencyWarnings;
+      this.appliedKey = a.appliedKey;
+      this.appliedCfg = a.appliedCfg;
+      this.runtimeInitialized = true;
+      this.ready = true;
+      this.adoptedShells = opts.adoptedShells;
+      // No cycling to wait for at a session start: apply (or hold) at once.
+      const delay = this.switchDelayMs;
+      this.switchDelayMs = 0;
+      try {
+        await this.applyProfile(profile);
+      } finally {
+        this.switchDelayMs = delay;
+      }
       return;
     }
 
@@ -1315,32 +1374,22 @@ export class SandboxController {
     }
 
     const win = this.win;
-    let cfg = withRuntimeExtras(profileToConfig(profile), this.extras);
-    // Windows cannot change grants per command (only per-exec denies), so a
-    // read-only mode (Plan) is applied here: the session runs without project
-    // writes until the next mode switch re-initializes.
-    if (win && !profile.writable) cfg = readOnlyOverride(cfg, this.keepWritable);
+    const { cfg, key, grants } = this.computeConfig(profile);
     if (win) {
-      const env = this.lastInit?.windows?.env ?? process.env;
-      const fs = cfg.filesystem;
-      win.grants = [...(fs.allowRead ?? []), ...fs.allowWrite].map((p) => winAbs(p, this.cwd, env));
+      win.grants = grants;
       // The user's global git config applies inside the sandbox as it does on
       // Linux: unless the mode masks ~/.gitconfig (a strict home).
+      const env = this.lastInit?.windows?.env ?? process.env;
       if (win.gitConfig && !gitConfigMasked(profile, env)) win.extraEnv.GIT_CONFIG_GLOBAL = win.gitConfig.replace(/\\/g, "/");
       else delete win.extraEnv.GIT_CONFIG_GLOBAL;
-      cfg = {
-        ...cfg,
-        filesystem: {
-          ...fs,
-          denyRead: deniesInsideGrants(fs.denyRead, win.grants, this.cwd, env),
-          denyWrite: deniesInsideGrants(fs.denyWrite, win.grants, this.cwd, env),
-        },
-      };
     }
-    const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem });
-    if (this.ready && key === this.appliedKey) return;
+    if (this.ready && key === this.appliedKey) {
+      this.pendingProfile = undefined;
+      return;
+    }
 
     if (!this.needsRestart(cfg) && this.updateInPlace(cfg)) {
+      this.pendingProfile = undefined;
       this.appliedKey = key;
       this.appliedCfg = cfg;
       this.lastSwitch = "hot";
@@ -1348,6 +1397,15 @@ export class SandboxController {
       return;
     }
 
+    if (this.shellsRunning > 0 && this.runtimeInitialized) {
+      // A restart while background shells run would strip their mounts and
+      // network. The caller (setMode) stops them first after asking the
+      // user; a reload has no UI, so the profile waits for the last shell
+      // (retryPending) and the applied one stays in force meanwhile.
+      this.pendingProfile = profile;
+      return;
+    }
+    this.pendingProfile = undefined;
     if (this.inflight > 0) {
       // reset() force-removes every mount point and stops the proxy: a
       // command still running would lose its denies and its network. Wait
@@ -1414,6 +1472,79 @@ export class SandboxController {
         );
       }
     }
+  }
+
+  /**
+   * The runtime config for `profile` and its identity key, without touching
+   * the runtime or the Windows backend (the caller applies `grants`). Windows
+   * cannot change grants per command (only per-exec denies), so a read-only
+   * mode (Plan) is folded in here: the session runs without project writes
+   * until the next mode switch re-initializes.
+   */
+  private computeConfig(profile: SandboxProfile): { cfg: SandboxConfig; key: string; grants: string[] } {
+    const win = this.win;
+    let cfg = withRuntimeExtras(profileToConfig(profile), this.extras);
+    let grants: string[] = [];
+    if (win && !profile.writable) cfg = readOnlyOverride(cfg, this.keepWritable);
+    if (win) {
+      const env = this.lastInit?.windows?.env ?? process.env;
+      const fs = cfg.filesystem;
+      grants = [...(fs.allowRead ?? []), ...fs.allowWrite].map((p) => winAbs(p, this.cwd, env));
+      cfg = {
+        ...cfg,
+        filesystem: {
+          ...fs,
+          denyRead: deniesInsideGrants(fs.denyRead, grants, this.cwd, env),
+          denyWrite: deniesInsideGrants(fs.denyWrite, grants, this.cwd, env),
+        },
+      };
+    }
+    return { cfg, key: JSON.stringify({ n: cfg.network, f: cfg.filesystem }), grants };
+  }
+
+  /**
+   * Whether switching to `profile` would restart the runtime (and so end the
+   * background shells running under it): a changed profile on Windows, or a
+   * change between a filtered and an unfiltered network elsewhere. False for
+   * a non-sandboxing profile (nothing is applied), an unchanged one, or a
+   * change an in-place update covers. For setMode's confirm.
+   */
+  switchNeedsRestart(profile: SandboxProfile): boolean {
+    if (this.degraded || !this.manager || !profile.enabled || !this.runtimeInitialized) return false;
+    const { cfg, key } = this.computeConfig(profile);
+    if (this.ready && key === this.appliedKey) return false;
+    return this.needsRestart(cfg);
+  }
+
+  /** Apply the pending profile now that the shells it waited for have ended (a no-op otherwise). */
+  retryPending(): Promise<void> | undefined {
+    const pending = this.pendingProfile;
+    if (!pending || this.shellsRunning > 0 || pending !== this.profile) return undefined;
+    return this.applyProfile(pending);
+  }
+
+  /**
+   * Detach the initialized runtime for the next extension instance of this
+   * process (a `/reload` while background shells run): the caller stores it
+   * on `globalThis`; this controller forgets it, so its own reset() is a
+   * no-op. Undefined when there is nothing initialized to hand over.
+   */
+  async handoff(): Promise<AdoptedRuntime | undefined> {
+    await this.applying.catch(() => {}); // a switch in flight lands first
+    if (!this.runtimeInitialized || !this.manager || !this.appliedKey || !this.appliedCfg) return undefined;
+    const a: AdoptedRuntime = {
+      manager: this.manager,
+      rt: this.rt,
+      appliedKey: this.appliedKey,
+      appliedCfg: this.appliedCfg,
+      win: this.win,
+      extras: this.extras,
+      dependencyWarnings: this.dependencyWarnings,
+    };
+    this.runtimeInitialized = false;
+    this.ready = false;
+    this.manager = null;
+    return a;
   }
 
   /**

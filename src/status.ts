@@ -21,7 +21,7 @@ import { networkFiltered, type SandboxController } from "./sandbox.ts";
 export function updateStatus(
   ctx: Pick<ExtensionContext, "ui">,
   mode: ModeDef,
-  sandbox: Pick<SandboxController, "ready" | "warn" | "disabled"> & { switching?: boolean },
+  sandbox: Pick<SandboxController, "ready" | "warn" | "disabled"> & { switching?: boolean; pendingProfile?: unknown },
   networkOpen: boolean,
   shellsRunning = 0,
 ): void {
@@ -31,7 +31,8 @@ export function updateStatus(
   // A profile switch in flight (the runtime re-initializes; on Windows it
   // re-stamps permission entries over the project) is marked: the mode has
   // changed, the sandbox follows in a moment.
-  if (enforcing && sandbox.switching) status += " " + t.fg("warning", "(applying sandbox profile...)");
+  if (enforcing && sandbox.pendingProfile) status += " " + t.fg("warning", `(sandbox profile pending: ${shellsRunning} shell(s))`);
+  else if (enforcing && sandbox.switching) status += " " + t.fg("warning", "(applying sandbox profile...)");
   else status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");
   if (mode.sandbox.enabled && sandbox.warn && !sandbox.disabled) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
   if (enforcing && networkFiltered(mode.sandbox)) {

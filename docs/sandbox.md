@@ -51,6 +51,10 @@ it was) unless the switch is between a filtered and an unfiltered network,
 which restarts the runtime once no sandboxed command is running. Windows
 restarts on every change, because its permission entries are stamped per
 session ([Windows](#windows)). `/sandbox` names how the last switch went.
+While background shells run, a switch that restarts asks before it stops
+them, and a `/reload` hands them to the new extension instance together
+with the runtime they run under; a changed profile then waits until the
+last shell ends ([shells.md, Lifetime](shells.md#lifetime)).
 Per command, the extension adds what only that run needs: the read-only
 switch in Plan mode, this session's "Deny and block" paths as extra
 `denyRead`, and the git directories of a worktree. `/sandbox` prints the
@@ -344,7 +348,9 @@ fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-re
   while it does), so it starts one quiet second after the last cycle step:
   cycling through several modes pays for the last one only. The footer
   says "applying sandbox profile" meanwhile; a bash call that arrives
-  during it is refused with "run the command again".
+  during it is refused with "run the command again". Every change of
+  profile restarts the runtime here, so while background shells run, every
+  switch asks first ([shells.md, Lifetime](shells.md#lifetime)).
 - A session block ("Deny and block") still rides along per command: denies
   are the one per-command filesystem change the backend supports.
 - Programs installed for your user only are reachable only through the

@@ -162,6 +162,8 @@ function makeCtx(cwd: string, opts: { hasUI?: boolean; entries?: Array<{ type: s
 interface Harness {
   pi: FakePi;
   ctx: FakeCtx;
+  /** The temp folder everything lives in; pass it to another setup() to start a second extension instance over the same project (a /reload). */
+  base: string;
   root: string;
   agentDir: string;
   /** The scratch base this harness redirects PI_PERMISSION_TMPDIR to, and the session's folder under it. */
@@ -190,9 +192,11 @@ async function setup(
     entries?: Array<{ type: string; customType?: string; data?: unknown }>;
     /** Global permission-mode.json written before the first session_start. */
     globalConfig?: Record<string, unknown>;
+    /** Reuse another harness's folders (the same project, agent dir and scratch base). */
+    base?: string;
   } = {},
 ): Promise<Harness> {
-  const base = mkdtempSync(path.join(tmpdir(), "perm-idx-"));
+  const base = opts.base ?? mkdtempSync(path.join(tmpdir(), "perm-idx-"));
   const root = path.join(base, "proj");
   const agentDir = path.join(base, "agent");
   mkdirSync(path.join(root, "src"), { recursive: true });
@@ -229,6 +233,7 @@ async function setup(
   return {
     pi,
     ctx,
+    base,
     root,
     agentDir,
     scratchBase,
@@ -361,6 +366,48 @@ test("background shells: config (disabled, maxConcurrent, notify note/none), /sh
     assert.match(quiet.ctx.notices.at(-1)!, /No background shell is running/);
   } finally {
     quiet.cleanup();
+  }
+});
+
+test("background shells: a /reload hands the running shells to the next extension instance; another project ends them", { skip: posixOnly }, async () => {
+  const store = globalThis as Record<string, unknown>;
+  const h = await setup();
+  await h.perm("yolo");
+  const first = /Background shell ([0-9a-f]{6}) started \(pid (\d+)/.exec(await runTool(h, "bash", { command: "sleep 30", run_in_background: true }))!;
+  await h.pi.emit("session_shutdown", { type: "session_shutdown", reason: "reload" }, h.ctx);
+  assert.ok(pidAlive(Number(first[2])), "a reload keeps the shell running");
+  assert.ok(store.__piPermissionModeShells, "parked for the next instance");
+  const next = await setup({ base: h.base });
+  let third: Harness | undefined;
+  try {
+    assert.equal(store.__piPermissionModeShells, undefined);
+    assert.match(next.ctx.notices.join("\n"), /1 background shell\(s\) kept across the reload/);
+    await next.perm("yolo");
+    assert.match(next.ctx.status, /Shells: 1/);
+    await next.pi.commands.get("shells")!("", next.ctx);
+    assert.match(next.ctx.notices.at(-1)!, new RegExp(`${first[1]}  running for`));
+    assert.match(await runTool(next, "bash_output", { bash_id: first[1] }), /running for/);
+    assert.match(await runTool(next, "kill_shell", { shell_id: first[1] }), /killed \(kill_shell, SIGTERM\)/);
+    await settle(() => !pidAlive(Number(first[2])));
+    assert.doesNotMatch(next.ctx.status, /Shells:/);
+
+    // Parked, but the next instance opens another project: the shell ends as at a quit.
+    const second = /Background shell ([0-9a-f]{6}) started \(pid (\d+)/.exec(await runTool(next, "bash", { command: "sleep 30", run_in_background: true }))!;
+    await next.pi.emit("session_shutdown", { type: "session_shutdown", reason: "reload" }, next.ctx);
+    (store.__piPermissionModeShells as { cwd: string }).cwd = path.join(next.base, "elsewhere");
+    third = await setup({ base: h.base });
+    assert.equal(store.__piPermissionModeShells, undefined);
+    assert.ok(!pidAlive(Number(second[2])), "nothing to adopt: the shell was stopped");
+    await third.perm("yolo");
+    await third.pi.commands.get("shells")!("", third.ctx);
+    assert.match(third.ctx.notices.at(-1)!, new RegExp(`${second[1]}  killed \\(session ended\\)`));
+    // A reload without running shells resets and stops as a quit does (no handoff).
+    await third.pi.emit("session_shutdown", { type: "session_shutdown", reason: "reload" }, third.ctx);
+    assert.equal(store.__piPermissionModeShells, undefined);
+  } finally {
+    third?.cleanup();
+    next.cleanup();
+    h.cleanup();
   }
 });
 

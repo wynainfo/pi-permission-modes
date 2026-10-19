@@ -48,8 +48,8 @@ import * as piSdk from "@earendil-works/pi-coding-agent";
 import { createBashTool, getAgentDir, getShellConfig } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { effectiveShells } from "./config-load.ts";
-import { killWindowsTree, processViolations } from "./sandbox.ts";
-import { describeShell, readLog, ShellManager, type ShellRecord, STOP_SIGNALS, type StopSignal, tailLines } from "./shells/shells.ts";
+import { type AdoptedRuntime, killWindowsTree, processViolations } from "./sandbox.ts";
+import { describeShell, PROFILE_CHANGED_REASON, readLog, ShellManager, type ShellRecord, STOP_SIGNALS, type StopSignal, tailLines } from "./shells/shells.ts";
 import { createShellTools } from "./shells/tools.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -167,7 +167,37 @@ export default async function (pi: ExtensionAPI) {
   const shellsCfg = () => effectiveShells(config.shells);
   const shellsRunning = () => shells?.running().length ?? 0;
   /** Violation lines already copied into a shell's violations.log (the runtime's store is a ring of 100). */
-  const shellViolationsSeen = new Map<string, Set<string>>();
+  let shellViolationsSeen = new Map<string, Set<string>>();
+  /**
+   * Handoff across a `/reload`: pi re-imports this module in the same process
+   * (the old instance's `pi` and `ctx` go stale, the children keep running),
+   * and `globalThis` is the only state that survives. With background shells
+   * running, session_shutdown parks the initialized runtime and the
+   * ShellManager here instead of resetting and stopping; the next
+   * session_start adopts them (same project) or cleans them up.
+   */
+  interface Handoff {
+    cwd: string;
+    runtime: AdoptedRuntime | undefined;
+    shells: ShellManager;
+    violationsSeen: Map<string, Set<string>>;
+  }
+  const HANDOFF_KEY = "__piPermissionModeShells";
+  const handoffStore = globalThis as unknown as Record<string, Handoff | undefined>;
+  const takeHandoff = async (cwd: string): Promise<Handoff | undefined> => {
+    const h = handoffStore[HANDOFF_KEY];
+    if (!h) return undefined;
+    delete handoffStore[HANDOFF_KEY];
+    if (h.cwd === cwd && h.shells.running().length > 0) return h;
+    // Nothing left to keep: end what the previous instance left behind.
+    await h.shells.stopAll("session ended");
+    try {
+      await h.runtime?.manager.reset();
+    } catch {
+      // ignore cleanup errors
+    }
+    return undefined;
+  };
   const harvestShellViolations = () => {
     const m = sandbox.sandboxManager;
     if (!shells || !m?.annotateStderrWithSandboxFailures) return;
@@ -383,9 +413,51 @@ export default async function (pi: ExtensionAPI) {
     if (next.length !== current.length || next.some((n, i) => n !== current[i])) pi.setActiveTools(next);
   };
 
+  /** A note to the model about its background shells (respects `shells.notify: none`), in the next turn. */
+  const sendShellNote = (content: string): void => {
+    if (shellsCfg().notify === "none") return;
+    try {
+      pi.sendMessage({ customType: "perm-shell", content, display: true }, { deliverAs: "nextTurn" });
+    } catch {
+      // a stale pi after /reload
+    }
+  };
+
+  /**
+   * A sandbox restart while background shells run would strip their mounts
+   * and their network, so they end first: after the user agreed (`what`
+   * names the action; a No keeps everything as it is), or without asking
+   * when there is no UI. True when the caller may go on.
+   */
+  const stopShellsForRestart = async (ctx: ExtensionContext, what: string): Promise<boolean> => {
+    const n = shellsRunning();
+    if (!shells || n === 0) return true;
+    if (ctx.hasUI) {
+      const yes = await ctx.ui.confirm(
+        "Background shells",
+        `${n} background shell(s) run under the current sandbox profile; ${what} restarts the sandbox and stops them. Go on?`,
+      );
+      if (!yes) return false;
+    }
+    const stopped = await shells.stopAll(PROFILE_CHANGED_REASON);
+    const ids = stopped.map((r) => r.id).join(", ");
+    if (ctx.hasUI) ctx.ui.notify(`permission-mode: ${stopped.length} background shell(s) stopped (${PROFILE_CHANGED_REASON}): ${ids}`, "info");
+    sendShellNote(`Background shell(s) ${ids} stopped: ${PROFILE_CHANGED_REASON} (${what}).`);
+    return true;
+  };
+
   const setMode = async (name: string, ctx: ExtensionContext, persist = true, viaFallback = false) => {
     if (!hasMode(config.modes, name)) return;
     uiCtx = ctx;
+    // A switch whose profile needs a runtime restart (Windows: any change;
+    // elsewhere: between a filtered and an unfiltered network) ends the
+    // running background shells: asked first, and a No keeps the mode.
+    if (name !== modeName && shellsRunning() > 0 && sandbox.switchNeedsRestart(runtimeProfile(config.modes[name]))) {
+      if (!(await stopShellsForRestart(ctx, `switching to ${config.modes[name].label}`))) {
+        ctx.ui.notify(`Permission mode stays ${currentMode().label}: ${shellsRunning()} background shell(s) keep running (/shells stop all or kill_shell first)`, "info");
+        return;
+      }
+    }
     const previous = modeName;
     modeName = name;
     fallbackMode = viaFallback;
@@ -712,6 +784,7 @@ export default async function (pi: ExtensionAPI) {
         if (process.platform !== "win32") {
           return ctx.ui.notify(`permission-mode: /sandbox ${sub} is for the native Windows sandbox; see ${docRef("sandboxUnavailable")} for this platform`, "info");
         }
+        if (!(await stopShellsForRestart(ctx, `/sandbox ${sub}`))) return ctx.ui.notify(`permission-mode: /sandbox ${sub} not run; the background shells keep running`, "info");
         ctx.ui.notify(`permission-mode: Windows sandbox ${sub} (one UAC prompt)...`, "info");
         try {
           const line = await sandbox.windowsSetup(sub);
@@ -745,6 +818,7 @@ export default async function (pi: ExtensionAPI) {
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
           ...(sandbox.lastSwitch ? [`Last profile switch: ${sandbox.lastSwitch === "hot" ? "in place (updateConfig; running commands kept their sandbox)" : "runtime restart (reset + initialize)"}`] : []),
+          ...(sandbox.pendingProfile ? [`Pending profile: the previous one stays in force until ${shellsRunning()} background shell(s) end (/shells stop all applies it now)`] : []),
           `Local binding: ${c.network.allowLocalBinding ? "on" : "off"}${localBindingNote(Boolean(c.network.allowLocalBinding), process.platform)}`,
           ...(m.sandbox.macos || process.platform === "darwin"
             ? [`macOS options: enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`]
@@ -1055,6 +1129,9 @@ export default async function (pi: ExtensionAPI) {
       delete process.env.CLAUDE_TMPDIR;
       if (ctx.hasUI) ctx.ui.notify(`permission-mode: could not create the scratch directory ${dir}`, "warning");
     }
+    // A /reload with background shells running: the previous instance parked
+    // its runtime and ShellManager (Handoff); the shells keep their sandbox.
+    const handoff = await takeHandoff(ctx.cwd);
     await sandbox.init({
       cwd: ctx.cwd,
       noSandbox: pi.getFlag("no-sandbox") === true,
@@ -1065,20 +1142,40 @@ export default async function (pi: ExtensionAPI) {
       // outside the allowlist; unknown hosts prompt via askNetHost.
       askHost: (host, port) => net.decide(host, port, askNetHost),
       keepWritable: scratchDir ? [scratchDir] : [],
+      adopt: handoff?.runtime,
+      adoptedShells: handoff ? () => handoff.shells.running().length : undefined,
     });
-    shellViolationsSeen.clear();
-    shells = scratchDir
-      ? new ShellManager({
-          baseDir: path.join(scratchDir, "shells"),
-          cwd: ctx.cwd,
-          maxConcurrent: shellsCfg().maxConcurrent,
-          killTree: killWindowsTree,
-          notify: notifyShellEnd,
-          onChange: () => {
-            if (uiCtx) updateStatus(uiCtx, currentMode(), sandbox, net.open, shellsRunning());
-          },
-        })
-      : undefined;
+    const shellHooks = {
+      maxConcurrent: shellsCfg().maxConcurrent,
+      killTree: killWindowsTree,
+      notify: notifyShellEnd,
+      onChange: () => {
+        if (uiCtx) updateStatus(uiCtx, currentMode(), sandbox, net.open, shellsRunning());
+        // The last shell ended: a profile that waited for it (reload with a changed config) applies now.
+        if (sandbox.pendingProfile && shellsRunning() === 0) {
+          void sandbox.retryPending()?.then(() => {
+            if (!uiCtx) return;
+            updateStatus(uiCtx, currentMode(), sandbox, net.open, shellsRunning());
+            if (uiCtx.hasUI) uiCtx.ui.notify(`permission-mode: the sandbox profile of ${currentMode().label} is applied (the last background shell ended)`, "info");
+          });
+        }
+      },
+    };
+    shellViolationsSeen = handoff?.violationsSeen ?? new Map();
+    shells = handoff
+      ? handoff.shells.rebind(shellHooks)
+      : scratchDir
+        ? new ShellManager({ baseDir: path.join(scratchDir, "shells"), cwd: ctx.cwd, ...shellHooks })
+        : undefined;
+    if (handoff && ctx.hasUI) {
+      const n = shellsRunning();
+      ctx.ui.notify(
+        sandbox.pendingProfile
+          ? `permission-mode: ${n} background shell(s) kept across the reload; the sandbox profile they run under stays in force until they end (/shells stop all applies the new one now)`
+          : `permission-mode: ${n} background shell(s) kept across the reload (/shells)`,
+        "info",
+      );
+    }
     // Record the start mode when the session does not already end on it (a
     // carried mode, a --perm flag, a new session), so resuming it in a later
     // pi process restores the mode it was last used in. The headless fallback
@@ -1094,12 +1191,19 @@ export default async function (pi: ExtensionAPI) {
     const picked = pickMode(ctx, false);
     await setMode(picked.name, ctx, false, picked.fallback);
   });
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (event, ctx) => {
     approvals.clearAll(); // session-scoped grants don't outlive the session
     blocked.clear(); // nor do "Deny and block" paths
     net.clear(); // network grants/denies and the open toggle are session-scoped too
     pendingPlan = undefined; // restored from the session entries on the next start
     planCalls.clear();
+    if (event.reason === "reload" && shells && shellsRunning() > 0) {
+      // The next instance of this module adopts the shells and the runtime
+      // they run under (Handoff); nothing is reset or stopped here.
+      handoffStore[HANDOFF_KEY] = { cwd: ctx.cwd, runtime: await sandbox.handoff(), shells, violationsSeen: shellViolationsSeen };
+      shells = undefined;
+      return;
+    }
     // Background shells end with the session: a reset would strip a running
     // shell's protections, so they go first (SIGTERM, SIGKILL after 5 s).
     if (shells) await shells.stopAll("session ended");
