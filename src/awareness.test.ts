@@ -130,6 +130,9 @@ test("askOnBlockedHost:false: silent-deny wording, tool still offered", () => {
 test("sandbox.linux: the nested-namespace line renders on linux only, and only while the switch is off", () => {
   const ns = /cannot create a user namespace here \(EPERM\)/;
   const stock = sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!;
+  assert.match(stock, /reachable from this machine only through bash's expose parameter/, "Linux: a background shell's server needs expose");
+  assert.doesNotMatch(sandboxAwarenessPrompt(mode(), { active: true, platform: "linux", shells: false })!, /expose/, "no shells, no expose");
+  assert.match(sandboxAwarenessPrompt(mode(), { active: true, platform: "darwin" })!, /expose parameter is accepted but not needed/);
   assert.match(stock, ns);
   assert.match(stock, /docs\/troubleshooting\.md#nested-sandboxes-on-linux/);
   const on = sandboxAwarenessPrompt(mode({}, { linux: { allowNestedUserNamespaces: true } }), { active: true, platform: "linux" })!;

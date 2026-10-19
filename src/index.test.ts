@@ -411,6 +411,24 @@ test("background shells: a /reload hands the running shells to the next extensio
   }
 });
 
+test("background shells: expose is checked everywhere and relayed on Linux only (unsandboxed here: a note)", { skip: posixOnly }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("yolo");
+    assert.match(await runTool(h, "bash", { command: "true", expose: [8123] }), /expose applies to a background shell only/);
+    assert.match(await runTool(h, "bash", { command: "sleep 30", run_in_background: true, expose: ["nope"] }), /not started: expose entry "nope"/);
+    assert.match(await runTool(h, "bash", { command: "sleep 30", run_in_background: true, expose: [0] }), /not started: expose port 0 is out of range/);
+    const bashParams = (h.pi.tools.get("bash") as unknown as { parameters: { properties: Record<string, { type?: string }> } }).parameters;
+    assert.equal(bashParams.properties.expose.type, "array", "the schema carries expose");
+    const started = await runTool(h, "bash", { command: "sleep 30", run_in_background: true, expose: [8123, "0.0.0.0:8124"] });
+    assert.match(started, /the shell runs unsandboxed\); expose \(127.0.0.1:8123, 0.0.0.0:8124\) was checked only/);
+    assert.equal(h.ctx.confirmPrompts.length, 0, "no relay, no LAN question");
+    await h.pi.commands.get("shells")!("stop all", h.ctx);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("default mode: reads free, writes prompt, protected paths hard-block", { skip }, async () => {
   const h = await setup();
   try {

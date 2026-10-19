@@ -95,21 +95,27 @@ const renderWritePath = (p: string): string => (p === "." || p === "./" ? "the p
 export function localBindingNote(on: boolean, platform: NodeJS.Platform): string {
   if (platform === "win32") return on ? " (a server a command starts is reachable from this machine while the command runs)" : " (not enforced on Windows: a listener is reachable regardless)";
   if (platform === "darwin") return on ? " (a server a command starts is reachable from this machine while the command runs; loopback is reached directly, past the proxy)" : " (no listening; loopback through the proxy only)";
-  return " (the sandbox's loopback is its own on Linux: a server is reachable from this machine with managed jobs only)";
+  return " (the sandbox's loopback is its own on Linux: a server is reachable from this machine through a background shell's expose list only)";
 }
 
 /**
  * The awareness line about servers a sandboxed command starts: whether this
  * machine can reach one, and that it ends with the command.
  */
-export function localBindingLine(on: boolean, platform: NodeJS.Platform): string {
+export function localBindingLine(on: boolean, platform: NodeJS.Platform, shells = false): string {
   const within = "it ends with the command, so start, use and stop it within one command (`server & sleep 30; curl ...; kill %1`)";
   if (platform === "linux") {
-    return `- A server you start within a command listens inside the sandbox only: this machine cannot reach it (the sandbox has a loopback of its own), and ${within}.`;
+    return (
+      `- A server you start within a command listens inside the sandbox only: this machine cannot reach it (the sandbox has a loopback of its own), and ${within}.` +
+      (shells
+        ? ' A server in a background shell is reachable from this machine only through bash\'s expose parameter: `expose: [8123]` relays 127.0.0.1:8123 on this machine to port 8123 inside the shell; `expose: ["0.0.0.0:8123"]` answers on every interface after the user\'s approval. Inside the shell, bind the server to 127.0.0.1.'
+        : "")
+    );
   }
   if (on || platform === "win32") {
     return (
       `- A server you start within a command listens for real: the user can open it in a browser while the command runs, and ${within}; bind it to 127.0.0.1.` +
+      (shells ? " In a background shell it stays reachable while the shell runs (bash's expose parameter is accepted but not needed here)." : "") +
       (on ? "" : " (This mode sets sandbox.allowLocalBinding false, which Windows cannot enforce: a listener is reachable regardless.)")
     );
   }
@@ -225,7 +231,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       );
     }
   }
-  lines.push(localBindingLine(sb.allowLocalBinding !== false, platform));
+  lines.push(localBindingLine(sb.allowLocalBinding !== false, platform, opts.shells !== false));
   if (platform === "linux" && !sb.linux?.allowNestedUserNamespaces) {
     // The runtime refuses nested user namespaces since 0.0.80; the programs
     // that need one fail with EPERM and a message that does not name the cause.

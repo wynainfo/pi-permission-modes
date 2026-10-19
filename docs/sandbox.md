@@ -242,6 +242,13 @@ lists the roots.
 
 ## Linux
 
+A sandboxed command has a network namespace of its own, with its own
+loopback: a server it starts is unreachable from this machine, and a
+background shell's server is reached through bash's `expose` parameter,
+which relays ports into the shell ([shells.md, Network](shells.md#network)).
+For that relay the directory of the node binary that runs pi is readable
+inside the sandbox in every mode (next to the runtime's own package).
+
 One switch the runtime offers only on Linux, under `sandbox.linux` with the
 runtime's own name, same rules as the macOS block: off unless set, accepted
 but without effect elsewhere, global config only (a project may turn it off,

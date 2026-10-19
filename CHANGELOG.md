@@ -22,7 +22,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in the next turn (`note`), or nothing (`none`). `/shells` lists, stops,
   reads and cleans up; the footer shows `Shells: N`. A shell keeps the
   sandbox it started with (an in-place mode switch does not touch it) and
-  its launch allowlist (registered with the runtime under its own id). A
+  its launch allowlist (registered with the runtime under its own id). On
+  Linux, where the sandbox has a loopback of its own, bash's `expose`
+  parameter relays ports of this machine into the shell (`[5173]` for
+  127.0.0.1, `["0.0.0.0:5173"]` for every interface after one question);
+  elsewhere a server in the shell is reachable as it binds. A
   switch that must restart the runtime (Windows: every change; elsewhere
   between a filtered and an unfiltered network) asks before it stops them;
   No keeps the mode. `/reload` keeps them: the new extension instance

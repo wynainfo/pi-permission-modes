@@ -49,7 +49,8 @@ import { createBashTool, getAgentDir, getShellConfig } from "@earendil-works/pi-
 import { spawn } from "node:child_process";
 import { effectiveShells } from "./config-load.ts";
 import { type AdoptedRuntime, killWindowsTree, processViolations } from "./sandbox.ts";
-import { describeShell, PROFILE_CHANGED_REASON, readLog, ShellManager, type ShellRecord, STOP_SIGNALS, type StopSignal, tailLines } from "./shells/shells.ts";
+import { type ExposeEntry, formatEntry, parseExpose, RELAY_FILE, RELAY_SOURCE, startRelays, withRelay } from "./shells/relay.ts";
+import { describeShell, PROFILE_CHANGED_REASON, readLog, type ShellLaunchArgs, ShellManager, type ShellRecord, STOP_SIGNALS, type StopSignal, tailLines } from "./shells/shells.ts";
 import { createShellTools } from "./shells/tools.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -166,6 +167,8 @@ export default async function (pi: ExtensionAPI) {
   let shells: ShellManager | undefined;
   const shellsCfg = () => effectiveShells(config.shells);
   const shellsRunning = () => shells?.running().length ?? 0;
+  /** Ports the user agreed to expose on every interface (bash `expose: ["0.0.0.0:N"]`), once per port and session. */
+  const lanPortsAllowed = new Set<number>();
   /** Violation lines already copied into a shell's violations.log (the runtime's store is a ring of 100). */
   let shellViolationsSeen = new Map<string, Set<string>>();
   /**
@@ -856,6 +859,12 @@ export default async function (pi: ExtensionAPI) {
           "Run as a background shell that outlives this call (a dev server, a watcher, a long build): returns at once with an id; read it with bash_output, stop it with kill_shell. Same sandbox and prompts as a foreground call; timeout becomes its kill timer.",
       }),
     ),
+    expose: Type.Optional(
+      Type.Array(Type.Union([Type.Integer(), Type.String()]), {
+        description:
+          'With run_in_background on Linux: ports of a server the shell starts that this machine should reach. 8123 binds 127.0.0.1:8123 here and relays it to port 8123 inside the shell; "0.0.0.0:8123" answers on every interface (asks the user). Elsewhere a server in the shell is reachable directly and the list is only checked.',
+      }),
+    ),
   });
   pi.registerTool({
     ...localBash,
@@ -873,8 +882,11 @@ export default async function (pi: ExtensionAPI) {
       const ops = plan.sandboxed
         ? sandbox.bashOps({ readOnly: plan.readOnly, keepWritable: scratchDir ? [scratchDir] : [], extraDenyRead: blocked.list(), tmpdir: scratchDir })
         : null;
-      const p = params as { command: string; timeout?: number; run_in_background?: boolean };
-      if (p.run_in_background === true) return startBackgroundShell(p.command, p.timeout, ops, m);
+      const p = params as { command: string; timeout?: number; run_in_background?: boolean; expose?: unknown };
+      if (p.run_in_background === true) return startBackgroundShell(p.command, p.timeout, p.expose, ops, m);
+      if (p.expose !== undefined) {
+        return { content: [{ type: "text" as const, text: "expose applies to a background shell only: pass run_in_background: true with it (a foreground command's server ends with the command)." }], details: {} };
+      }
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
       return sandboxed.execute(id, params, signal, onUpdate);
@@ -887,20 +899,76 @@ export default async function (pi: ExtensionAPI) {
    * second. Every refusal is a sentence; the command never runs in the
    * foreground instead.
    */
-  async function startBackgroundShell(command: string, timeout: number | undefined, ops: ReturnType<SandboxController["bashOps"]>, m: ModeDef) {
+  async function startBackgroundShell(command: string, timeout: number | undefined, expose: unknown, ops: ReturnType<SandboxController["bashOps"]>, m: ModeDef) {
     const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
     if (!shells) return text("Background shells are not available in this session (no scratch directory); run the command in the foreground with a timeout.");
     if (!shellsCfg().enabled) return text("Background shells are disabled in this configuration (shells.enabled); run the command in the foreground with a timeout.");
     const refusal = shells.refusal();
     if (refusal) return text(refusal);
+    // `expose`: on Linux a sandboxed shell has a loopback of its own, so the
+    // ports are relayed (src/shells/relay.ts); everywhere else a server in
+    // the shell is reachable as it binds, and the list is only checked.
+    let relayEntries: ExposeEntry[] | undefined;
+    let exposeNote = "";
+    if (expose !== undefined) {
+      const parsed = parseExpose(expose);
+      if ("error" in parsed) return text(`Background shell not started: ${parsed.error}.`);
+      const list = parsed.entries.map(formatEntry).join(", ");
+      if (process.platform === "linux" && ops) {
+        for (const e of parsed.entries) {
+          if (e.loopback || lanPortsAllowed.has(e.port)) continue;
+          const ok = uiCtx?.hasUI
+            ? await uiCtx.ui.confirm("Expose on the network", `Port ${e.port} would answer on every interface of this machine (${e.host}) while the background shell runs. Allow?`)
+            : false;
+          if (!ok) {
+            return text(
+              `Background shell not started: exposing port ${e.port} on ${e.host} ${uiCtx?.hasUI ? "was refused by the user" : "needs the user's confirmation, which this session cannot ask for"}; pass ${e.port} alone for 127.0.0.1.`,
+            );
+          }
+          lanPortsAllowed.add(e.port);
+        }
+        relayEntries = parsed.entries;
+      } else if (process.platform === "darwin" && ops && m.sandbox.allowLocalBinding === false) {
+        return text(`Background shell not started: this mode turns local binding off (sandbox.allowLocalBinding), so a server in the shell cannot listen and expose (${list}) has nothing to reach.`);
+      } else {
+        exposeNote = ` A server the shell starts is reachable from this machine as it binds (${ops ? "no relay is needed on this platform" : "the shell runs unsandboxed"}); expose (${list}) was checked only.`;
+      }
+    }
     const launch = ops
-      ? async ({ command: cmd, cwd, logFd }: { command: string; cwd: string; logFd: number }) => {
+      ? async ({ command: cmd, cwd, logFd, dir }: ShellLaunchArgs) => {
           // The launch allowlist stays with the shell for its lifetime (sandbox.ts, ShellStartOptions).
           const allowedDomains = networkFiltered(m.sandbox) ? [...new Set([...(m.sandbox.network?.allowedDomains ?? []), ...net.grants()])] : undefined;
-          const s = await ops.startShell(cmd, cwd, { logFd, env: process.env, allowedDomains });
-          return { child: s.child, sandboxed: true, commandId: s.commandId, onClose: s.onClose };
+          if (!relayEntries) {
+            const s = await ops.startShell(cmd, cwd, { logFd, env: process.env, allowedDomains });
+            return { child: s.child, sandboxed: true, commandId: s.commandId, onClose: s.onClose };
+          }
+          const relayPath = path.join(dir, RELAY_FILE);
+          writeFileSync(relayPath, RELAY_SOURCE, { mode: 0o600 });
+          const s = await ops.startShell(withRelay(cmd, relayPath), cwd, { logFd, env: process.env, allowedDomains, ipc: true });
+          try {
+            const relays = await startRelays(s.child, relayEntries);
+            return {
+              child: s.child,
+              sandboxed: true,
+              commandId: s.commandId,
+              ports: relays.bound,
+              onClose: () => {
+                relays.close();
+                s.onClose();
+              },
+            };
+          } catch (err) {
+            // No listener, no shell: the process group goes, the runtime's cleanup runs once.
+            try {
+              if (s.child.pid) process.kill(-s.child.pid, "SIGKILL");
+            } catch {
+              // already gone
+            }
+            s.onClose();
+            throw err;
+          }
         }
-      : async ({ command: cmd, cwd, logFd }: { command: string; cwd: string; logFd: number }) => {
+      : async ({ command: cmd, cwd, logFd }: ShellLaunchArgs) => {
           const sh = getShellConfig();
           const child = spawn(sh.shell, [...sh.args, cmd], { cwd, env: hostRunEnv(process.env), detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", logFd, logFd] });
           child.unref();
@@ -910,7 +978,8 @@ export default async function (pi: ExtensionAPI) {
     if (r.status === "running") {
       return text(
         `Background shell ${r.id} started (pid ${r.pid}, log ${r.logFile}). It runs ${r.sandboxed ? "under the same sandbox as bash" : "unsandboxed, as bash does in this mode"}. ` +
-          `Read it with bash_output (bash_id "${r.id}"), stop it with kill_shell; you will be told when it ends.`,
+          `Read it with bash_output (bash_id "${r.id}"), stop it with kill_shell; you will be told when it ends.` +
+          (r.ports ? ` Reachable from this machine at ${r.ports.join(", ")} while it runs (relayed to the same port inside the shell; bind the server there to 127.0.0.1).` : exposeNote),
       );
     }
     const last = tailLines(readLog(r.logFile, 0).text, 20);
@@ -931,7 +1000,7 @@ export default async function (pi: ExtensionAPI) {
         if (rows.length === 0) return ctx.ui.notify("No background shells in this session. The model starts one with bash run_in_background: true.", "info");
         const now = Date.now();
         return ctx.ui.notify(
-          ["Background shells:", ...rows.map((r) => `  ${r.id}  ${describeShell(r, now)}  ${r.command.replace(/\s+/g, " ").slice(0, 60)}  (${r.logFile})`)].join("\n"),
+          ["Background shells:", ...rows.map((r) => `  ${r.id}  ${describeShell(r, now)}  ${r.command.replace(/\s+/g, " ").slice(0, 60)}${r.ports ? `  exposed ${r.ports.join(", ")}` : ""}  (${r.logFile})`)].join("\n"),
           "info",
         );
       }
@@ -1162,6 +1231,7 @@ export default async function (pi: ExtensionAPI) {
       },
     };
     shellViolationsSeen = handoff?.violationsSeen ?? new Map();
+    lanPortsAllowed.clear();
     shells = handoff
       ? handoff.shells.rebind(shellHooks)
       : scratchDir

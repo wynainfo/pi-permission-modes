@@ -110,6 +110,42 @@ prompts you live, exactly as for a foreground command, and a grant covers
 both. A later in-place switch to a mode with a narrower allowlist leaves the
 shell's network as launched; a switch to a wider one widens it too.
 
+### Reaching a server in a shell: `expose`
+
+On macOS and Windows a server a background shell starts is reachable from
+this machine as it binds (with `sandbox.allowLocalBinding` on, the default;
+[sandbox.md, Local binding](sandbox.md#local-binding)). On Linux it is not:
+the sandbox has a network namespace with a loopback of its own. Bash's
+`expose` parameter (with `run_in_background: true`) relays ports into it:
+
+```jsonc
+{ "command": "npm run dev", "run_in_background": true, "expose": [5173] }
+{ "command": "python3 -m http.server 8123", "run_in_background": true, "expose": ["0.0.0.0:8123"] }
+```
+
+An integer `N` listens on `127.0.0.1:N` of this machine and relays each
+connection to port `N` inside the shell (where the server should bind
+`127.0.0.1`); `"host:port"` listens on that address instead, `"0.0.0.0:N"`
+on every interface. A non-loopback address asks you once per port and
+session ("Expose on the network"); a headless session cannot ask and
+refuses it. The listeners live as long as the shell; a port in use on this
+machine, or a relay that does not start, refuses the start with a sentence
+and nothing keeps running. `/shells` shows the exposed addresses. On the
+other platforms `expose` is accepted and checked, and the result says the
+server is reachable directly (on macOS with local binding off, the start is
+refused: nothing could listen).
+
+How the relay works, and why it is temporary: the sandbox's seccomp filter
+blocks the creation of Unix sockets but not their use, so the shell is
+started with a node IPC channel on fd 3 that bwrap passes through. A line
+in front of the command starts a small relay on the node that runs pi
+(`relay.cjs` next to the shell's log; the fd and the variables are gone for
+the command itself), which holds the channel and dials `127.0.0.1:<port>`
+for each connection the host hands it. The node binary's directory is
+readable inside the sandbox for that, even under a strict home. All of
+this disappears once the runtime relays ports itself (requested upstream);
+the `expose` parameter stays as it is.
+
 ## Limits
 
 - The log file grows without a cap; `bash_output` caps what one read

@@ -37,6 +37,8 @@ export interface ShellRecord {
   sandboxed: boolean;
   /** Attribution key of the run in the sandbox's violation store (sandboxed shells only). */
   commandId?: string;
+  /** Addresses on this machine relayed into the shell (`host:port`; Linux `expose`). */
+  ports?: string[];
 }
 
 /** The signals the model may choose; Windows knows none of them (its stop is forced). */
@@ -51,10 +53,21 @@ export interface LaunchedShell {
   commandId?: string;
   /** Runs once after the process closed: the runtime's cleanup, counters, temp files. */
   onClose?: () => void;
+  /** Addresses relayed into the shell, for the record. */
+  ports?: string[];
+}
+
+/** What a launcher gets: the command, where to run it, its log fd, and the shell's id and folder (for files of its own). */
+export interface ShellLaunchArgs {
+  command: string;
+  cwd: string;
+  logFd: number;
+  id: string;
+  dir: string;
 }
 
 /** Starts the process for a shell: stdout and stderr go to `logFd`, nothing is read from stdin. */
-export type ShellLauncher = (opts: { command: string; cwd: string; logFd: number }) => Promise<LaunchedShell>;
+export type ShellLauncher = (opts: ShellLaunchArgs) => Promise<LaunchedShell>;
 
 export interface ShellManagerOptions {
   /** `<scratch>/shells`; each shell gets a folder below it. */
@@ -317,7 +330,7 @@ export class ShellManager {
     live.logFd = logFd;
     let launched: LaunchedShell;
     try {
-      launched = await launch({ command, cwd: this.opts.cwd, logFd });
+      launched = await launch({ command, cwd: this.opts.cwd, logFd, id, dir });
     } catch (err) {
       closeSync(logFd);
       return this.failed(live, err instanceof Error ? err.message : String(err));
@@ -326,6 +339,7 @@ export class ShellManager {
     record.pid = child.pid;
     record.sandboxed = launched.sandboxed;
     record.commandId = launched.commandId;
+    if (launched.ports?.length) record.ports = launched.ports;
     live.child = child;
     live.commandId = launched.commandId;
     this.writeMeta(live);

@@ -62,6 +62,8 @@ export interface ShellStartOptions {
    * the configured ones; they can only widen, never narrow).
    */
   allowedDomains?: string[];
+  /** Open a node IPC channel on the shell's fd 3 (the Linux port relay, src/shells/relay.ts). */
+  ipc?: boolean;
 }
 
 export interface StartedShell {
@@ -374,7 +376,12 @@ export function createSandboxedBashOps(
       try {
         // The log fd is the child's stdout and stderr; detached, so a stop
         // signal reaches the whole process group.
-        const child = spawn("bash", ["-c", wrapped], { cwd, env: withGitHubTokenHelper(opts.env ?? process.env), detached: true, stdio: ["ignore", opts.logFd, opts.logFd] });
+        const child = spawn("bash", ["-c", wrapped], {
+          cwd,
+          env: withGitHubTokenHelper(opts.env ?? process.env),
+          detached: true,
+          stdio: opts.ipc ? ["ignore", opts.logFd, opts.logFd, "ipc"] : ["ignore", opts.logFd, opts.logFd],
+        });
         child.unref();
         return { child, commandId, onClose };
       } catch (err) {
@@ -673,8 +680,11 @@ export function commandFilesDir(): string | undefined {
  * `pi update` replaces, and srt-win then refuses to grant the path again
  * ("file_id changed since prior grant").
  */
-export function runtimeExtrasFor(cwd: string, runtimeDir: string | undefined = runtimeInstallDir(), platform: string = process.platform): RuntimeExtras {
+export function runtimeExtrasFor(cwd: string, runtimeDir: string | undefined = runtimeInstallDir(), platform: string = process.platform, nodeDir?: string): RuntimeExtras {
   const extras: RuntimeExtras = { allowRead: runtimeDir && platform !== "win32" ? [runtimeDir] : [], allowWrite: [], denyWrite: [] };
+  // The node that runs pi, readable inside the sandbox even under a strict
+  // home: the Linux port relay of a background shell runs on it.
+  if (nodeDir && platform === "linux" && !extras.allowRead.includes(nodeDir)) extras.allowRead.push(nodeDir);
   // A gitfile at the project root is always write-denied: rewritten to point
   // at a git dir with planted hooks, it would run code at the user's next
   // host-side git command (a normal repo's .git/hooks and .git/config are
@@ -1076,7 +1086,7 @@ export class SandboxController {
     this.win = undefined;
     this.appliedKey = undefined;
     this.dependencyWarnings = [];
-    this.extras = runtimeExtrasFor(cwd, undefined, opts.platform ?? process.platform);
+    this.extras = runtimeExtrasFor(cwd, undefined, platform, platform === "linux" ? path.dirname(process.execPath) : undefined);
     this.hasUI = hasUI;
     this.notifyFn = notify;
     this.askHost = askHost;
