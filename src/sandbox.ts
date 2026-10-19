@@ -50,6 +50,37 @@ import { isOutsideWin } from "./win-paths.ts";
 export type SandboxRuntime = typeof import("@anthropic-ai/sandbox-runtime");
 type SandboxManagerType = SandboxRuntime["SandboxManager"];
 
+/** What a background shell's start needs from the sandbox: the spawned process and the cleanup once it closed. */
+export interface ShellStartOptions {
+  /** stdout and stderr of the shell go here (its log file); nothing is read from stdin. */
+  logFd: number;
+  env?: NodeJS.ProcessEnv;
+  /**
+   * The allowlist the shell keeps for its lifetime, registered under its
+   * commandId: a later in-place mode switch to a narrower list leaves this
+   * shell's network as launched (the runtime consults per-command lists after
+   * the configured ones; they can only widen, never narrow).
+   */
+  allowedDomains?: string[];
+}
+
+export interface StartedShell {
+  child: ChildProcess;
+  commandId: string;
+  /** Run once after the process closed: the runtime's cleanup, the in-flight counter, temp files. */
+  onClose: () => void;
+}
+
+/** pi's BashOperations plus the start of a background shell under the same sandbox. */
+export interface SandboxedBashOps extends BashOperations {
+  startShell(command: string, cwd: string, opts: ShellStartOptions): Promise<StartedShell>;
+}
+
+/** The attribution key of a background shell: 16 random bytes, the floor the runtime sets for a per-command network list. */
+export function shellCommandId(): string {
+  return `pi-${randomBytes(16).toString("base64url")}`;
+}
+
 /** This extension's own directory (works wherever it's installed). */
 const EXTENSION_DIR = fileURLToPath(new URL("..", import.meta.url));
 
@@ -271,6 +302,30 @@ function superviseChild(
 }
 
 /**
+ * Register a background shell's launch allowlist under its commandId, when
+ * the runtime has per-command lists (0.0.80+). Returns the unregister step.
+ */
+function registerShellNetwork(SandboxManager: SandboxManagerType, commandId: string, allowedDomains: string[] | undefined): () => void {
+  const m = SandboxManager as unknown as {
+    registerCommandNetworkLists?: (id: string, lists: { allowedDomains?: string[] }) => void;
+    unregisterCommandNetworkLists?: (id: string) => void;
+  };
+  if (!allowedDomains || !m.registerCommandNetworkLists) return () => {};
+  try {
+    m.registerCommandNetworkLists(commandId, { allowedDomains });
+  } catch {
+    return () => {};
+  }
+  return () => {
+    try {
+      m.unregisterCommandNetworkLists?.(commandId);
+    } catch {
+      // best effort
+    }
+  };
+}
+
+/**
  * BashOperations backed by `SandboxManager.wrapWithSandbox`. An optional
  * `customConfig` overrides the init-time config per command (used to drop write
  * access in Read mode without re-initializing the sandbox).
@@ -283,9 +338,50 @@ export function createSandboxedBashOps(
     tmpdir?: string;
     /** Called once a wrap succeeded; the returned function once the run's cleanup is done (in-flight tracking). */
     onRun?: () => () => void;
+    /** Same for a background shell, counted apart: a profile switch never waits for one. */
+    onShell?: () => () => void;
   } = {},
-): BashOperations {
+): SandboxedBashOps {
   return {
+    async startShell(command, cwd, opts) {
+      if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
+      const commandFile = writeCommandFile(command);
+      const launcher = commandFile ? commandLauncher(commandFile, runOpts.tmpdir) : undefined;
+      const commandId = shellCommandId();
+      const lists = registerShellNetwork(SandboxManager, commandId, opts.allowedDomains);
+      let wrapped: string;
+      try {
+        wrapped = await SandboxManager.wrapWithSandbox(launcher ?? command, undefined, customConfig as never, undefined, { commandId, commandText: command });
+      } catch (err) {
+        lists();
+        if (commandFile) rmSync(commandFile, { force: true });
+        throw runError(err);
+      }
+      const shellDone = runOpts.onShell?.();
+      let closed = false;
+      const onClose = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          SandboxManager.cleanupAfterCommand?.();
+        } catch {
+          // best effort
+        }
+        lists();
+        shellDone?.();
+        if (commandFile) rmSync(commandFile, { force: true });
+      };
+      try {
+        // The log fd is the child's stdout and stderr; detached, so a stop
+        // signal reaches the whole process group.
+        const child = spawn("bash", ["-c", wrapped], { cwd, env: withGitHubTokenHelper(opts.env ?? process.env), detached: true, stdio: ["ignore", opts.logFd, opts.logFd] });
+        child.unref();
+        return { child, commandId, onClose };
+      } catch (err) {
+        onClose();
+        throw runError(err);
+      }
+    },
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
       if (signal?.aborted) throw new Error("aborted"); // never spawn for a call that is already cancelled
@@ -373,7 +469,7 @@ export interface WindowsOpsOptions {
 }
 
 /** Kill the broker and whatever of its tree this user may end (the sandboxed child itself dies with the runner's job object). */
-function killWindowsTree(child: ChildProcess): void {
+export function killWindowsTree(child: ChildProcess): void {
   if (child.pid && process.platform === "win32") {
     try {
       const tk = spawn(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(child.pid)], {
@@ -401,42 +497,71 @@ function killWindowsTree(child: ChildProcess): void {
 export function createWindowsSandboxedBashOps(
   SandboxManager: SandboxManagerType,
   opts: WindowsOpsOptions,
-  runOpts: { onRun?: () => () => void } = {},
-): BashOperations {
+  runOpts: { onRun?: () => () => void; onShell?: () => () => void } = {},
+): SandboxedBashOps {
+  /** The files and the wrapped argv for one run; shared by exec and startShell. */
+  const prepare = async (command: string, cwd: string, env: NodeJS.ProcessEnv | undefined, signal: AbortSignal | undefined, commandId: string) => {
+    // TMPDIR in the form msys tools read, TEMP and TMP as Windows programs do.
+    const tmp: Record<string, string> = opts.tmpdir ? { TMPDIR: opts.tmpdir.replace(/\\/g, "/"), TEMP: opts.tmpdir, TMP: opts.tmpdir } : {};
+    const exports = windowsEnvExports(env ?? process.env, { ...opts.extraEnv, ...tmp });
+    const envFile = opts.commandDir ? writeCommandFile(windowsEnvFile(exports), opts.commandDir, "env") : undefined;
+    const cmdFile = envFile ? writeCommandFile(command, opts.commandDir) : undefined;
+    const files = envFile && cmdFile ? { env: envFile, cmd: cmdFile } : undefined;
+    const removeFiles = () => {
+      for (const f of [envFile, cmdFile]) if (f) rmSync(f, { force: true });
+    };
+    const script = windowsScript(command, files, exports);
+    const extra = opts.extraDenyRead ?? [];
+    // Per-exec config carries denies only: a per-exec allow list makes the runtime throw on Windows.
+    const customConfig = extra.length > 0 ? { filesystem: { denyRead: [...extra], allowWrite: [], denyWrite: [] } } : undefined;
+    try {
+      const { argv, env: spawnEnv } = await SandboxManager.wrapWithSandboxArgv(
+        script,
+        { exe: opts.bash, args: ["-c"] },
+        customConfig as never,
+        signal as never,
+        cwd,
+        { commandId, commandText: command },
+      );
+      return { argv, spawnEnv, removeFiles };
+    } catch (err) {
+      removeFiles();
+      throw runError(err);
+    }
+  };
   return {
+    async startShell(command, cwd, shellOpts) {
+      if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
+      const commandId = shellCommandId();
+      const { argv, spawnEnv, removeFiles } = await prepare(command, cwd, shellOpts.env, undefined, commandId);
+      const shellDone = runOpts.onShell?.();
+      let closed = false;
+      const onClose = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          SandboxManager.cleanupAfterCommand?.();
+        } catch {
+          // best effort
+        }
+        shellDone?.();
+        removeFiles();
+      };
+      try {
+        const child = spawn(argv[0], argv.slice(1), { cwd, env: spawnEnv, shell: false, windowsHide: true, stdio: ["ignore", shellOpts.logFd, shellOpts.logFd] });
+        child.unref();
+        return { child, commandId, onClose };
+      } catch (err) {
+        onClose();
+        throw runError(err);
+      }
+    },
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
       if (signal?.aborted) throw new Error("aborted");
-      // TMPDIR in the form msys tools read, TEMP and TMP as Windows programs do.
-      const tmp: Record<string, string> = opts.tmpdir ? { TMPDIR: opts.tmpdir.replace(/\\/g, "/"), TEMP: opts.tmpdir, TMP: opts.tmpdir } : {};
-      const exports = windowsEnvExports(env ?? process.env, { ...opts.extraEnv, ...tmp });
-      const envFile = opts.commandDir ? writeCommandFile(windowsEnvFile(exports), opts.commandDir, "env") : undefined;
-      const cmdFile = envFile ? writeCommandFile(command, opts.commandDir) : undefined;
-      const files = envFile && cmdFile ? { env: envFile, cmd: cmdFile } : undefined;
-      const removeFiles = () => {
-        for (const f of [envFile, cmdFile]) if (f) rmSync(f, { force: true });
-      };
-      const script = windowsScript(command, files, exports);
       const commandId = `pi-${randomBytes(8).toString("hex")}`;
       const emitViolations = violationsReporter(SandboxManager, commandId, onData);
-      const extra = opts.extraDenyRead ?? [];
-      // Per-exec config carries denies only: a per-exec allow list makes the runtime throw on Windows.
-      const customConfig = extra.length > 0 ? { filesystem: { denyRead: [...extra], allowWrite: [], denyWrite: [] } } : undefined;
-      let argv: string[];
-      let spawnEnv: NodeJS.ProcessEnv;
-      try {
-        ({ argv, env: spawnEnv } = await SandboxManager.wrapWithSandboxArgv(
-          script,
-          { exe: opts.bash, args: ["-c"] },
-          customConfig as never,
-          signal as never,
-          cwd,
-          { commandId, commandText: command },
-        ));
-      } catch (err) {
-        removeFiles();
-        throw runError(err);
-      }
+      const { argv, spawnEnv, removeFiles } = await prepare(command, cwd, env, signal, commandId);
       const runDone = runOpts.onRun?.();
       try {
         if (signal?.aborted) throw new Error("aborted");
@@ -807,15 +932,14 @@ export class SandboxController {
    * switched to (see applyProfile). Until that re-initialization has landed,
    * the operations refuse to run rather than run with the wrong grants.
    */
-  bashOps(opts: BashOpsOptions = {}): BashOperations | null {
+  bashOps(opts: BashOpsOptions = {}): SandboxedBashOps | null {
     if (!this.manager || !this.profile) return null;
     if (this.win) {
       if (Boolean(opts.readOnly) !== this.win.readOnly) {
-        return {
-          async exec() {
-            throw new Error("permission-mode: the sandbox is still being re-initialized for this mode (on Windows read-only applies per session); run the command again");
-          },
+        const notReady = () => {
+          throw new Error("permission-mode: the sandbox is still being re-initialized for this mode (on Windows read-only applies per session); run the command again");
         };
+        return { exec: async () => notReady(), startShell: async () => notReady() };
       }
       const env = this.lastInit?.windows?.env ?? process.env;
       return createWindowsSandboxedBashOps(
@@ -829,18 +953,36 @@ export class SandboxController {
           commandDir: this.win.commandDir,
           parseError: this.rt?.parseWindowsSandboxError,
         },
-        { onRun: () => this.runStarted() },
+        { onRun: () => this.runStarted(), onShell: () => this.shellStarted() },
       );
     }
     return createSandboxedBashOps(this.manager, bashCustomConfig(this.profile, opts, this.extras), {
       tmpdir: opts.tmpdir,
       onRun: () => this.runStarted(),
+      onShell: () => this.shellStarted(),
     });
   }
 
   /** Sandboxed commands currently running (wrapped, not yet cleaned up). */
   private inflight = 0;
   private idleWaiters: Array<() => void> = [];
+  /** Background shells running under this runtime; counted apart from `inflight`: a switch never waits for them. */
+  private shells = 0;
+
+  /** Background shells running under this runtime (a restart would strip their mounts and network). */
+  get shellsRunning(): number {
+    return this.shells;
+  }
+
+  private shellStarted(): () => void {
+    this.shells++;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.shells--;
+    };
+  }
 
   private runStarted(): () => void {
     this.inflight++;

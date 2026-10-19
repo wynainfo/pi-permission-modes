@@ -42,10 +42,15 @@
  *   Linux also needs: bubblewrap, socat, ripgrep
  */
 
-import { Type } from "@earendil-works/pi-ai";
+import { Type, type TSchema } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as piSdk from "@earendil-works/pi-coding-agent";
-import { createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { createBashTool, getAgentDir, getShellConfig } from "@earendil-works/pi-coding-agent";
+import { spawn } from "node:child_process";
+import { effectiveShells } from "./config-load.ts";
+import { killWindowsTree, processViolations } from "./sandbox.ts";
+import { describeShell, readLog, ShellManager, type ShellRecord, STOP_SIGNALS, type StopSignal, tailLines } from "./shells/shells.ts";
+import { createShellTools } from "./shells/tools.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
@@ -130,6 +135,8 @@ const BUILTIN_HANDLED = new Set([
   "web_search",
   "show_plan",
   "request_network_access", // prompts on its own — gating it would double-prompt
+  "bash_output", // read-only, scoped to this session's background shells
+  "kill_shell", // the shell itself was gated when it started
 ]);
 
 export default async function (pi: ExtensionAPI) {
@@ -155,6 +162,33 @@ export default async function (pi: ExtensionAPI) {
   // with the scratch dir appended to allowWrite, so it is always writable and
   // never prompts, whatever the config says about the shared base.
   let scratchDir: string | undefined;
+  /** Background shells of this session (src/shells); created at session_start once the scratch dir exists. */
+  let shells: ShellManager | undefined;
+  const shellsCfg = () => effectiveShells(config.shells);
+  const shellsRunning = () => shells?.running().length ?? 0;
+  /** Violation lines already copied into a shell's violations.log (the runtime's store is a ring of 100). */
+  const shellViolationsSeen = new Map<string, Set<string>>();
+  const harvestShellViolations = () => {
+    const m = sandbox.sandboxManager;
+    if (!shells || !m?.annotateStderrWithSandboxFailures) return;
+    for (const r of shells.running()) {
+      if (!r.sandboxed || !r.commandId) continue;
+      let raw = "";
+      try {
+        raw = m.annotateStderrWithSandboxFailures(r.commandId, "");
+      } catch {
+        continue;
+      }
+      const seen = shellViolationsSeen.get(r.id) ?? new Set<string>();
+      shellViolationsSeen.set(r.id, seen);
+      for (const line of processViolations(raw).block.split("\n")) {
+        const l = line.trim();
+        if (!l || l.startsWith("<") || seen.has(l)) continue;
+        seen.add(l);
+        shells.recordViolation(r.commandId, l);
+      }
+    }
+  };
   // Paths the user blocked for the session ("Deny and block"): folded into the
   // effective profile's denyRead so the OS sandbox masks them for bash, and
   // checked directly for the (unsandboxed) file tools.
@@ -279,7 +313,7 @@ export default async function (pi: ExtensionAPI) {
       label: `Deny and block ${shown} for this session`,
       run: async () => {
         for (const t of eligible) blocked.add(t);
-        updateStatus(ctx, currentMode(), sandbox, net.open);
+        updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
         ctx.ui.notify(
           `permission-mode: ${shown} ${eligible.length === 1 ? "is" : "are"} now unreadable inside the sandbox for this session (/perm blocks to list, /perm unblock <path> to lift)`,
           "info",
@@ -303,17 +337,16 @@ export default async function (pi: ExtensionAPI) {
   // Unsandboxed runs (YOLO, approved escapes, degraded) get TMPDIR pointed at
   // the scratch dir via the spawn hook; sandboxed runs get it from the runtime
   // (CLAUDE_CODE_TMPDIR, set at session_start). Windows tools read TEMP/TMP.
-  const localBash = createBashTool(root, {
-    spawnHook: (c) => {
-      // A GitHub token in pi's environment serves git here as in the sandbox (git-auth.ts).
-      const env: NodeJS.ProcessEnv = withGitHubTokenHelper({ ...c.env });
-      if (scratchDir) {
-        env.TMPDIR = scratchDir;
-        if (process.platform === "win32") Object.assign(env, { TEMP: scratchDir, TMP: scratchDir });
-      }
-      return { ...c, env };
-    },
-  });
+  /** The environment of an unsandboxed run: a GitHub token in pi's environment serves git here as in the sandbox (git-auth.ts); TMPDIR is the scratch dir. */
+  const hostRunEnv = (base: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = withGitHubTokenHelper({ ...base });
+    if (scratchDir) {
+      env.TMPDIR = scratchDir;
+      if (process.platform === "win32") Object.assign(env, { TEMP: scratchDir, TMP: scratchDir });
+    }
+    return env;
+  };
+  const localBash = createBashTool(root, { spawnHook: (c) => ({ ...c, env: hostRunEnv(c.env) }) });
 
   pi.registerFlag("perm", {
     description: `Start in permission mode: ${config.cycleOrder.join(" | ")}`,
@@ -370,10 +403,10 @@ export default async function (pi: ExtensionAPI) {
     // controller drops superseded requests). Bash in the meantime is refused
     // with "run it again" rather than run under the previous profile.
     const applied = sandbox.applyProfile(runtimeProfile(m)).catch(() => {});
-    updateStatus(ctx, m, sandbox, net.open);
+    updateStatus(ctx, m, sandbox, net.open, shellsRunning());
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
     void applied.then(() => {
-      if (modeName === name) updateStatus(ctx, currentMode(), sandbox, net.open);
+      if (modeName === name) updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
     });
     if (persist) pi.appendEntry<PermState>("perm-mode", { mode: modeName });
     // B: a manual switch into the approve mode while a plan is pending (alt+m,
@@ -586,7 +619,7 @@ export default async function (pi: ExtensionAPI) {
       return ctx.ui.notify("permission-mode: network is not filtered in this mode/state — nothing to toggle", "info");
     }
     net.open = !net.open;
-    updateStatus(ctx, currentMode(), sandbox, net.open);
+    updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
     ctx.ui.notify(
       net.open
         ? "Network: OPEN for this session — domain filtering disabled (alt+n or /net restrict to re-enable)"
@@ -636,7 +669,7 @@ export default async function (pi: ExtensionAPI) {
       }
       if (sub === "reset") {
         net.clear();
-        updateStatus(ctx, m, sandbox, net.open);
+        updateStatus(ctx, m, sandbox, net.open, shellsRunning());
         return ctx.ui.notify("permission-mode: cleared session network grants/denies; filtering restored", "info");
       }
       if (sub === "allow") {
@@ -686,7 +719,7 @@ export default async function (pi: ExtensionAPI) {
         } catch (e) {
           ctx.ui.notify(`permission-mode: Windows sandbox ${sub} failed: ${e instanceof Error ? e.message : String(e)}`, "error");
         }
-        updateStatus(ctx, currentMode(), sandbox, net.open);
+        updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
         return;
       }
       if (!m.sandbox.enabled) {
@@ -740,8 +773,19 @@ export default async function (pi: ExtensionAPI) {
   // Replace built-in bash so the sandbox can wrap it. Sandboxing is recomputed at
   // run time from the active mode's profile: disabled (YOLO), approved escapes,
   // and the degraded fallback run unsandboxed; non-writable modes run read-only.
+  // pi's own fields plus the background flag; the spread keeps fields pi adds later.
+  const bashSchema = Type.Object({
+    ...((localBash.parameters as unknown as { properties: Record<string, TSchema> }).properties),
+    run_in_background: Type.Optional(
+      Type.Boolean({
+        description:
+          "Run as a background shell that outlives this call (a dev server, a watcher, a long build): returns at once with an id; read it with bash_output, stop it with kill_shell. Same sandbox and prompts as a foreground call; timeout becomes its kill timer.",
+      }),
+    ),
+  });
   pi.registerTool({
     ...localBash,
+    parameters: bashSchema as unknown as typeof localBash.parameters,
     async execute(id, params, signal, onUpdate, _ctx) {
       const approved = approvedUnsandboxed.delete(id); // user granted an escape
       const m = currentMode();
@@ -755,11 +799,101 @@ export default async function (pi: ExtensionAPI) {
       const ops = plan.sandboxed
         ? sandbox.bashOps({ readOnly: plan.readOnly, keepWritable: scratchDir ? [scratchDir] : [], extraDenyRead: blocked.list(), tmpdir: scratchDir })
         : null;
+      const p = params as { command: string; timeout?: number; run_in_background?: boolean };
+      if (p.run_in_background === true) return startBackgroundShell(p.command, p.timeout, ops, m);
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
       return sandboxed.execute(id, params, signal, onUpdate);
     },
   });
+
+  /**
+   * bash with run_in_background: start the shell (sandboxed through `ops`,
+   * else on the host as bash itself would run) and answer within half a
+   * second. Every refusal is a sentence; the command never runs in the
+   * foreground instead.
+   */
+  async function startBackgroundShell(command: string, timeout: number | undefined, ops: ReturnType<SandboxController["bashOps"]>, m: ModeDef) {
+    const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
+    if (!shells) return text("Background shells are not available in this session (no scratch directory); run the command in the foreground with a timeout.");
+    if (!shellsCfg().enabled) return text("Background shells are disabled in this configuration (shells.enabled); run the command in the foreground with a timeout.");
+    const refusal = shells.refusal();
+    if (refusal) return text(refusal);
+    const launch = ops
+      ? async ({ command: cmd, cwd, logFd }: { command: string; cwd: string; logFd: number }) => {
+          // The launch allowlist stays with the shell for its lifetime (sandbox.ts, ShellStartOptions).
+          const allowedDomains = networkFiltered(m.sandbox) ? [...new Set([...(m.sandbox.network?.allowedDomains ?? []), ...net.grants()])] : undefined;
+          const s = await ops.startShell(cmd, cwd, { logFd, env: process.env, allowedDomains });
+          return { child: s.child, sandboxed: true, commandId: s.commandId, onClose: s.onClose };
+        }
+      : async ({ command: cmd, cwd, logFd }: { command: string; cwd: string; logFd: number }) => {
+          const sh = getShellConfig();
+          const child = spawn(sh.shell, [...sh.args, cmd], { cwd, env: hostRunEnv(process.env), detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", logFd, logFd] });
+          child.unref();
+          return { child, sandboxed: false };
+        };
+    const r = await shells.start(command, launch, { timeoutSeconds: timeout });
+    if (r.status === "running") {
+      return text(
+        `Background shell ${r.id} started (pid ${r.pid}, log ${r.logFile}). It runs ${r.sandboxed ? "under the same sandbox as bash" : "unsandboxed, as bash does in this mode"}. ` +
+          `Read it with bash_output (bash_id "${r.id}"), stop it with kill_shell; you will be told when it ends.`,
+      );
+    }
+    const last = tailLines(readLog(r.logFile, 0).text, 20);
+    return text(`Background shell ${r.id} ${describeShell(r)}.${last ? `\nOutput:\n${last}` : ""}`);
+  }
+
+  // The model's view of its background shells; the user's is /shells.
+  for (const tool of createShellTools(() => shells, { onBeforeRead: harvestShellViolations })) pi.registerTool(tool);
+
+  pi.registerCommand("shells", {
+    description: "Background shells: list | stop <id|all> [TERM|INT|HUP|KILL] | logs <id> [lines] | clean",
+    handler: async (args: string, ctx: ExtensionContext) => {
+      uiCtx = ctx;
+      const [sub, arg, extra] = args.trim().split(/\s+/);
+      if (!shells) return ctx.ui.notify("permission-mode: background shells are not available in this session (no scratch directory)", "warning");
+      if (!sub || sub === "list") {
+        const rows = shells.list();
+        if (rows.length === 0) return ctx.ui.notify("No background shells in this session. The model starts one with bash run_in_background: true.", "info");
+        const now = Date.now();
+        return ctx.ui.notify(
+          ["Background shells:", ...rows.map((r) => `  ${r.id}  ${describeShell(r, now)}  ${r.command.replace(/\s+/g, " ").slice(0, 60)}  (${r.logFile})`)].join("\n"),
+          "info",
+        );
+      }
+      if (sub === "stop") {
+        if (!arg) return ctx.ui.notify("Usage: /shells stop <id|all> [TERM|INT|HUP|KILL]", "warning");
+        const signal = extra?.toUpperCase().replace(/^SIG/, "");
+        if (signal !== undefined && !(STOP_SIGNALS as readonly string[]).includes(signal)) return ctx.ui.notify(`Unknown signal ${extra}; one of ${STOP_SIGNALS.join(", ")}`, "warning");
+        const ids = arg === "all" ? shells.running().map((r) => r.id) : [arg];
+        if (ids.length === 0) return ctx.ui.notify("No background shell is running.", "info");
+        const results = await Promise.all(ids.map((id) => shells!.stop(id, { signal: signal as StopSignal | undefined, by: "/shells stop" })));
+        updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
+        return ctx.ui.notify(results.join("\n"), "info");
+      }
+      if (sub === "logs") {
+        const r = arg ? shells.get(arg) : undefined;
+        if (!r) return ctx.ui.notify(`Usage: /shells logs <id> [lines]${arg ? ` (no background shell ${arg})` : ""}`, "warning");
+        const n = Math.max(1, Math.min(500, Number(extra) || 40));
+        const out = tailLines(readLog(r.logFile, 0).text, n);
+        return ctx.ui.notify(`${r.id} ${describeShell(r)} (${r.logFile})\n${out || "(no output yet)"}`, "info");
+      }
+      if (sub === "clean") return ctx.ui.notify(`Removed ${shells.clean()} finished background shell folder(s).`, "info");
+      return ctx.ui.notify("Usage: /shells [list | stop <id|all> [signal] | logs <id> [lines] | clean]", "warning");
+    },
+  });
+
+  /** The completion notice (shells.notify): a turn of its own, a note for the next turn, or nothing. */
+  function notifyShellEnd(shell: ShellRecord, lastLines: string): void {
+    const mode = shellsCfg().notify;
+    if (mode === "none") return;
+    const content = `Background shell ${shell.id} (${shell.command.replace(/\s+/g, " ").slice(0, 80)}) ${describeShell(shell)}.${lastLines ? `\nLast output:\n${lastLines}` : ""}`;
+    try {
+      pi.sendMessage({ customType: "perm-shell", content, display: true }, mode === "wake" ? { triggerTurn: true, deliverAs: "followUp" } : { deliverAs: "nextTurn" });
+    } catch {
+      // a stale pi after /reload: the record and the log remain
+    }
+  }
 
   // Plan Mode helper: render a written plan file to the user (display-only).
   pi.registerTool(await createShowPlanTool(root));
@@ -932,6 +1066,19 @@ export default async function (pi: ExtensionAPI) {
       askHost: (host, port) => net.decide(host, port, askNetHost),
       keepWritable: scratchDir ? [scratchDir] : [],
     });
+    shellViolationsSeen.clear();
+    shells = scratchDir
+      ? new ShellManager({
+          baseDir: path.join(scratchDir, "shells"),
+          cwd: ctx.cwd,
+          maxConcurrent: shellsCfg().maxConcurrent,
+          killTree: killWindowsTree,
+          notify: notifyShellEnd,
+          onChange: () => {
+            if (uiCtx) updateStatus(uiCtx, currentMode(), sandbox, net.open, shellsRunning());
+          },
+        })
+      : undefined;
     // Record the start mode when the session does not already end on it (a
     // carried mode, a --perm flag, a new session), so resuming it in a later
     // pi process restores the mode it was last used in. The headless fallback
@@ -953,6 +1100,9 @@ export default async function (pi: ExtensionAPI) {
     net.clear(); // network grants/denies and the open toggle are session-scoped too
     pendingPlan = undefined; // restored from the session entries on the next start
     planCalls.clear();
+    // Background shells end with the session: a reset would strip a running
+    // shell's protections, so they go first (SIGTERM, SIGKILL after 5 s).
+    if (shells) await shells.stopAll("session ended");
     await sandbox.reset();
   });
 
@@ -1008,6 +1158,7 @@ export default async function (pi: ExtensionAPI) {
       reason: sandbox.disabled ? "disabled via --no-sandbox" : sandbox.warn,
       networkOpen: net.open,
       sessionDomains: net.grants(),
+      shells: shells !== undefined && shellsCfg().enabled,
       scratchDir,
       platform: process.platform,
     });
@@ -1084,6 +1235,9 @@ export default async function (pi: ExtensionAPI) {
     // Bash.
     if (toolName === "bash") {
       const command = String(input.command ?? "");
+      // The prompt says what is about to start; the decision itself is the same.
+      const background = (input as { run_in_background?: unknown }).run_in_background === true;
+      const askTitle = (title: string) => titleWithCommand(background ? "Run in background?" : title, command);
       // Non-sandboxing modes judge the same per-command chain as sandboxed
       // ones (bash surface plus the path gate on every extracted command,
       // most restrictive across the chain): a whole-line match let
@@ -1100,7 +1254,7 @@ export default async function (pi: ExtensionAPI) {
         if (gate.kind === "prompt") {
           // Every approval here runs with full user rights, so a session grant
           // stays scoped to the exact command string, never to command names.
-          if (!(await promptAllow(ctx, "bash", command, titleWithCommand(gate.title, command)))) {
+          if (!(await promptAllow(ctx, "bash", command, askTitle(gate.title)))) {
             return { block: true, reason: gate.reason };
           }
           if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
@@ -1141,7 +1295,7 @@ export default async function (pi: ExtensionAPI) {
           : [];
         const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
         if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
-        if (!(await promptAllow(ctx, "bash", keys, titleWithCommand(gate.title, command), undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
+        if (!(await promptAllow(ctx, "bash", keys, askTitle(gate.title), undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }
       return undefined;

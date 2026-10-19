@@ -38,6 +38,10 @@ import {
   PLAN_PROMPT_SENTINEL,
   type PermissionModeConfig,
   type SandboxProfile,
+  SHELL_NOTIFY,
+  SHELLS_DEFAULTS,
+  type ShellNotify,
+  type ShellsConfig,
   type SurfaceValue,
   type Surface,
   SURFACES,
@@ -469,7 +473,55 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
   let defaultMode = typeof over.defaultMode === "string" ? over.defaultMode : base.defaultMode;
   if (!hasMode(modes, defaultMode)) defaultMode = cycleOrder[0] ?? base.defaultMode;
   const plan = sanitizePlan(over.plan, onError) ?? base.plan;
-  return { defaultMode, cycleOrder, modes, ...(plan ? { plan } : {}) };
+  const shells = sanitizeShells(over.shells, "global config", onError) ?? base.shells;
+  return { defaultMode, cycleOrder, modes, ...(plan ? { plan } : {}), ...(shells ? { shells } : {}) };
+}
+
+/** The top-level `shells` block: typed fields only, anything else dropped with a warning. */
+export function sanitizeShells(raw: unknown, where: string, onError: OnError): ShellsConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    onError(`permission-mode: ${where}: shells must be an object; ignoring`);
+    return undefined;
+  }
+  const out: ShellsConfig = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k === "enabled" && typeof v === "boolean") out.enabled = v;
+    else if (k === "maxConcurrent" && typeof v === "number" && Number.isInteger(v) && v >= 0) out.maxConcurrent = v;
+    else if (k === "notify" && typeof v === "string" && (SHELL_NOTIFY as readonly string[]).includes(v)) out.notify = v as ShellNotify;
+    else if (k === "enabled" || k === "maxConcurrent" || k === "notify") onError(`permission-mode: ${where}: shells.${k} has the wrong type; ignoring`);
+    else onError(`permission-mode: ${where}: unknown key shells.${k}; ignoring`);
+  }
+  return out;
+}
+
+/** The `shells` block with the defaults filled in. */
+export function effectiveShells(cfg: ShellsConfig | undefined): Required<ShellsConfig> {
+  return { ...SHELLS_DEFAULTS, ...cfg };
+}
+
+/**
+ * A project's `shells` block may only tighten: turn shells off, lower the
+ * concurrency, quiet the notice (wake > note > none). Anything looser warns
+ * and is ignored.
+ */
+export function tightenShells(base: ShellsConfig | undefined, over: ShellsConfig, onError: OnError): ShellsConfig {
+  const eff = effectiveShells(base);
+  const out: ShellsConfig = { ...base };
+  const loosen = (k: string) => onError(`permission-mode: project config cannot loosen shells.${k}; ignoring (see ${docRef("projectConfig")})`);
+  if (over.enabled !== undefined) {
+    if (over.enabled === false) out.enabled = false;
+    else if (!eff.enabled) loosen("enabled");
+  }
+  if (over.maxConcurrent !== undefined) {
+    if (over.maxConcurrent <= eff.maxConcurrent) out.maxConcurrent = over.maxConcurrent;
+    else loosen("maxConcurrent");
+  }
+  if (over.notify !== undefined) {
+    if (SHELL_NOTIFY.indexOf(over.notify) >= SHELL_NOTIFY.indexOf(eff.notify)) out.notify = over.notify;
+    else loosen("notify");
+  }
+  return out;
 }
 
 /** The top-level `plan` block: string fields only, anything else dropped with a warning. */
@@ -568,6 +620,10 @@ function applyProject(config: PermissionModeConfig, project: unknown, onError: O
   }
   if (project.plan !== undefined) {
     onError(`permission-mode: project config cannot set plan (approval settings are global); ignoring (see ${docRef("projectConfig")})`);
+  }
+  if (project.shells !== undefined) {
+    const over = sanitizeShells(project.shells, "project config", onError);
+    if (over) config.shells = tightenShells(config.shells, over, onError);
   }
   if (project.modes !== undefined && !isPlainObject(project.modes)) {
     onError("permission-mode: project config modes must be an object; ignoring");

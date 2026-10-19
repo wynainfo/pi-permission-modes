@@ -7,6 +7,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Background shells: bash with `run_in_background: true`.** A dev server,
+  a watcher, a long build or a monitor runs as its own process tree that
+  outlives the call, under the same sandbox, the same policy gate and the
+  same prompts as a foreground command ("Run in background?" names it).
+  The call returns within half a second with the shell's id and log path, or
+  with the exit code when the command ended at once. The model reads it with
+  `bash_output` (status plus the output since its last read; `wait_seconds`
+  blocks until new output or the end; `filter`; sandbox violations of the
+  shell appended) and stops it with `kill_shell`, choosing the signal (TERM,
+  INT, HUP, KILL) and the grace before SIGKILL; on Windows the stop is
+  forced, and the tool says so. When a shell ends by itself the model is
+  told, per `shells.notify`: a turn of its own (`wake`, the default), a note
+  in the next turn (`note`), or nothing (`none`). `/shells` lists, stops,
+  reads and cleans up; the footer shows `Shells: N`. A shell keeps the
+  sandbox it started with (an in-place mode switch does not touch it) and
+  its launch allowlist (registered with the runtime under its own id), and
+  ends with the session. Config block `shells` (`enabled`, `maxConcurrent`,
+  `notify`); a project may only tighten. Documented in `docs/shells.md`.
 - **Windows: the sandboxed modes contain bash on native Windows (alpha).**
   The runtime's Windows backend runs each command as a separate local
   account (`srt-sandbox`) in Git Bash, behind a firewall rule keyed on that

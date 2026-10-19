@@ -51,9 +51,14 @@ class FakePi {
   entries: Array<{ customType: string; data: unknown }> = [];
   /** User messages the extension sent (plan approval). */
   messages: Array<{ content: unknown; opts?: unknown }> = [];
+  /** Custom messages the extension sent (background shell notices). */
+  custom: Array<{ message: { customType: string; content: string }; opts?: unknown }> = [];
 
   sendUserMessage(content: unknown, opts?: unknown) {
     this.messages.push({ content, opts });
+  }
+  sendMessage(message: { customType: string; content: string }, opts?: unknown) {
+    this.custom.push({ message, opts });
   }
   registerFlag(name: string, def: { default?: unknown }) {
     if (!this.flags.has(name)) this.flags.set(name, def.default);
@@ -247,6 +252,117 @@ async function setup(
 }
 
 // --- tests --------------------------------------------------------------------
+
+type ToolExec = { execute(id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: unknown): Promise<{ content: Array<{ text: string }> }> };
+const runTool = async (h: Harness, name: string, params: unknown): Promise<string> => {
+  const tool = h.pi.tools.get(name) as unknown as ToolExec;
+  const res = await tool.execute(`x${++callId}`, params, undefined, undefined, h.ctx);
+  return res.content.map((c) => c.text).join("\n");
+};
+const settle = async (cond: () => boolean, ms = 6000) => {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+};
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const posixOnly = process.platform === "win32" ? "POSIX process tests" : skip;
+
+test("background shells: the gate prompts 'Run in background?' and judges the command as for a foreground call", { skip }, async () => {
+  const h = await setup();
+  try {
+    h.ctx.answers.push("Deny");
+    const r = await h.call("bash", { command: "sleep 5", run_in_background: true });
+    assert.equal(r?.block, true);
+    assert.match(h.ctx.prompts[0].title, /^Run in background\? `sleep 5`/);
+    const fg = await h.call("bash", { command: "sleep 5" });
+    assert.equal(fg?.block, true, "no answer scripted: the prompt is dismissed");
+    assert.doesNotMatch(h.ctx.prompts[1].title, /background/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("background shells: start, inline exit, bash_output, kill_shell with a chosen signal, the footer chip, the notice", { skip: posixOnly }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("yolo"); // no sandbox in the harness: the unsandboxed launcher, as bash itself runs here
+    const quick = await runTool(h, "bash", { command: "echo hi; exit 3", run_in_background: true });
+    assert.match(quick, /^Background shell [0-9a-f]{6} exited 3 after \d+s\.\nOutput:\nhi$/);
+    await settle(() => h.pi.custom.length === 1);
+    assert.equal(h.pi.custom[0].message.customType, "perm-shell");
+    assert.match(h.pi.custom[0].message.content, /exited 3 after .*\nLast output:\nhi/);
+    assert.deepEqual(h.pi.custom[0].opts, { triggerTurn: true, deliverAs: "followUp" });
+
+    const started = await runTool(h, "bash", { command: "echo ready; sleep 30", run_in_background: true });
+    const id = /Background shell ([0-9a-f]{6}) started \(pid (\d+), log (.+?)\)/.exec(started)!;
+    assert.ok(id, started);
+    assert.match(started, /runs unsandboxed, as bash does in this mode/);
+    assert.ok(id[3].startsWith(path.join(h.scratchDir, "shells")), "log under the session scratch dir");
+    assert.match(h.ctx.status, /Shells: 1/);
+    const out = await runTool(h, "bash_output", { bash_id: id[1], wait_seconds: 3 });
+    assert.match(out, /running for \d+s/);
+    assert.match(out, /--- new output ---\nready/);
+    const again = await runTool(h, "bash_output", { bash_id: id[1] });
+    assert.match(again, /\(no new output\)/);
+    const killed = await runTool(h, "kill_shell", { shell_id: id[1], signal: "INT" });
+    assert.match(killed, /killed \(kill_shell, SIGINT\)/);
+    await settle(() => !pidAlive(Number(id[2])));
+    assert.doesNotMatch(h.ctx.status, /Shells:/);
+    assert.equal(h.pi.custom.length, 1, "no notice for a shell the model stopped");
+    assert.match(await runTool(h, "kill_shell", { shell_id: id[1] }), /is not running/);
+    assert.match(await runTool(h, "bash_output", { bash_id: "nope00" }), /No background shell nope00/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("background shells: config (disabled, maxConcurrent, notify note/none), /shells, shutdown kills", { skip: posixOnly }, async () => {
+  const off = await setup({ globalConfig: { shells: { enabled: false } } });
+  try {
+    await off.perm("yolo");
+    assert.match(await runTool(off, "bash", { command: "sleep 1", run_in_background: true }), /disabled in this configuration/);
+    // (The awareness line for a disabled config is covered in awareness.test.ts: the harness runs without an active sandbox.)
+  } finally {
+    off.cleanup();
+  }
+  const h = await setup({ globalConfig: { shells: { maxConcurrent: 1, notify: "note" } } });
+  try {
+    await h.perm("yolo");
+    const quick = await runTool(h, "bash", { command: "echo done", run_in_background: true });
+    assert.match(quick, /exited 0/);
+    await settle(() => h.pi.custom.length === 1);
+    assert.deepEqual(h.pi.custom[0].opts, { deliverAs: "nextTurn" });
+    const a = /Background shell ([0-9a-f]{6}) started \(pid (\d+)/.exec(await runTool(h, "bash", { command: "sleep 30", run_in_background: true }))!;
+    assert.match(await runTool(h, "bash", { command: "sleep 30", run_in_background: true }), /1 background shell\(s\) already run/);
+    await h.pi.commands.get("shells")!("", h.ctx);
+    assert.match(h.ctx.notices.at(-1)!, new RegExp(`${a[1]}  running for \\d+s  sleep 30`));
+    await h.pi.commands.get("shells")!("logs nope", h.ctx);
+    assert.match(h.ctx.notices.at(-1)!, /no background shell nope/);
+    await h.pi.emit("session_shutdown", {}, h.ctx);
+    assert.ok(!pidAlive(Number(a[2])), "shutdown ends the shell");
+    await h.pi.commands.get("shells")!("", h.ctx);
+    assert.match(h.ctx.notices.at(-1)!, new RegExp(`${a[1]}  killed \\(session ended\\)`));
+  } finally {
+    h.cleanup();
+  }
+  const quiet = await setup({ globalConfig: { shells: { notify: "none" } } });
+  try {
+    await quiet.perm("yolo");
+    await runTool(quiet, "bash", { command: "true", run_in_background: true });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(quiet.pi.custom.length, 0);
+    await quiet.pi.commands.get("shells")!("stop all", quiet.ctx);
+    assert.match(quiet.ctx.notices.at(-1)!, /No background shell is running/);
+  } finally {
+    quiet.cleanup();
+  }
+});
 
 test("default mode: reads free, writes prompt, protected paths hard-block", { skip }, async () => {
   const h = await setup();
@@ -534,7 +650,7 @@ test("tool visibility: respects the user's active set, hides/restores only hideT
   const h = await setup();
   try {
     // Session start must not enable tools the user has off (grep/find/ls stay absent).
-    const initial = ["read", "bash", "edit", "write", "show_plan", "request_network_access"];
+    const initial = ["read", "bash", "edit", "write", "bash_output", "kill_shell", "show_plan", "request_network_access"];
     assert.deepEqual(h.pi.activeTools, initial);
     await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx); // runs every turn: idempotent
     assert.deepEqual(h.pi.activeTools, initial);
@@ -560,9 +676,9 @@ test("tool visibility: respects the user's active set, hides/restores only hideT
     );
     await h.pi.emit("session_start", {}, h.ctx);
     await h.perm("review");
-    assert.deepEqual(h.pi.activeTools, ["read", "bash", "request_network_access"]);
+    assert.deepEqual(h.pi.activeTools, ["read", "bash", "bash_output", "kill_shell", "request_network_access"]);
     await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx);
-    assert.deepEqual(h.pi.activeTools, ["read", "bash", "request_network_access"]);
+    assert.deepEqual(h.pi.activeTools, ["read", "bash", "bash_output", "kill_shell", "request_network_access"]);
 
     // Switching back restores exactly what we hid (incl. show_plan) — grep stays off.
     await h.perm("default");

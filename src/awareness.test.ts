@@ -67,6 +67,12 @@ test("background processes: the teardown caveat is stated when the sandbox is ac
   const active = sandboxAwarenessPrompt(mode(), { active: true }) ?? "";
   assert.match(active, /Background processes do not outlive the command/);
   assert.match(active, /`&`, `nohup`, and `setsid` cannot start anything long-running/);
+  // Background shells are the way out: named with their tools, unless the config turned them off.
+  assert.match(active, /call bash with run_in_background: true/);
+  assert.match(active, /bash_output.*kill_shell.*docs\/shells\.md#background-shells/);
+  const off = sandboxAwarenessPrompt(mode(), { active: true, shells: false }) ?? "";
+  assert.match(off, /run_in_background is not available in this session/);
+  assert.doesNotMatch(off, /bash_output/);
   // Read-only bash (Plan) is sandboxed the same way.
   assert.match(sandboxAwarenessPrompt(mode({}, { writable: false }), { active: true }) ?? "", /do not outlive the command/);
   // Degraded: commands run unconfined, background jobs work as usual, so no caveat.

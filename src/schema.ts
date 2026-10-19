@@ -200,6 +200,21 @@ export interface ModeDef {
   projectOverlay?: Partial<Record<Surface, SurfaceValue>>;
 }
 
+/** How the model learns that a background shell ended: a turn of its own, a note in the next turn, or not at all (it polls). */
+export const SHELL_NOTIFY = ["wake", "note", "none"] as const;
+export type ShellNotify = (typeof SHELL_NOTIFY)[number];
+
+/** Background shells (bash `run_in_background`). Global config; a project may only tighten (src/shells). */
+export interface ShellsConfig {
+  /** false: `run_in_background` is refused with a sentence (never a silent foreground run). */
+  enabled?: boolean;
+  /** Running shells at most; a further start is refused. */
+  maxConcurrent?: number;
+  notify?: ShellNotify;
+}
+
+export const SHELLS_DEFAULTS: Required<ShellsConfig> = { enabled: true, maxConcurrent: 4, notify: "wake" };
+
 /** Top-level config: the mode registry plus cycle/default metadata. */
 export interface PermissionModeConfig {
   $schema?: string;
@@ -209,6 +224,8 @@ export interface PermissionModeConfig {
   modes: Record<string, ModeDef>;
   /** One-step plan approval settings (plan-approval.ts). Global config only. */
   plan?: PlanApprovalConfig;
+  /** Background shells. Global config; a project may only tighten. */
+  shells?: ShellsConfig;
 }
 
 /** Sentinel a mode's `systemPrompt` can use to request the Plan-mode prompt. */

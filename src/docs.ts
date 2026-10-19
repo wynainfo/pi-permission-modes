@@ -39,6 +39,7 @@ export const DOC_REFS = {
   windowsSandbox: "sandbox.md#windows",
   windowsRevocation: "troubleshooting.md#tls-revocation-on-windows",
   windowsTools: "troubleshooting.md#per-user-tools-on-windows",
+  shells: "shells.md#background-shells",
 } as const;
 
 export type DocRefKey = keyof typeof DOC_REFS;
@@ -57,6 +58,7 @@ export const DOC_FILES = [
   "sandbox.md",
   "network.md",
   "troubleshooting.md",
+  "shells.md",
   "architecture.md",
 ] as const;
 
@@ -125,6 +127,6 @@ export function docsPromptBlock(dir: string): string {
       "A hint of the form `see docs/<file>#<section>` refers to a file in that directory. " +
       "Files: index.md (topic map and commands), configuration.md (files, layers, what a project config may change), modes.md (the stock modes, mode fields, start mode, plan approval), " +
       "permissions.md (rules, pattern syntax, resolution, protected paths, session grants), sandbox.md (every sandbox key, scratch directory, platforms), " +
-      "network.md (allowlist, requesting access, git authentication), troubleshooting.md (one section per error message), architecture.md (for contributors).",
+      "network.md (allowlist, requesting access, git authentication), troubleshooting.md (one section per error message), shells.md (background shells: run_in_background, bash_output, kill_shell, /shells), architecture.md (for contributors).",
   ].join("\n");
 }

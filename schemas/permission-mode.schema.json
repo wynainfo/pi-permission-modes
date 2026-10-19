@@ -37,6 +37,16 @@
         "approveMode": { "type": "string", "description": "Mode to switch to when a plan is accepted. Default: build." },
         "approveMessage": { "type": "string", "description": "User message that starts the implementing turn; {path} is replaced by the plan path. Default: The plan in `{path}` is approved. Implement it now." }
       }
+    },
+    "shells": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Background shells (bash with run_in_background: true). Global config; a project may only tighten (enabled false, a lower maxConcurrent, a quieter notify).",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "false refuses run_in_background with a sentence (never a silent foreground run). Default true." },
+        "maxConcurrent": { "type": "integer", "minimum": 0, "description": "Running background shells at most; a further start is refused. Default 4." },
+        "notify": { "type": "string", "enum": ["wake", "note", "none"], "description": "How the model learns that a shell ended: wake = a turn of its own (default), note = a note in the next turn, none = it polls with bash_output." }
+      }
     }
   },
   "$defs": {

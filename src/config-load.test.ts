@@ -7,6 +7,7 @@ import {
   FALLBACK_CONFIG,
   globalConfigFile,
   isUnsafeDomain,
+  effectiveShells,
   loadModeConfig,
   loadStockDefaults,
   persistModeDomains,
@@ -479,6 +480,29 @@ test("sandbox.allowLocalBinding: on unless set; a project may turn it off, never
   assert.ok(s.errors.some((e) => /unknown sandbox\.macos field "allowLocalBinding"/.test(e)));
   assert.ok(!s.errors.some((e) => /plan.*allowLocalBinding/.test(e)), "repeating the default stays silent");
   s.cleanup();
+});
+
+test("shells: global settings load, a project may only tighten, wrong types and unknown keys warn", () => {
+  const s = sandbox({
+    global: { shells: { enabled: true, maxConcurrent: 2, notify: "note", bogus: 1, } },
+    project: { shells: { enabled: false, maxConcurrent: 5, notify: "wake" } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.shells, { enabled: false, maxConcurrent: 2, notify: "note" });
+  assert.ok(s.errors.some((e) => /unknown key shells\.bogus/.test(e)));
+  assert.ok(s.errors.some((e) => /cannot loosen shells\.maxConcurrent/.test(e)));
+  assert.ok(s.errors.some((e) => /cannot loosen shells\.notify/.test(e)));
+  assert.deepEqual(effectiveShells(undefined), { enabled: true, maxConcurrent: 4, notify: "wake" });
+  assert.deepEqual(effectiveShells({ notify: "none" }), { enabled: true, maxConcurrent: 4, notify: "none" });
+  s.cleanup();
+  const t = sandbox({
+    global: { shells: { enabled: "yes", maxConcurrent: -1, notify: "loud" } },
+    project: { shells: { maxConcurrent: 1, notify: "none" } }, // tightening the defaults
+  });
+  const d = loadModeConfig(t.cwd, t.agentDir, (m) => t.errors.push(m));
+  assert.deepEqual(d.shells, { maxConcurrent: 1, notify: "none" });
+  assert.equal(t.errors.filter((e) => /shells\.\w+ has the wrong type/.test(e)).length, 3);
+  t.cleanup();
 });
 
 test("sandbox.network: unknown nested keys warn instead of silently doing nothing", () => {

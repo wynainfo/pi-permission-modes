@@ -23,6 +23,7 @@ export function updateStatus(
   mode: ModeDef,
   sandbox: Pick<SandboxController, "ready" | "warn" | "disabled"> & { switching?: boolean },
   networkOpen: boolean,
+  shellsRunning = 0,
 ): void {
   const t = ctx.ui.theme;
   const enforcing = mode.sandbox.enabled && sandbox.ready;
@@ -41,5 +42,6 @@ export function updateStatus(
   } else {
     status += "  " + t.fg("dim", "Network: open");
   }
+  if (shellsRunning > 0) status += "  " + t.fg("warning", `Shells: ${shellsRunning}`);
   ctx.ui.setStatus("perm", status);
 }

@@ -37,6 +37,7 @@ last fallback).
 | `cycleOrder` | string[] | The `alt+m` cycle order and the display order. Global only |
 | `modes` | object | Mode name to mode definition ([modes.md, Mode fields](modes.md#mode-fields)) |
 | `plan` | object | Plan approval: `approveMode` (default `build`) and `approveMessage` (`{path}` is replaced by the plan path). Global only ([modes.md, Approving a plan](modes.md#approving-a-plan)) |
+| `shells` | object | Background shells: `enabled` (default true), `maxConcurrent` (default 4), `notify` (`wake`, `note`, `none`; default `wake`). A project may only tighten ([shells.md](shells.md#configuration)) |
 
 Each mode holds a `sandbox` block ([sandbox.md](sandbox.md)) and a
 `permission` block ([permissions.md](permissions.md)).
@@ -60,6 +61,9 @@ as the loader enforces them (`src/config-load.ts`, `tightenSandbox` and
 `applyProject`):
 
 - It cannot add modes, change `defaultMode` or `cycleOrder`, or set `plan`.
+- In `shells` it may turn shells off, lower `maxConcurrent`, or quiet
+  `notify` (`wake` to `note` to `none`); anything looser is ignored with a
+  warning.
   Each is ignored with a warning.
 - Per mode, only `sandbox` and `permission` are read. `label`, `color`,
   `systemPrompt`, `hideTools`, `injectSandboxInfo`, and `bypassProtectedPaths`

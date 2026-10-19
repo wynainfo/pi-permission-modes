@@ -68,6 +68,8 @@ export interface AwarenessOptions {
   scratchDir?: string;
   /** `process.platform`; the macOS-only lines render only on "darwin", the Windows ones on "win32". Injected so tests cover each. */
   platform?: NodeJS.Platform;
+  /** Background shells available in this session (`shells.enabled`; default true). */
+  shells?: boolean;
 }
 
 /** The one-sentence scratch-directory instruction, shared by every variant. */
@@ -232,7 +234,9 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
     );
   }
   lines.push(
-    "- Background processes do not outlive the command: each bash call runs in its own sandbox that is torn down when the command exits, so `&`, `nohup`, and `setsid` cannot start anything long-running. Run long tasks in the foreground with an adequate timeout, or ask the user.",
+    opts.shells === false
+      ? "- Background processes do not outlive the command: each bash call runs in its own sandbox that is torn down when the command exits, so `&`, `nohup`, and `setsid` cannot start anything long-running (run_in_background is not available in this session). Run long tasks in the foreground with an adequate timeout, or ask the user."
+      : `- Background processes do not outlive the command: each bash call runs in its own sandbox that is torn down when the command exits, so \`&\`, \`nohup\`, and \`setsid\` cannot start anything long-running. For anything that must keep running (a dev server, a watcher, a long build, a monitor) call bash with run_in_background: true: it runs as a background shell under the same sandbox and the same prompts; read it with bash_output, stop it with kill_shell (you choose the signal), and you are told when it ends. Background shells end with the session (see ${docRef("shells")}).`,
     "- Commands beyond these boundaries (out-of-project paths, sudo/doas) are fine to issue: the user is asked for permission automatically, and approved commands run outside the sandbox.",
     mode.bypassProtectedPaths
       ? "- File tools (read/edit/write/…) are policy-gated rather than OS-sandboxed."
