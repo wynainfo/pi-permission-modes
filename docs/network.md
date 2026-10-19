@@ -72,6 +72,13 @@ restart, and (except "Allow forever") end with the session. Interactive
 grants are user authority: they can reach past a project config's tightened
 allowlist.
 
+A background shell ([shells.md](shells.md)) goes through the same proxy: a
+host outside the allowlist prompts you while the shell's connection waits,
+and a grant covers foreground commands and shells alike. The allowlist plus
+the grants at its start are registered with the runtime under the shell's
+own id, so an in-place switch to a mode with a narrower allowlist leaves the
+shell's network as launched (a wider one widens it, as the global list does).
+
 ## Git authentication
 
 The sandboxed modes mask `~/.ssh`, so git over SSH (`git@` remotes) cannot

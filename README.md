@@ -156,6 +156,13 @@ While a sandboxed mode is active, the model is told its boundaries in the
 system prompt, so it picks paths and hosts that work. [SECURITY.md](SECURITY.md)
 has the full threat model and the known limitations.
 
+**Background shells.** A dev server, a watcher or a long build runs as a
+background shell (`bash` with `run_in_background: true`) under the same
+sandbox and the same prompts; the model reads it with `bash_output`, stops
+it with `kill_shell`, and is told when it ends. `/shells` lists and stops
+them. On Linux `expose` relays ports into the shell so you can open its
+server in a browser ([docs/shells.md](docs/shells.md)).
+
 ---
 
 ## Configuration
@@ -218,6 +225,7 @@ outdated-default warnings: [docs/configuration.md](docs/configuration.md),
 | [docs/permissions.md](docs/permissions.md) | Rules, pattern syntax, resolution, bash gating, protected paths, session grants, Deny and block |
 | [docs/sandbox.md](docs/sandbox.md) | Every sandbox key, scratch directory, violations, placeholders, platforms |
 | [docs/network.md](docs/network.md) | Allowlist, requesting access, grants, git authentication |
+| [docs/shells.md](docs/shells.md) | Background shells: `run_in_background`, `bash_output`, `kill_shell`, `/shells`, notices, port exposure |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | One section per error message |
 | [docs/architecture.md](docs/architecture.md) | For forks and contributors |
 

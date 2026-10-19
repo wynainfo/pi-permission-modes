@@ -209,7 +209,25 @@ you can rely on it appropriately. The reference for every setting is in
   cost to know: bound to `0.0.0.0` it answers on the LAN as far as Windows
   Firewall allows, so servers belong on `127.0.0.1`. macOS reaches such a
   server through `sandbox.allowLocalBinding` (on by default); Linux (private
-  network namespace) does not today; parity is planned with managed jobs.
+  network namespace) reaches a background shell's server through bash's
+  `expose` relay only (next bullet).
+- **Background shells.** A shell started with `run_in_background` shares
+  bash's containment: the same policy gate and prompts before it starts,
+  the same sandbox profile, the same violation reporting; an escape you
+  approve runs unsandboxed, as a foreground escape would. It keeps the
+  profile and the network allowlist it was launched with (registered with
+  the runtime under its own id, so a later switch to a narrower mode does
+  not narrow it; a wider one widens it). No shell survives a runtime
+  restart: a switch that needs one asks and stops them first, a session end
+  stops them before the reset, and a `/reload` hands them to the next
+  extension instance together with the runtime they run under, which keeps
+  their profile in force for every command until they end. On Linux the
+  `expose` parameter is a deliberate inbound path into the sandbox: a
+  listener on this machine (loopback unless you confirm `0.0.0.0`, once
+  per port and session) whose connections a relay inside the shell dials
+  to the shell's own loopback. It carries bytes only, in one direction of
+  initiative (host to shell), and ends with the shell; the shell's outbound
+  network stays behind the proxy ([docs/shells.md](docs/shells.md)).
 - **Pinned directories on Linux.** Every existing ancestor of a path the
   sandbox protects (a denied read, a mandatory-deny dotfile, the runtime's
   own binds) is a mount point inside the sandbox. Renaming or removing such a
