@@ -44,7 +44,13 @@ At session start the extension initializes the runtime with the active
 mode's profile (`profileToConfig` in `src/config-load.ts` turns the block
 above into the runtime's config: `network`, `filesystem.denyRead`,
 `allowRead`, `allowWrite`, `denyWrite`). A mode switch that changes the
-profile re-initializes the runtime once no sandboxed command is running.
+profile is applied in place on Linux and macOS (the runtime swaps its config:
+the proxy reads the allow and deny lists per request, filesystem rules
+compile at the next command; commands already running keep their sandbox as
+it was) unless the switch is between a filtered and an unfiltered network,
+which restarts the runtime once no sandboxed command is running. Windows
+restarts on every change, because its permission entries are stamped per
+session ([Windows](#windows)). `/sandbox` names how the last switch went.
 Per command, the extension adds what only that run needs: the read-only
 switch in Plan mode, this session's "Deny and block" paths as extra
 `denyRead`, and the git directories of a worktree. `/sandbox` prints the
@@ -103,8 +109,10 @@ instead of guessing. Linux reports refused write attempts (a denied read
 returns nothing; there is no failing syscall to observe); macOS reports both
 through the system sandbox log. The Linux report is best effort: it can list
 a write that landed in the throwaway tmpfs over a read-denied directory, and
-it misses Plan mode's read-only refusals. Lines for `/dev` and `/proc` are
-dropped. A refused host that you could still allow is followed by a hint
+it misses Plan mode's read-only refusals, and after an in-place mode switch
+it still judges writes by the lists of the mode the runtime was started
+with (the paths that changed are reported as before the switch, or not at
+all). Lines for `/dev` and `/proc` are dropped. A refused host that you could still allow is followed by a hint
 naming it ([network.md, Requesting access](network.md#requesting-access)).
 
 ## Placeholders and masked dotfiles

@@ -733,6 +733,8 @@ export class SandboxController {
   private profile: SandboxProfile | undefined;
   /** Key of the profile the runtime is currently initialized with. */
   private appliedKey: string | undefined;
+  /** The runtime config behind `appliedKey` (its network shape decides whether the next switch can be hot). */
+  private appliedCfg: SandboxConfig | undefined;
   /** True once the runtime's initialize() succeeded and reset() hasn't run since (independent of `ready`). */
   private runtimeInitialized = false;
   /** applyProfile calls are serialized: the runtime ignores a second initialize while one is in flight. */
@@ -779,6 +781,8 @@ export class SandboxController {
   lastInitMs: number | undefined;
   /** Wall time of the most recent runtime `reset()` (a mode switch pays this on top of the initialize). */
   lastResetMs: number | undefined;
+  /** How the most recent profile switch was applied: in place (`updateConfig`) or with a runtime restart. */
+  lastSwitch: "hot" | "full" | undefined;
   private identity: { name?: string; email?: string } | undefined;
 
   /** True while a profile switch is queued or running (the footer marks it). */
@@ -1194,6 +1198,14 @@ export class SandboxController {
     const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem });
     if (this.ready && key === this.appliedKey) return;
 
+    if (!this.needsRestart(cfg) && this.updateInPlace(cfg)) {
+      this.appliedKey = key;
+      this.appliedCfg = cfg;
+      this.lastSwitch = "hot";
+      this.warn = undefined;
+      return;
+    }
+
     if (this.inflight > 0) {
       // reset() force-removes every mount point and stops the proxy: a
       // command still running would lose its denies and its network. Wait
@@ -1202,6 +1214,7 @@ export class SandboxController {
       await this.whenIdle();
       if (profile !== this.profile) return; // superseded while waiting
     }
+    const isSwitch = this.runtimeInitialized; // a restart, not the first init
     try {
       if (this.runtimeInitialized) {
         const resetStart = Date.now();
@@ -1234,6 +1247,8 @@ export class SandboxController {
       }
       this.ready = true;
       this.appliedKey = key;
+      this.appliedCfg = cfg;
+      if (isSwitch) this.lastSwitch = "full";
       this.warn = undefined;
     } catch (err) {
       this.ready = false;
@@ -1256,6 +1271,38 @@ export class SandboxController {
             `${process.platform === "linux" ? "\nLinux requires: bubblewrap, socat, ripgrep" : ""}\nSee ${docRef(win ? "windowsInstall" : "sandboxUnavailable")}`,
         );
       }
+    }
+  }
+
+  /**
+   * Whether applying `cfg` needs a runtime restart (reset + initialize)
+   * rather than an in-place update: before the first successful init, on the
+   * Windows backend (its permission entries are stamped per session), or
+   * when the network changes between filtered and unfiltered (the proxy and
+   * the sandbox's network namespace are decided at initialize).
+   */
+  private needsRestart(cfg: SandboxConfig): boolean {
+    if (!this.runtimeInitialized || !this.ready || this.win || !this.appliedCfg) return true;
+    return (cfg.network.allowedDomains === undefined) !== (this.appliedCfg.network.allowedDomains === undefined);
+  }
+
+  /**
+   * Swap the runtime's config in place. The proxy reads its allow and deny
+   * lists per request and the filesystem rules compile at the next wrap, so
+   * commands already running keep their mounts and their proxy, and the
+   * switch neither waits for them nor restarts anything. (The Linux
+   * violation observer keeps its init-time path lists: after a hot switch
+   * its report is best effort for the paths that changed.) False when the
+   * runtime cannot do it, so the caller restarts instead.
+   */
+  private updateInPlace(cfg: SandboxConfig): boolean {
+    const m = this.manager as unknown as { updateConfig?: (c: unknown) => void } | null;
+    if (!m?.updateConfig) return false;
+    try {
+      m.updateConfig(cfg);
+      return true;
+    } catch {
+      return false;
     }
   }
 

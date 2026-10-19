@@ -711,6 +711,7 @@ export default async function (pi: ExtensionAPI) {
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
+          ...(sandbox.lastSwitch ? [`Last profile switch: ${sandbox.lastSwitch === "hot" ? "in place (updateConfig; running commands kept their sandbox)" : "runtime restart (reset + initialize)"}`] : []),
           `Local binding: ${c.network.allowLocalBinding ? "on" : "off"}${localBindingNote(Boolean(c.network.allowLocalBinding), process.platform)}`,
           ...(m.sandbox.macos || process.platform === "darwin"
             ? [`macOS options: enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`]

@@ -130,6 +130,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#15](https://github.com/wynainfo/pi-permission-modes/pull/15).
 
 ### Changed
+- **A mode switch no longer restarts the sandbox on Linux and macOS.** When
+  the new profile keeps the network filtered (or keeps it unfiltered), the
+  runtime's config is swapped in place: the proxy reads its lists per
+  request, filesystem rules compile at the next command, and a command still
+  running keeps the sandbox it started with. No more "waiting for N running
+  sandboxed command(s)" on such a switch. Only a change between a filtered
+  and an unfiltered network restarts the runtime, as before; Windows restarts
+  on every change (its permission entries are stamped per session).
+  `/sandbox` names how the last switch went. After an in-place switch the
+  Linux violation report still judges writes by the lists the runtime was
+  started with (`docs/sandbox.md`, Violations).
 - **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.80.** Behavior changes:
   a sandboxed command on Linux can no longer create user or mount namespaces
   (see the `sandbox.linux` switch above); on Linux `denyWrite` now wins

@@ -14,6 +14,7 @@ import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { SandboxController, bashCustomConfig, commandLauncher, processViolations, createSandboxedBashOps, networkFiltered, runtimeExtrasFor, runtimeInstallDir, withDeniedReads, withRuntimeExtras, writeCommandFile } from "./sandbox.ts";
+import { profileToConfig } from "./config-load.ts";
 
 const quote: ((xs: readonly string[]) => string) | undefined = await import("@anthropic-ai/sandbox-runtime/dist/utils/shell-quote.js")
   .then((m) => (m as { quote: (xs: readonly string[]) => string }).quote)
@@ -379,10 +380,10 @@ test("exec: TMPDIR comes from the explicit option, never from pi's env; pi's env
   assert.equal(out, "/tmp/pi/sess-x|m1\n");
 });
 
-test("controller: a profile switch waits for running sandboxed commands before resetting the runtime", async () => {
+/** A controller wired as init() would have, around a fake runtime that records its calls. */
+function switchHarness(opts: { updateConfig?: boolean; filtered?: boolean; win?: boolean } = {}) {
   const calls: string[] = [];
-  let release!: () => void;
-  const hold = new Promise<void>((r) => (release = r));
+  const notes: string[] = [];
   const manager = {
     async wrapWithSandbox(cmd: string) {
       return cmd;
@@ -395,21 +396,60 @@ test("controller: a profile switch waits for running sandboxed commands before r
     async initialize() {
       calls.push("initialize");
     },
+    ...(opts.updateConfig === false ? {} : { updateConfig: () => calls.push("updateConfig") }),
   };
   const c = new SandboxController();
-  const notes: string[] = [];
-  // Wire the controller as init() would have, without the real runtime.
-  Object.assign(c, { manager, profile: { enabled: true, writable: true, allowWrite: ["."] }, runtimeInitialized: true, ready: true, appliedKey: "old", hasUI: true, notifyFn: (m: string) => notes.push(m) });
+  const network = opts.filtered ? { allowedDomains: ["example.com"] } : undefined;
+  const profile = { enabled: true, writable: true, allowWrite: ["."], network };
+  const appliedCfg = profileToConfig(profile);
+  Object.assign(c, {
+    manager,
+    profile,
+    runtimeInitialized: true,
+    ready: true,
+    appliedKey: JSON.stringify({ n: appliedCfg.network, f: appliedCfg.filesystem }),
+    appliedCfg,
+    hasUI: true,
+    notifyFn: (m: string) => notes.push(m),
+    ...(opts.win ? { win: { readOnly: false, grants: [], extraEnv: {}, bash: "bash", srtWinPath: "x", commandDir: "/tmp" } } : {}),
+  });
+  return { c, calls, notes, profile };
+}
+
+test("controller: a switch that keeps the network shape is applied in place, without waiting for running commands", async () => {
+  const { c, calls, notes, profile } = switchHarness();
   const ops = c.bashOps()!;
   const run = ops.exec("sleep 0.3", process.cwd(), { onData: () => {}, signal: undefined as never, timeout: 10 });
   await new Promise((r) => setTimeout(r, 50));
-  const switched = c.applyProfile({ enabled: true, writable: true, allowWrite: [".", "/other"] }).then(() => calls.push("switched"));
+  await c.applyProfile({ ...profile, allowWrite: [".", "/other"] });
+  assert.deepEqual(calls, ["updateConfig"], "no reset, no initialize, no wait");
+  assert.equal(notes.length, 0);
+  assert.equal(c.lastSwitch, "hot");
+  await run;
+  assert.deepEqual(calls, ["updateConfig", "cleanup"]);
+});
+
+test("controller: a switch between filtered and unfiltered network waits for running commands and restarts the runtime", async () => {
+  const { c, calls, notes, profile } = switchHarness({ filtered: true });
+  const ops = c.bashOps()!;
+  const run = ops.exec("sleep 0.3", process.cwd(), { onData: () => {}, signal: undefined as never, timeout: 10 });
+  await new Promise((r) => setTimeout(r, 50));
+  const switched = c.applyProfile({ ...profile, network: undefined }).then(() => calls.push("switched"));
   await new Promise((r) => setTimeout(r, 100));
   assert.deepEqual(calls, [], "no reset while the command runs");
   assert.match(notes.join("\n"), /waiting for 1 running sandboxed command/);
   await run;
   await switched;
   assert.deepEqual(calls, ["cleanup", "reset", "initialize", "switched"]);
-  release();
-  await hold;
+  assert.equal(c.lastSwitch, "full");
+});
+
+test("controller: a runtime without updateConfig, and the Windows backend, restart on every change", async () => {
+  const old = switchHarness({ updateConfig: false });
+  await old.c.applyProfile({ ...old.profile, allowWrite: [".", "/other"] });
+  assert.deepEqual(old.calls, ["reset", "initialize"]);
+  const win = switchHarness({ win: true });
+  await win.c.applyProfile({ ...win.profile, allowWrite: [".", "/other"] }).catch(() => {});
+  assert.equal(win.calls[0], "reset", "Windows stamps permission entries per session: no in-place update");
+  assert.ok(!win.calls.includes("updateConfig"));
 });

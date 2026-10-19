@@ -46,7 +46,7 @@
   ],
   "scripts": {
     "postinstall": "echo 'permission-mode: dependencies installed.'",
-    "test": "node --test ./src/*.test.ts",
+    "test": "node --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "pi": {
