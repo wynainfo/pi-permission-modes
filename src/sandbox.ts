@@ -1417,7 +1417,10 @@ export class SandboxController {
       // Denies outside every grant would walk the profile for nothing; with
       // the grant the profile counts as granted, and a deny on an excluded
       // store is already in force (the runtime keeps it unreadable).
-      const denyScope = home ? [...win.grants, home] : win.grants;
+      // Diagnosis switch (dev branch): PI_PERMISSION_MODE_WIN_DIAG=no-profile-denies
+      // leaves every deny inside the profile out, to measure what they cost
+      // the runtime's initialize.
+      const denyScope = home && process.env.PI_PERMISSION_MODE_WIN_DIAG !== "no-profile-denies" ? [...win.grants, home] : win.grants;
       const effective = (denies: readonly string[]) =>
         deniesInsideGrants(denies, denyScope, this.cwd, env).filter((d) => !(grant && home && !isOutsideWin(home, abs(d)) && this.profileRelation(abs(d), grant) === "protected"));
       // Loopback is the install's mode on Windows: the runtime refuses a
