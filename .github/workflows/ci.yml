@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 jobs:
@@ -15,13 +15,15 @@ jobs:
           node-version: "22"
       # The pure-module tests need no install; the index.test.ts dispatcher
       # harness needs the pi SDK (a registry-resolvable peer dep) and skips
-      # itself when the SDK is absent. Install so the full suite runs, but a
-      # registry hiccup must not mask the SDK-free tests: on install failure
-      # the suite still runs (the harness skips).
+      # itself when the SDK is absent. Install the lockfile so the full suite
+      # runs, but a registry hiccup must not mask the SDK-free tests: on
+      # install failure the suite still runs (the harness skips).
       - name: Install
-        run: npm install || echo "install failed - SDK-dependent tests will skip"
+        run: npm ci || echo "install failed - SDK-dependent tests will skip"
+      # npm test holds the glob (src/**/*.test.ts, so src/shells/ too); keep
+      # CI on it so the two cannot drift apart.
       - name: Test
-        run: node --test ./src/*.test.ts
+        run: npm test
 
   typecheck:
     runs-on: ubuntu-latest
