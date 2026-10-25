@@ -2,17 +2,17 @@
  * Port exposure for background shells on Linux. TEMPORARY: the runtime
  * gives a sandboxed command a network namespace with a loopback of its own,
  * so a server inside it is unreachable from this machine. Until the runtime
- * relays ports itself (requested upstream; docs/shells.md, Network), this
- * module does it with what the sandbox lets through: an inherited node IPC
- * channel on fd 3, which the seccomp filter allows (it blocks the creation
- * of AF_UNIX sockets, not their use). A prelude in the shell's command
- * starts a small relay (`RELAY_SOURCE`, written next to the shell's log)
- * that holds the channel; the host listens on the exposed ports and passes
- * each accepted TCP connection to the relay, which dials 127.0.0.1:<port>
- * inside and pipes. The relay exits with the shell (an "end" message from
- * the host, and a check of its parent), and that exit is what lets node
- * emit the shell's close event: the channel counts toward it and is only
- * counted once the child side closes.
+ * relays ports itself (anthropics/sandbox-runtime#784; docs/shells.md,
+ * Network), this module does it with what the sandbox lets through: an
+ * inherited node IPC channel on fd 3, which the seccomp filter allows (it
+ * blocks the creation of AF_UNIX sockets, not their use). A prelude in the
+ * shell's command starts a small relay (`RELAY_SOURCE`, written next to the
+ * shell's log) that holds the channel; the host listens on the exposed ports
+ * and passes each accepted TCP connection to the relay, which dials
+ * 127.0.0.1:<port> inside and pipes. The relay exits with the shell (an
+ * "end" message from the host, and a check of its parent), and that exit is
+ * what lets node emit the shell's close event: the channel counts toward it
+ * and is only counted once the child side closes.
  *
  * Verified on node 22 without a sandbox (a request through the relay, the
  * close timing); bwrap and the seccomp helper pass inherited fds through

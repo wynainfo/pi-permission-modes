@@ -164,8 +164,9 @@ each accepted connection to pi over the command's own channel, and pi pipes
 it into a connection to the shell's exposed address on this machine, the
 path a browser takes. The node binary's directory is readable
 inside the sandbox for that, even under a strict home. All of this
-disappears once the runtime relays ports itself (requested upstream); the
-`expose` parameter stays as it is.
+disappears once the runtime relays ports itself (requested upstream in
+[anthropics/sandbox-runtime#784](https://github.com/anthropics/sandbox-runtime/issues/784));
+the `expose` parameter stays as it is.
 
 ## Limits
 
