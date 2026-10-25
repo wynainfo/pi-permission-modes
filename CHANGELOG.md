@@ -81,6 +81,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
   tighten-only logic, tests, and security notes this takes over.
 
+- **The model is told how you answered a network prompt.** A command whose
+  run prompted you for a host ends its output with a `<sandbox_network>`
+  block naming the host and your answer (allowed for the session or the
+  mode, denied, dismissed), so the model no longer takes a connection that
+  worked after your approval for an unfiltered network, and does not retry
+  one you denied.
+
 ### Changed
 - **`@anthropic-ai/sandbox-runtime` 0.0.80 -> 0.0.81.** Every change is on
   Windows; Linux and macOS are untouched. Two ways out of the sandbox are

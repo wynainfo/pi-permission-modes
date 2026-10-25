@@ -80,7 +80,7 @@ import {
   stockDefaultsFile,
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
-import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
+import { isHostAllowed, NetworkSession, normalizeDomain, promptNote, type NetAskResult } from "./network.ts";
 import { blockablePath, canonicalPath, displayPath, insideRoots, isOutside, isProtectedWrite, normalizeToolPath, resolvePlanPath, sandboxAllowedRoots } from "./paths.ts";
 import {
   approvalMessage,
@@ -835,7 +835,19 @@ export default async function (pi: ExtensionAPI) {
         : null;
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
-      return sandboxed.execute(id, params, signal, onUpdate);
+      net.takePrompted(); // answers to an earlier command's prompts are not this one's
+      const result = await sandboxed.execute(id, params, signal, onUpdate);
+      // A prompt answered during the run is told to the model: it saw only a
+      // connection that worked (or did not), never that a person decided it.
+      const note = promptNote(net.takePrompted());
+      if (note) {
+        const content = [...(result.content ?? [])];
+        const last = content.length ? content[content.length - 1] : undefined;
+        if (last && last.type === "text") content[content.length - 1] = { ...last, text: `${last.text}\n${note}` };
+        else content.push({ type: "text", text: note });
+        return { ...result, content };
+      }
+      return result;
     },
   });
 
