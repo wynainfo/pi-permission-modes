@@ -783,8 +783,9 @@ export default async function (pi: ExtensionAPI) {
                   : []),
               ]
             : []),
-          `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
-          `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
+          ...(networkFiltered(m.sandbox)
+            ? [`Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`, `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`]
+            : ["Network: unrestricted in this mode (no allowlist configured)"]),
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
           ...(sandbox.windowsStatus()
             ? [
