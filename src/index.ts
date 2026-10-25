@@ -52,7 +52,7 @@ import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 import { withGitHubTokenHelper } from "./git-auth.ts";
 import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { localBindingNote, sandboxAwarenessPrompt } from "./awareness.ts";
-import { PROFILE_GRANT_QUESTION, profileGrantText } from "./sandbox-win.ts";
+import { PROFILE_GRANT_QUESTION, profileExclusions, profileGrantText } from "./sandbox-win.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
@@ -66,16 +66,17 @@ import {
   writeAuditState,
 } from "./config-audit.ts";
 import {
-  SCHEMA_URL,
   globalConfigFile,
   hasMode,
   isUnsafeDomain,
+  loadGlobalModeConfig,
   loadModeConfig,
   loadStockDefaults,
   persistModeDomains,
   persistModeRule,
   profileToConfig,
   readGlobalConfigRaw,
+  SCHEMA_URL,
   stockDefaultsFile,
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
@@ -699,6 +700,9 @@ export default async function (pi: ExtensionAPI) {
             const sandboxed = Object.values(config.modes).filter((d) => d.sandbox.enabled);
             const allowLoopback = !(sandboxed.length > 0 && sandboxed.every((d) => d.sandbox.allowLocalBinding === false));
             const profileGrant = await ctx.ui.confirm(PROFILE_GRANT_QUESTION, profileGrantText());
+            // The global config's denies inside the profile become exclusions
+            // of the grant: recorded once, they cost no session anything.
+            const profileExclude = profileExclusions(Object.values(loadGlobalModeConfig(getAgentDir()).modes).map((d) => d.sandbox));
             ctx.ui.notify(
               `permission-mode: Windows sandbox install (one UAC prompt${profileGrant ? ", then the profile read grant, which takes minutes the first time" : ""})...`,
               "info",
@@ -713,6 +717,7 @@ export default async function (pi: ExtensionAPI) {
             const choices = {
               allowLoopback,
               profileGrant,
+              profileExclude,
               onProgress: (line: string) => ctx.ui.notify(`permission-mode: ${line}`, "info"),
               onStage: (s: string) => {
                 stage = s;
@@ -772,6 +777,9 @@ export default async function (pi: ExtensionAPI) {
                   ? `Profile reads: granted at install (your profile minus the credential stores${sandbox.windowsStatus()!.profileEnv.length ? `; env ${sandbox.windowsStatus()!.profileEnv.join(", ")}` : ""})`
                   : "Profile reads: absent (the project and the tool roots only; /sandbox install grants them)",
                 ...(sandbox.windowsStatus()!.profileWarnings.length ? [`Profile grant warnings: ${sandbox.windowsStatus()!.profileWarnings.join(" ")}`] : []),
+                ...(sandbox.windowsStatus()!.profileDenies.length
+                  ? [`Profile denies not recorded with the grant (seconds each per initialize; /sandbox install records them): ${sandbox.windowsStatus()!.profileDenies.join(", ")}`]
+                  : []),
               ]
             : []),
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,

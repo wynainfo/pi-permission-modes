@@ -100,7 +100,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   asks before replacing an install made with other options. With the
   grant, a session passes the grant's configuration-file variables
   (`NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`,
-  `CARGO_HOME`) to sandboxed commands, leaves the now redundant tool roots
+  `CARGO_HOME`) to sandboxed commands, records the global config's denies
+  inside the profile as exclusions of the grant at install (a deny the
+  grant does not exclude costs the runtime seconds at every initialize;
+  `/sandbox` lists any left), leaves the now redundant tool roots
   and other `allowRead` entries inside the profile out of its grants
   (an excluded store a mode names on purpose goes through the runtime's
   explicit read option), keeps a mode's denies inside the profile in

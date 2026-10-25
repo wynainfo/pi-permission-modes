@@ -203,6 +203,18 @@ machine reads the profile until `/sandbox uninstall` (or `/sandbox install`
 answered No). On a shared machine answer No; the sandbox then reads the
 project and the known tool roots only, as before.
 
+The install also records the denied paths of your global config's modes
+that lie inside the profile (`~/.netrc`, `~/.git-credentials`, pi's own
+`auth.json` and the rest of the credential list) as exclusions of the
+grant, so no session has to write them: a deny inside the granted profile
+that the grant does not exclude is written by the runtime at every
+initialize and removed at every reset, several seconds each, which turns
+a mode switch into a minute. `/sandbox` lists such denies under
+`Profile denies not recorded with the grant`, and the session says so
+once; after a change to the global config's deny lists run `/sandbox
+install` again (one UAC prompt, then a refresh of the grant). A recorded
+exclusion stays until `/sandbox uninstall`.
+
 `/sandbox` shows the state as `Profile reads: granted at install` or
 `absent`, with the variables the grant adds (`NPM_CONFIG_USERCONFIG`,
 `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`, `CARGO_HOME`) so the tools

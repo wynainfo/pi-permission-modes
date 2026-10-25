@@ -317,7 +317,9 @@ account, a random password stored encrypted machine-wide, and the firewall
 set, with loopback open unless every sandboxed mode sets
 `sandbox.allowLocalBinding` to `false` ([Local binding](#local-binding)),
 then asks whether your profile should be readable to sandboxed commands
-(above; minutes the first time, with a progress line per folder). A new
+(above; minutes the first time, with a progress line per folder), and
+records the denied paths of your global config's modes that lie inside the
+profile as exclusions of that grant, so no session has to write them. A new
 release of the runtime can need the install again: the footer says so and
 the sandboxed modes prompt until it ran (in place, one UAC prompt). An
 install made with other options asks before it is replaced.

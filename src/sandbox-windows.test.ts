@@ -350,11 +350,18 @@ test("controller (win32): windowsSetup passes the install choices on and reports
   await baseInit(c, fake, notes);
   const progress: string[] = [];
   const stages: string[] = [];
-  const line = await c.windowsSetup("install", { allowLoopback: true, profileGrant: true, onProgress: (l) => progress.push(l), onStage: (s) => stages.push(s) });
+  const line = await c.windowsSetup("install", {
+    allowLoopback: true,
+    profileGrant: true,
+    profileExclude: ["C:\\Users\\me\\.netrc"],
+    onProgress: (l) => progress.push(l),
+    onStage: (s) => stages.push(s),
+  });
   assert.equal(line, "Windows sandbox installed and active. Loopback open; your profile readable to sandboxed commands (minus credential stores).");
   const o = fake.installs[0] as Record<string, unknown>;
   assert.equal(o.allowLoopback, true);
   assert.equal(o.skipProfileGrant, false);
+  assert.deepEqual(o.profileExclude, ["C:\\Users\\me\\.netrc"]);
   assert.equal(o.force, undefined);
   assert.equal(typeof o.onProfileGrantProgress, "function");
   // The runtime's notice is for reading, its progress lines and the steps go to the footer.
@@ -409,11 +416,16 @@ test("controller (win32): with the profile read grant, reads inside the profile 
   assert.deepEqual(init.filesystem.allowRead, ["~/.ssh", "C:\\Users\\me\\AppData\\Local\\Temp", "D:\\tools"], "the tool root and ~ are readable through the grant; the store, Temp and the path outside stay");
   assert.deepEqual(fake.initOptions[0], { dangerouslyAllowReadOfProfileExclusions: ["C:\\Users\\me\\.ssh"] });
   assert.deepEqual(init.filesystem.denyRead, ["~/.npmrc", "./.env"], "a deny on a protected store is already in force; one on a readable profile file now matters");
+  // The one the grant does not exclude costs the runtime per session: listed, and said once.
+  assert.deepEqual(c.windowsStatus()?.profileDenies, ["C:\\Users\\me\\.npmrc"]);
+  assert.equal(notes.filter((n) => /1 denied path\(s\) inside your profile are not recorded with the profile read grant \(C:\\Users\\me\\.npmrc\).*Run \/sandbox install again/.test(n)).length, 1);
   const st = c.windowsStatus()!;
   assert.equal(st.profileRead, "granted");
   assert.deepEqual(st.profileEnv, ["NPM_CONFIG_USERCONFIG", "PIP_CONFIG_FILE"], "GIT_CONFIG_GLOBAL is ours (the staged copy)");
   const r = await exec(c.bashOps({ readOnly: false })!, "echo \"$NPM_CONFIG_USERCONFIG|$GIT_CONFIG_GLOBAL\"", { PATH: process.env.PATH });
   assert.equal(r.out, "C:\\Users\\me\\.npmrc|C:/Users/me/AppData/Local/Temp/pi-x/gitconfig\n");
+  await c.applyProfile({ enabled: true, writable: false, allowWrite: ["."], denyRead: ["~/.npmrc"] });
+  assert.equal(notes.filter((n) => /not recorded with the profile read grant/.test(n)).length, 1, "said once per session");
   // Without the grant: the reads go through as written, no variables, the profile is not a bash root.
   const absent = fakeWindowsRuntime({ argv: passingProbe });
   const c2 = new SandboxController();
@@ -425,6 +437,7 @@ test("controller (win32): with the profile read grant, reads inside the profile 
   assert.equal(absent.initOptions[0], undefined);
   assert.equal(c2.windowsStatus()?.profileRead, "absent");
   assert.deepEqual(c2.windowsStatus()?.profileEnv, []);
+  assert.deepEqual(c2.windowsStatus()?.profileDenies, []);
 });
 
 test("controller (win32): a grant the runtime would refuse degrades up front; so does a write root over a protected store; the runtime's own refusal is read too", async () => {

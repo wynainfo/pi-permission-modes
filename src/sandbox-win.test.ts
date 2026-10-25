@@ -14,6 +14,7 @@ import {
   probeScript,
   probeTargets,
   profileExclusionRelation,
+  profileExclusions,
   readGitIdentity,
   sandboxAceIn,
   stagedSrtWinPath,
@@ -249,6 +250,22 @@ test("profileExclusionRelation: equal, inside, above; one-name and prefix wildca
   assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault2", vault), "equal");
   assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault2\\x.vcrd", vault), "inside");
   assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Microsoft\\Edge", vault), undefined);
+});
+
+test("profileExclusions: the global modes' denies inside the profile, absolute and deduplicated; relative and outside entries left out", () => {
+  const env = { USERPROFILE: "C:\\Users\\me", APPDATA: "C:\\Users\\me\\AppData\\Roaming" };
+  const modes = [
+    { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh", "~/.netrc", "./.env", "D:\\vault", "%APPDATA%\\gcloud"], denyWrite: ["~/.gitconfig"] },
+    { enabled: true, writable: false, allowWrite: [], denyRead: ["~\\.NETRC", "~"] },
+    { enabled: false, writable: true, allowWrite: [], denyRead: ["~/.yolo"] },
+  ];
+  assert.deepEqual(profileExclusions(modes, env), [
+    "C:\\Users\\me\\.ssh",
+    "C:\\Users\\me\\.netrc",
+    "C:\\Users\\me\\AppData\\Roaming\\gcloud",
+    "C:\\Users\\me\\.gitconfig",
+  ]);
+  assert.deepEqual(profileExclusions(modes, {}), [], "no profile, nothing to record");
 });
 
 test("windowsReadGrants: the tool roots that exist, expanded from the environment, deduplicated", () => {

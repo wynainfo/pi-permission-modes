@@ -308,6 +308,33 @@ export function profileExclusionRelation(abs: string, exclusion: string): "equal
 }
 
 /**
+ * The deny paths of the global config's sandboxed modes that lie inside the
+ * user's profile, absolute: what `/sandbox install` records as exclusions of
+ * the profile read grant (runtime 0.0.81). A deny the grant excludes costs a
+ * session nothing; one it does not, the runtime writes at every initialize
+ * and removes at every reset, several seconds each. Project-relative entries
+ * (`./.env`) are left out: an exclusion is machine-wide and lasting. The
+ * project overlay is not consulted for the same reason.
+ */
+export function profileExclusions(modes: Iterable<SandboxProfile>, env: NodeJS.ProcessEnv = process.env): string[] {
+  const home = env.USERPROFILE;
+  if (!home) return [];
+  const out = new Map<string, string>();
+  for (const sb of modes) {
+    if (!sb.enabled) continue;
+    for (const d of [...(sb.denyRead ?? []), ...(sb.denyWrite ?? [])]) {
+      let e = expandWinEnv(d, env);
+      if (e === "~" || e.startsWith("~/") || e.startsWith("~\\")) e = home + e.slice(1);
+      if (!path.win32.isAbsolute(e)) continue;
+      const abs = path.win32.resolve(e);
+      if (isOutsideWin(home, abs) || abs.toLowerCase() === home.toLowerCase()) continue;
+      if (!out.has(abs.toLowerCase())) out.set(abs.toLowerCase(), abs);
+    }
+  }
+  return [...out.values()];
+}
+
+/**
  * The docs section for a runtime error code (`WindowsSandboxError.code`,
  * runtime 0.0.81) when one helps: the install for setup and account
  * states, the loopback and profile sections for theirs. Undefined for codes

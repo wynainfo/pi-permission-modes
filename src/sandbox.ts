@@ -669,6 +669,8 @@ interface WindowsBackend {
   profileStatus?: WindowsProfileGrant;
   /** What the runtime said about the grant at the last initialize (excluded paths that are readable after all, and the like). */
   profileWarnings: string[];
+  /** Denies inside the profile the grant does not exclude: the runtime writes them per session, seconds each (absolute). */
+  profileDenies: string[];
 }
 
 type WindowsProfileGrant = Awaited<ReturnType<SandboxRuntime["getWindowsProfileReadStatusAsync"]>>;
@@ -688,6 +690,8 @@ export interface WindowsInstallChoices {
   profileGrant: boolean;
   /** Replace an install made with other options (after the user agreed). */
   force?: boolean;
+  /** Paths inside the profile the grant keeps unreadable besides its built-in list: the global config's denies there (`profileExclusions`). */
+  profileExclude?: string[];
   /** The runtime's profile grant start notice and its progress lines (one per folder), for the user to read. */
   onProgress?: (line: string) => void;
   /** The step in flight, for the footer: the UAC prompt, the profile grant, the session initialize. */
@@ -797,6 +801,7 @@ export class SandboxController {
         /** The configuration-file variables the grant adds to sandboxed commands (names). */
         profileEnv: string[];
         profileWarnings: string[];
+        profileDenies: string[];
       }
     | undefined {
     const w = this.win;
@@ -812,6 +817,7 @@ export class SandboxController {
         .filter(([k, v]) => w.extraEnv[k] === v)
         .map(([k]) => k),
       profileWarnings: w.profileWarnings,
+      profileDenies: w.profileDenies,
     };
   }
 
@@ -1179,6 +1185,7 @@ export class SandboxController {
       profileRead,
       profileStatus: profileRead === "granted" ? grant : undefined,
       profileWarnings: [],
+      profileDenies: [],
     };
     await this.applyProfile(profile);
   }
@@ -1299,6 +1306,7 @@ export class SandboxController {
         allowLoopback: c.allowLoopback,
         skipProfileGrant: !c.profileGrant,
         force: c.force,
+        profileExclude: c.profileExclude,
         onProfileGrantStart: (notice) => {
           c.onProgress?.(notice);
           c.onStage?.("profile read grant, minutes the first time");
@@ -1417,12 +1425,23 @@ export class SandboxController {
       // Denies outside every grant would walk the profile for nothing; with
       // the grant the profile counts as granted, and a deny on an excluded
       // store is already in force (the runtime keeps it unreadable).
-      // Diagnosis switch (dev branch): PI_PERMISSION_MODE_WIN_DIAG=no-profile-denies
-      // leaves every deny inside the profile out, to measure what they cost
-      // the runtime's initialize.
-      const denyScope = home && process.env.PI_PERMISSION_MODE_WIN_DIAG !== "no-profile-denies" ? [...win.grants, home] : win.grants;
+      const denyScope = home ? [...win.grants, home] : win.grants;
       const effective = (denies: readonly string[]) =>
         deniesInsideGrants(denies, denyScope, this.cwd, env).filter((d) => !(grant && home && !isOutsideWin(home, abs(d)) && this.profileRelation(abs(d), grant) === "protected"));
+      // A deny inside the profile that the grant does not exclude is the
+      // runtime's to write at every initialize and remove at every reset,
+      // several seconds each (measured: about 7 s): /sandbox lists them,
+      // and the user hears once that the install records them for good.
+      const costly = home
+        ? [...fs.denyRead, ...fs.denyWrite].map(abs).filter((a) => !isOutsideWin(home, a) && this.profileRelation(a, grant!) !== "protected")
+        : [];
+      if (costly.length > 0 && win.profileDenies.length === 0 && this.hasUI) {
+        this.notifyFn(
+          `permission-mode: ${costly.length} denied path(s) inside your profile are not recorded with the profile read grant (${costly.join(", ")}): ` +
+            `the runtime writes them at every initialize and removes them at every reset, several seconds each. Run /sandbox install again to record them for good (one UAC prompt, then a refresh of the grant); see ${docRef("windowsProfile")}`,
+        );
+      }
+      win.profileDenies = costly;
       // Loopback is the install's mode on Windows: the runtime refuses a
       // session that asks for the other one, so the mode's wish never
       // reaches it (loopbackConflict tells the user).
