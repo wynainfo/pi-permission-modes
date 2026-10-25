@@ -1072,7 +1072,7 @@ export default async function (pi: ExtensionAPI) {
       return text(
         `Background shell ${r.id} started (pid ${r.pid}, log ${r.logFile}). It runs ${r.sandboxed ? "under the same sandbox as bash" : "unsandboxed, as bash does in this mode"}. ` +
           `Read it with bash_output (bash_id "${r.id}"), stop it with kill_shell; you will be told when it ends.` +
-          (r.ports ? ` Reachable from this machine at ${r.ports.join(", ")} while it runs (relayed to the same port inside the shell; bind the server there to 127.0.0.1).` : exposeNote),
+          (r.ports ? ` Reachable from this machine at ${r.ports.join(", ")} while it runs (relayed to the same port inside the shell; bind the server there to 127.0.0.1): for the user's browser and host programs, not for your bash calls, whose sandbox has a loopback of its own; check the server through bash_output.` : exposeNote),
       );
     }
     const last = tailLines(readLog(r.logFile, 0).text, 20);

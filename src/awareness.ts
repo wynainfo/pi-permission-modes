@@ -112,7 +112,7 @@ export function localBindingLine(on: boolean, platform: NodeJS.Platform, shells 
     return (
       `- A server you start within a command listens inside the sandbox only: this machine cannot reach it (the sandbox has a loopback of its own), and ${within}.` +
       (shells
-        ? ' A server in a background shell is reachable from this machine only through bash\'s expose parameter: `expose: [8123]` relays 127.0.0.1:8123 on this machine to port 8123 inside the shell; `expose: ["0.0.0.0:8123"]` answers on every interface after the user\'s approval. Inside the shell, bind the server to 127.0.0.1.'
+        ? ' A server in a background shell is reachable from this machine only through bash\'s expose parameter: `expose: [8123]` relays 127.0.0.1:8123 on this machine to port 8123 inside the shell; `expose: ["0.0.0.0:8123"]` answers on every interface after the user\'s approval. The relay serves the user\'s browser and host programs, not your bash calls (each command\'s sandbox has a loopback of its own), so check a server through bash_output rather than curl. Inside the shell, bind the server to 127.0.0.1.'
         : "")
     );
   }
