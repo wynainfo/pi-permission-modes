@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.1]
+
+### Changed
+- **README restructured for new users.** Quick start, Verify and Install
+  lead; the intro says what the extension is and names the three supported
+  platforms; a screenshot; the configuration example shrinks to one
+  redefined mode. The reference stays in `docs/`.
+- `docs/shells.md` and the relay source name the upstream request for port
+  relaying in the runtime,
+  [anthropics/sandbox-runtime#784](https://github.com/anthropics/sandbox-runtime/issues/784).
+- CI runs on `dev` as well as `main` and tests through `npm test`, so the
+  shells tests run there too.
+
 ## [2.7.0]
 
 ### Added
