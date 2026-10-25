@@ -283,6 +283,32 @@ export function windowsEnvFile(exports: readonly string[]): string {
  * the sandbox is the sandbox account's, so git, npm and friends would not
  * read them anyway (the git identity travels as environment instead).
  */
+/**
+ * The docs section for a runtime error code (`WindowsSandboxError.code`,
+ * runtime 0.0.81) when one helps: the install for setup and account
+ * states, the loopback and profile sections for theirs. Undefined for codes
+ * that explain themselves (a mapped drive, a session that ended).
+ */
+export function windowsErrorRef(code: string | undefined): string | undefined {
+  switch (code) {
+    case "reinstall_required":
+    case "seclogon_disabled":
+    case "install_config_conflict":
+    case "kept_grants_in_use":
+    case "srt_win_outdated":
+      return docRef("windowsInstall");
+    case "wfp_loopback_mismatch":
+      return docRef("windowsLoopback");
+    case "profile_grant_outdated":
+    case "profile_grant_failed":
+    case "profile_operation_in_progress":
+    case "profile_grant_blocked_by_session":
+      return docRef("windowsProfile");
+    default:
+      return undefined;
+  }
+}
+
 /** Title of the question `/sandbox install` asks before the runtime's profile read grant. */
 export const PROFILE_GRANT_QUESTION = "Read your user profile inside the sandbox?";
 

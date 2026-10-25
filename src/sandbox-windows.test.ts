@@ -174,6 +174,22 @@ test("windows ops: extra denies ride as per-exec denyRead only; without a comman
   assert.equal(w.script, "export FOO='bar'; echo \"$FOO\"");
 });
 
+test("windows ops: a launch error the runtime names by code points at its docs section", async () => {
+  const fake = fakeWindowsRuntime();
+  const ops = createWindowsSandboxedBashOps(fake.manager, {
+    bash: "C:\\Git\\bin\\bash.exe",
+    extraEnv: {},
+    parseError: () => ({ message: "The profile read grant on this machine is outdated.", code: "profile_grant_outdated" }),
+  });
+  const r = await exec(ops, "exit 7", { PATH: process.env.PATH });
+  assert.equal(r.exitCode, 7);
+  assert.match(r.out, /The profile read grant on this machine is outdated\. \(see docs\/troubleshooting\.md#reading-your-profile-on-windows\)/);
+  const plain = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Git\\bin\\bash.exe", extraEnv: {}, parseError: () => ({ message: "the session ended", code: "session_ended" }) });
+  const r2 = await exec(plain, "exit 1", { PATH: process.env.PATH });
+  assert.match(r2.out, /the session ended\n/);
+  assert.doesNotMatch(r2.out, /see docs/);
+});
+
 test("windows ops: a timeout kills the child and rejects", async () => {
   const fake = fakeWindowsRuntime();
   const ops = createWindowsSandboxedBashOps(fake.manager, { bash: "C:\\Git\\bin\\bash.exe", extraEnv: {} });

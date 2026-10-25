@@ -18,29 +18,7 @@ import { withGitHubTokenHelper } from "./git-auth.ts";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
 import { gitDirsOf } from "./paths.ts";
 import { expandHome } from "./resolve.ts";
-import {
-  findGitBash,
-  gitIdentityEnv,
-  grantReadExecute,
-  parseProbe,
-  probeAdvice,
-  probeNotice,
-  probeProblem,
-  probeScript,
-  probeTargets,
-  readAcl,
-  readGitIdentity,
-  sandboxAceIn,
-  stageSrtWin,
-  expandWinEnv,
-  gitConfigMasked,
-  LAUNCH_ERROR_PREFIX,
-  stageGitConfig,
-  windowsEnvExports,
-  windowsEnvFile,
-  windowsGitEnv,
-  windowsScript,
-} from "./sandbox-win.ts";
+import { expandWinEnv, findGitBash, gitConfigMasked, gitIdentityEnv, grantReadExecute, LAUNCH_ERROR_PREFIX, parseProbe, probeAdvice, probeNotice, probeProblem, probeScript, probeTargets, readAcl, readGitIdentity, sandboxAceIn, stageGitConfig, stageSrtWin, windowsEnvExports, windowsEnvFile, windowsErrorRef, windowsGitEnv, windowsScript } from "./sandbox-win.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
 import { isOutsideWin } from "./win-paths.ts";
@@ -369,7 +347,7 @@ export interface WindowsOpsOptions {
   /** Directory for the env and command files, readable by the sandbox user; undefined inlines them into the shell argument. */
   commandDir?: string;
   /** The runtime's parser for srt-win's structured launch errors (a mapped-drive cwd, exit 16). */
-  parseError?: (stderr: string) => { message: string } | undefined;
+  parseError?: (stderr: string) => { message: string; code?: string } | undefined;
 }
 
 /** Kill the broker and whatever of its tree this user may end (the sandboxed child itself dies with the runner's job object). */
@@ -453,7 +431,8 @@ export function createWindowsSandboxedBashOps(
             emitViolations();
             if (code !== 0 && opts.parseError) {
               const e = opts.parseError(stderr);
-              if (e) onData(Buffer.from(`\n${LAUNCH_ERROR_PREFIX}${e.message}\n`));
+              const ref = e && windowsErrorRef(e.code);
+              if (e) onData(Buffer.from(`\n${LAUNCH_ERROR_PREFIX}${e.message}${ref ? ` (see ${ref})` : ""}\n`));
             }
           },
         );
