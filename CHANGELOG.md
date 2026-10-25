@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.0]
+
 ### Added
 - **Background shells: bash with `run_in_background: true`.** A dev server,
   a watcher, a long build or a monitor runs as its own process tree that
