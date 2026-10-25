@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.0]
+
 ### Added
 - **Windows: the sandboxed modes contain bash on native Windows (alpha).**
   The runtime's Windows backend runs each command as a separate local
@@ -80,7 +82,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
   [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
   tighten-only logic, tests, and security notes this takes over.
-
 - **The model is told how you answered a network prompt.** A command whose
   run prompted you for a host ends its output with a `<sandbox_network>`
   block naming the host and your answer (allowed for the session or the
@@ -119,9 +120,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   protected store or a grant the runtime would not rely on; `/sandbox`
   shows `Profile reads: granted at install` or `absent`
   ([docs/troubleshooting.md, Reading your profile on Windows](docs/troubleshooting.md#reading-your-profile-on-windows)).
-  Write grants
-  on project roots are kept between sessions, so only the first session in
-  a project walks its tree. The install has to be run once more
+  Write grants on project roots are kept between sessions, so only the
+  first session in a project walks its tree. The install has to be run once more
   (`/sandbox install`, one UAC prompt, in place): until then the sandbox
   reports that an earlier release set it up, and the sandboxed modes ask
   before every bash command.
