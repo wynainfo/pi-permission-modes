@@ -4,47 +4,30 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Switchable, **user-definable** permission modes for the [pi](https://pi.dev)
-coding agent. Each mode is a JSON bundle of an **OS-level sandbox profile**
-(bubblewrap / `sandbox-exec`) plus an **allow / ask / deny policy** across every
-surface (bash, file tools, the project boundary, web search, extension tools,
-skills). Bash gating uses a real **tree-sitter** AST, not a regex.
+coding agent. A mode bundles an **OS-level sandbox profile** with an
+**allow / ask / deny policy** for every tool the agent has. Four modes ship
+by default - **Default -> Plan Mode -> Build -> YOLO** - and you can retune
+them or add your own.
 
-Four modes ship by default - **Default -> Plan Mode -> Build -> YOLO** - and
-you can retune them or add your own in `permission-mode.json`.
+It is the most complete integration of Anthropic's `sandbox-runtime` for pi,
+with the usability work on top: one keystroke switches the mode, network
+prompts pause the command instead of failing it, the model is told its
+boundaries so it works within them, and every blocked step points at the
+documentation that explains it. **Linux** (including WSL2), **macOS** and
+**Windows** are supported.
+
+![pi with the permission modes extension: the header, the footer with the mode and the network state, and the /sandbox command typed in the prompt](https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/misc/screenshot-pi-permission-modes.jpg)
 
 The complete reference lives in [`docs/`](docs/index.md) and ships with the
-extension, so the agent can read it too: when a sandbox or permission limit
-blocks a step, the message points at the section that explains it. See
-[SECURITY.md](SECURITY.md) for the threat model, [CHANGELOG.md](CHANGELOG.md)
-for releases, and [CONTRIBUTING.md](CONTRIBUTING.md) to hack on it.
+extension, so the agent can read it too. [SECURITY.md](SECURITY.md) has the
+threat model, [CHANGELOG.md](CHANGELOG.md) the releases, and
+[CONTRIBUTING.md](CONTRIBUTING.md) how to hack on it.
 
----
-
-## Install
-
-From npm (recommended):
+## Quick start
 
 ```bash
 pi install npm:pi-permission-modes
 ```
-
-or straight from GitHub:
-
-```bash
-pi install git:github.com/wynainfo/pi-permission-modes
-```
-
-`pi install` fetches the package and runs `npm install` for you, so
-`@anthropic-ai/sandbox-runtime` comes along automatically; the pi SDK is
-provided by the host. Useful variants:
-
-- `pi install npm:pi-permission-modes@2.4.2` - pin a version (`pi update` won't advance it)
-- `pi install -l npm:pi-permission-modes` - project-local install (`.pi/npm/`, shareable with your team)
-- `pi update --extensions` - pull the latest release later
-
-To try it without adding it to your config, run it directly from a clone:
-`pi -e ./src/index.ts`. Node 22.12 or newer is required (pi itself needs
-22.19).
 
 On **Linux** (including **WSL2**) the sandbox also needs three system packages
 on `PATH`:
@@ -54,29 +37,7 @@ on `PATH`:
 sudo apt install -y bubblewrap socat ripgrep
 ```
 
-> **Ubuntu 24.04 and newer** (desktop and server; WSL2 images usually do not)
-> restrict unprivileged user namespaces through AppArmor, and every sandboxed
-> command fails with `bwrap: ... Operation not permitted`. Nothing runs
-> unsandboxed. Grant `userns` to `bwrap` with a small AppArmor profile, or
-> set `kernel.apparmor_restrict_unprivileged_userns=0`:
-> [docs/troubleshooting.md](docs/troubleshooting.md#bubblewrap-namespaces).
-> WSL1 has no user namespaces at all; the sandbox reports it as unsupported.
-
-On **macOS** the sandbox uses the built-in `sandbox-exec` - no extra packages.
-Go tools (`gh`, `kubectl`, `terraform`) need an opt-in switch per mode
-([docs/sandbox.md](docs/sandbox.md#macos)); loopback services and local
-ports are open unless a mode turns `sandbox.allowLocalBinding` off
-([docs/sandbox.md](docs/sandbox.md#local-binding)).
-
-> **Native Windows (alpha).** The sandbox is the runtime's Windows backend:
-> commands run as a separate local account behind a firewall rule keyed on
-> it, with the profile as NTFS permissions. It needs Git for Windows and one
-> `/sandbox install` in pi (one UAC prompt, then one question: whether your
-> user profile is readable to sandboxed commands, minus the credential
-> stores). Until then the sandboxed modes degrade to *prompting only*.
-> Details and limits: [docs/sandbox.md](docs/sandbox.md#windows).
-
-### Verify
+## Verify
 
 1. Start pi in any project - the footer shows a mode indicator, e.g. `Default`.
 2. Switch to Build (`alt+m` until `Build`, or `/perm build`):
@@ -84,13 +45,46 @@ ports are open unless a mode turns `sandbox.allowLocalBinding` off
    - otherwise -> `Build (!) sandbox-runtime missing ...` plus a fix-it notification.
 3. `/sandbox` prints the active sandbox configuration (or why it's unavailable).
 
----
+## Install
+
+`pi install` fetches the package and runs `npm install` for you, so
+`@anthropic-ai/sandbox-runtime` comes along automatically; the pi SDK is
+provided by the host. Node 22.12 or newer is required (pi itself needs
+22.19).
+
+### Other install methods
+
+- `pi install git:github.com/wynainfo/pi-permission-modes` - straight from GitHub (the latest release)
+- `pi install npm:pi-permission-modes@2.7.0` - pin a version (`pi update --extensions` won't advance it)
+- `pi install git:github.com/wynainfo/pi-permission-modes@dev` - the development branch; may break between releases
+- `pi install -l npm:pi-permission-modes` - project-local install (`.pi/npm/`, shareable with your team)
+- `pi update --extensions` - pull the latest release, whichever way you installed
+
+### Platform notes
+
+**Linux.** Ubuntu 24.04 and newer (desktop and server; WSL2 images usually
+do not) restrict unprivileged user namespaces through AppArmor, and every
+sandboxed command fails with `bwrap: ... Operation not permitted`. Nothing
+runs unsandboxed. The fix is a small AppArmor profile or one sysctl:
+[docs/troubleshooting.md](docs/troubleshooting.md#bubblewrap-namespaces).
+WSL1 has no user namespaces at all; the sandbox reports it as unsupported.
+
+**macOS.** The sandbox uses the built-in `sandbox-exec` - no extra packages.
+Go tools (`gh`, `kubectl`, `terraform`) need an opt-in switch per mode
+([docs/sandbox.md](docs/sandbox.md#macos)); loopback services and local
+ports are open unless a mode turns `sandbox.allowLocalBinding` off
+([docs/sandbox.md](docs/sandbox.md#local-binding)).
+
+**Windows (alpha).** The sandbox is the runtime's native Windows backend:
+commands run as a separate local account behind a firewall rule keyed on
+it, with the profile as NTFS permissions. It needs Git for Windows and one
+`/sandbox install` in pi (one UAC prompt, then one question: whether your
+user profile is readable to sandboxed commands, minus the credential
+stores). Until then the sandboxed modes degrade to *prompting only*.
+Details and limits: [docs/sandbox.md](docs/sandbox.md#windows).
 
 ## Modes
 
-Cycle with **`alt+m`** or set directly with **`/perm <mode>`**. The current
-mode is persisted per session and shown in the footer, next to the network
-state: `Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)`.
 The table describes the **shipped defaults**; every mode is data and can be
 retuned, and you can add your own ([docs/modes.md](docs/modes.md)).
 
@@ -111,6 +105,9 @@ in-project `bash` **prompts** instead - you are never silently unprotected.
 
 ### At a glance
 
+The current mode is persisted per session and shown in the footer, next to
+the network state: `Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)`.
+
 | Command | What it does |
 |---|---|
 | `alt+m`, `/perm <mode>` | Cycle or switch the mode |
@@ -118,6 +115,7 @@ in-project `bash` **prompts** instead - you are never silently unprotected.
 | `/perm init` | Write a full copy of the stock defaults to the global config |
 | `/perm clear-approvals`, `/perm blocks`, `/perm unblock <path>` | Session grants and "Deny and block" paths |
 | `/plan approve`, `/plan status` | Plan approval |
+| `/shells` | List and stop background shells |
 | `/sandbox` | The active sandbox configuration |
 | `pi --perm <mode>`, `pi --no-sandbox` | Start mode; keep the modes, drop OS sandboxing |
 
@@ -130,24 +128,23 @@ offer **Deny and block**, which masks the path for the rest of the session
 cannot authenticate inside the sandbox (`~/.ssh` is masked); use HTTPS with a
 fine-grained token ([docs/network.md](docs/network.md#git-authentication)).
 
----
-
 ## How protection works
 
 Two independent layers compose:
 
 1. **Policy engine** (`allow` / `ask` / `deny`): every tool call resolves
-   against the active mode's policy for its surface. For **bash**, the command
-   line is parsed with **tree-sitter** and every command it contains, nested
-   ones included, is judged separately; out-of-project paths and privilege
-   escalation are detected structurally
+   against the active mode's policy for its surface (bash, file tools, the
+   project boundary, web search, extension tools, skills). For **bash**, the
+   command line is parsed with **tree-sitter** and every command it contains,
+   nested ones included, is judged separately; out-of-project paths and
+   privilege escalation are detected structurally
    ([docs/permissions.md](docs/permissions.md)).
 2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`): the real enforcement for
-   bash. In-project bash runs wrapped by `sandbox-exec` (macOS) or
-   `bubblewrap` (Linux), with **writes** confined to the profile's
-   `allowWrite`, the profile's `denyRead` secrets unreadable, and network
-   traffic filtered by a domain allowlist, regardless of what the command
-   does ([docs/sandbox.md](docs/sandbox.md)).
+   bash. In-project bash runs wrapped by `bubblewrap` (Linux), `sandbox-exec`
+   (macOS) or a separate local account (Windows), with **writes** confined to
+   the profile's `allowWrite`, the profile's `denyRead` secrets unreadable,
+   and network traffic filtered by a domain allowlist, regardless of what the
+   command does ([docs/sandbox.md](docs/sandbox.md)).
 
 So a `bash` command that policy says `allow` still runs **sandboxed**; `ask`
 prompts, then runs sandboxed, or **unsandboxed** for an escape you approve;
@@ -164,8 +161,6 @@ it with `kill_shell`, and is told when it ends. `/shells` lists and stops
 them. On Linux `expose` relays ports into the shell so you can open its
 server in a browser ([docs/shells.md](docs/shells.md)).
 
----
-
 ## Configuration
 
 Modes are data, layered in this order:
@@ -179,42 +174,28 @@ Modes are data, layered in this order:
    make an existing mode *stricter*. Opening an untrusted repo can never
    weaken your protection.
 
+A mode has a `sandbox` block (what bash may read, write and reach) and a
+`permission` block (an `allow` / `ask` / `deny` per tool, as a single action
+or a glob map). A redefined mode keeps every stock field you leave out, and
+a block you set replaces the stock block whole. A global config that gives
+Build its own network allowlist and asks before every `rm`:
+
 ```jsonc
 {
   "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
-  "defaultMode": "default",
-  "cycleOrder": ["default", "plan", "build", "yolo"],
   "modes": {
-    "default": {                        // values here are illustrative - run /perm init for the real defaults
-      "label": "Default",
-      "color": "muted",                 // muted | mdLink | accent | error
-      "sandbox": {
-        "enabled": true,                // false = run bash unsandboxed (YOLO-style)
-        "writable": true,               // false = bash runs read-only (Plan-style)
-        "allowWrite": [".", "/tmp/pi"],
-        "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg"],
-        "network": { "allowedDomains": ["github.com", "*.github.com"], "deniedDomains": [] }
-      },
-      "permission": {
-        "path": { "*": "allow", "*.env": "deny" },  // cross-cutting gate (deny overrides per-tool allow)
-        "external_directory": "ask",                // the out-of-project boundary
-        "read": "allow", "grep": "allow", "find": "allow", "ls": "allow",
-        "write": "ask", "edit": "ask",
-        "bash": { "*": "ask", "sudo*": "deny" },    // matched per command (name + args)
-        "web_search": "ask", "tool": "allow", "skill": "allow"
-      }
+    "build": {
+      "sandbox": { "network": { "allowedDomains": ["github.com", "*.github.com", "registry.npmjs.org"] } },
+      "permission": { "bash": { "*": "allow", "rm*": "ask" } }
     }
   }
 }
 ```
 
-Actions are `allow`, `ask`, `deny`; a surface is a single action or a glob
-map where the **last matching pattern wins** and, across layers, the **most
-restrictive wins**. Every key, the pattern syntax, the project rules, and the
-outdated-default warnings: [docs/configuration.md](docs/configuration.md),
+In a glob map the **last matching pattern wins** and, across layers, the
+**most restrictive wins**. Every key, the pattern syntax, the project rules,
+and the outdated-default warnings: [docs/configuration.md](docs/configuration.md),
 [docs/sandbox.md](docs/sandbox.md), [docs/permissions.md](docs/permissions.md).
-
----
 
 ## Documentation
 
@@ -229,8 +210,6 @@ outdated-default warnings: [docs/configuration.md](docs/configuration.md),
 | [docs/shells.md](docs/shells.md) | Background shells: `run_in_background`, `bash_output`, `kill_shell`, `/shells`, notices, port exposure |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | One section per error message |
 | [docs/architecture.md](docs/architecture.md) | For forks and contributors |
-
----
 
 ## Disabling
 
