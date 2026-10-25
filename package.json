@@ -1,6 +1,6 @@
 {
   "name": "pi-permission-modes",
-  "version": "2.7.1",
+  "version": "2.7.2",
   "type": "module",
   "description": "Switchable, user-definable permission modes for the pi coding agent. Each mode pairs an OS-level sandbox (bubblewrap, sandbox-exec, native Windows) with an allow / ask / deny policy for every tool. Default, Plan Mode, Build and YOLO ship; retune them or add your own. Live network prompts, plan approval, background shells with port exposure.",
   "license": "MIT",

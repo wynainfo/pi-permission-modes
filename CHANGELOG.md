@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.2]
+
+### Changed
+- **Package description and demo video.** The npm description (the intro on
+  pi.dev) describes 2.7 instead of 2.1; the demo video shows a Plan Mode
+  round trip, a background shell with its link, and a refused read outside
+  the project.
+- The README screenshot shows the out-of-project prompt.
+
 ## [2.7.1]
 
 ### Changed
