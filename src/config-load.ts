@@ -140,6 +140,15 @@ function sanitizeSandbox(raw: unknown, where: string, onError: OnError): Partial
         }
         const macos: MacosOptions = {};
         for (const [mk, mv] of safeEntries(v)) {
+          if (mk === "allowLocalBinding") {
+            // 2.5.0 spelled the switch `sandbox.macos.allowLocalBinding`; it
+            // is the top-level key now, with one meaning on every platform,
+            // and the old spelling keeps working. An explicit top-level
+            // value wins over it.
+            if (typeof mv !== "boolean") drop(`macos.${mk}`);
+            else if ((raw as Record<string, unknown>).allowLocalBinding === undefined) out.allowLocalBinding = mv;
+            continue;
+          }
           if (!(MACOS_KEYS as readonly string[]).includes(mk)) {
             onError(`permission-mode: ignoring unknown sandbox.macos field "${mk}" in ${where}`);
           } else if (typeof mv === "boolean") macos[mk as keyof MacosOptions] = mv;

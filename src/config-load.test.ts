@@ -451,13 +451,14 @@ test("sandbox.macos: global opt-in projects to the runtime under its name; proje
   s.cleanup();
 });
 
-test("sandbox.allowLocalBinding: on unless set; a project may turn it off, never back on; the old macos key is unknown", () => {
+test("sandbox.allowLocalBinding: on unless set; a project may turn it off, never back on; the 2.5.0 spelling sandbox.macos.allowLocalBinding still works", () => {
   const s = sandbox({
     global: {
       modes: {
         build: { sandbox: { allowLocalBinding: false } },
         plan: { sandbox: { allowLocalBinding: "yes" } },
-        yolo: { sandbox: { macos: { allowLocalBinding: true } } }, // the dev-only spelling: unknown, warned
+        default: { sandbox: { allowLocalBinding: false, macos: { allowLocalBinding: true } } }, // both spellings: the top-level one wins
+        yolo: { sandbox: { macos: { allowLocalBinding: false } } }, // the 2.5.0 spelling alone: read as the top-level key
       },
     },
     project: {
@@ -476,7 +477,9 @@ test("sandbox.allowLocalBinding: on unless set; a project may turn it off, never
   assert.equal(c.modes.plan.sandbox.allowLocalBinding, undefined);
   assert.equal(profileToConfig(c.modes.plan.sandbox).network.allowLocalBinding, true, "unset means on");
   assert.ok(s.errors.some((e) => /sandbox\.allowLocalBinding.*wrong type/.test(e)), "wrong-typed global value dropped with a warning");
-  assert.ok(s.errors.some((e) => /unknown sandbox\.macos field "allowLocalBinding"/.test(e)));
+  assert.equal(c.modes.yolo.sandbox.allowLocalBinding, false, "the 2.5.0 spelling is read");
+  assert.deepEqual(c.modes.yolo.sandbox.macos, {}, "and not kept under macos");
+  assert.ok(!s.errors.some((e) => /sandbox\.macos field "allowLocalBinding"/.test(e)), "the old spelling is not an unknown key");
   assert.ok(!s.errors.some((e) => /plan.*allowLocalBinding/.test(e)), "repeating the default stays silent");
   s.cleanup();
 });

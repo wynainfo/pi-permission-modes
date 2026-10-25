@@ -145,7 +145,9 @@ else grants nothing. In Plan mode the git directories stay read-only.
 local port and whether this machine may connect to it while the command
 runs: a dev server under test, a preview you open in the browser. It is on
 unless set; a project config may set it to `false`, never back to `true`.
-What it does differs per platform:
+Version 2.5.0 spelled it `macos.allowLocalBinding` inside the `sandbox`
+block; that spelling is still read, and an explicit top-level value wins
+over it. What it does differs per platform:
 
 - **macOS.** The profile otherwise allows direct TCP only to the proxy's own
   ports, so nothing can listen and a raw TCP client that does not speak
