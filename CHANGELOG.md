@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.5.0]
+
 ### Added
 - **A shipped `docs/` reference, and every hint points into it.** The
   package now carries `docs/` (configuration, modes, permissions, sandbox,
