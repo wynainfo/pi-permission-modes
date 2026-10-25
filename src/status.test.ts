@@ -21,6 +21,9 @@ test("updateStatus: a switch in flight is marked while the sandbox enforces", ()
   assert.doesNotMatch(c.status, /sandboxed in project dir/);
   updateStatus(c as never, mode({ enabled: true, writable: true }), { ready: false, warn: "x", disabled: false, switching: true }, false);
   assert.doesNotMatch(c.status, /applying sandbox profile/);
+  // A long sandbox step (the Windows install) shows as busy, in place of the warn and the switch mark.
+  updateStatus(c as never, mode({ enabled: true, writable: true }), { ready: false, warn: "x", disabled: false, switching: true }, false, "profile read grant, 42 s");
+  assert.equal(c.status, "Build (sandbox: profile read grant, 42 s)  Network: open");
 });
 
 test("updateStatus: filtered / open / unrestricted / degraded", () => {

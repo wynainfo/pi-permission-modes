@@ -703,18 +703,40 @@ export default async function (pi: ExtensionAPI) {
               `permission-mode: Windows sandbox install (one UAC prompt${profileGrant ? ", then the profile read grant, which takes minutes the first time" : ""})...`,
               "info",
             );
-            const choices = { allowLoopback, profileGrant, onProgress: (line: string) => ctx.ui.notify(`permission-mode: ${line}`, "info") };
+            // The install, the profile grant and the first initialize take
+            // minutes together, without a word from the runtime in between:
+            // the footer shows the step in flight and the time spent.
+            const started = Date.now();
+            let stage = "install, waiting for the UAC prompt";
+            const show = () => updateStatus(ctx, currentMode(), sandbox, net.open, `${stage}, ${Math.round((Date.now() - started) / 1000)} s`);
+            const ticker = setInterval(show, 1000);
+            const choices = {
+              allowLoopback,
+              profileGrant,
+              onProgress: (line: string) => ctx.ui.notify(`permission-mode: ${line}`, "info"),
+              onStage: (s: string) => {
+                stage = s;
+                show();
+              },
+            };
             let line: string;
             try {
-              line = await sandbox.windowsSetup("install", choices);
-            } catch (e) {
-              if ((e as { code?: string }).code !== "install_config_conflict") throw e;
-              const replace = await ctx.ui.confirm(
-                "Replace the existing sandbox install?",
-                `${e instanceof Error ? e.message : String(e)}\n\nYes installs again with loopback ${allowLoopback ? "open" : "closed"} (one more UAC prompt); No leaves the install as it is.`,
-              );
-              if (!replace) return ctx.ui.notify("permission-mode: Windows sandbox install left as it is", "info");
-              line = await sandbox.windowsSetup("install", { ...choices, force: true });
+              try {
+                line = await sandbox.windowsSetup("install", choices);
+              } catch (e) {
+                if ((e as { code?: string }).code !== "install_config_conflict") throw e;
+                clearInterval(ticker);
+                const replace = await ctx.ui.confirm(
+                  "Replace the existing sandbox install?",
+                  `${e instanceof Error ? e.message : String(e)}\n\nYes installs again with loopback ${allowLoopback ? "open" : "closed"} (one more UAC prompt${profileGrant ? ", then the profile read grant, minutes the first time" : ""}); No leaves the install as it is.`,
+                );
+                if (!replace) return ctx.ui.notify("permission-mode: Windows sandbox install left as it is", "info");
+                ctx.ui.notify("permission-mode: Windows sandbox install again, replacing the filter set (one more UAC prompt); the footer shows the step in flight...", "info");
+                line = await sandbox.windowsSetup("install", { ...choices, force: true });
+              }
+            } finally {
+              clearInterval(ticker);
+              updateStatus(ctx, currentMode(), sandbox, net.open); // the busy text goes, whichever way the install ended
             }
             ctx.ui.notify(`permission-mode: ${line}`, sandbox.ready ? "info" : "warning");
           }

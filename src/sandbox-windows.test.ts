@@ -349,13 +349,24 @@ test("controller (win32): windowsSetup passes the install choices on and reports
   const notes: string[] = [];
   await baseInit(c, fake, notes);
   const progress: string[] = [];
-  const line = await c.windowsSetup("install", { allowLoopback: true, profileGrant: true, onProgress: (l) => progress.push(l) });
+  const stages: string[] = [];
+  const line = await c.windowsSetup("install", { allowLoopback: true, profileGrant: true, onProgress: (l) => progress.push(l), onStage: (s) => stages.push(s) });
   assert.equal(line, "Windows sandbox installed and active. Loopback open; your profile readable to sandboxed commands (minus credential stores).");
   const o = fake.installs[0] as Record<string, unknown>;
   assert.equal(o.allowLoopback, true);
   assert.equal(o.skipProfileGrant, false);
   assert.equal(o.force, undefined);
   assert.equal(typeof o.onProfileGrantProgress, "function");
+  // The runtime's notice is for reading, its progress lines and the steps go to the footer.
+  (o.onProfileGrantStart as (n: string) => void)("Making your profile readable to sandboxed commands...");
+  (o.onProfileGrantProgress as (l: string) => void)("AppData\\Local (1 of 40)");
+  assert.deepEqual(progress, ["Making your profile readable to sandboxed commands..."]);
+  assert.deepEqual(stages, [
+    "install, waiting for the UAC prompt",
+    "initializing this session, permission entries over the project",
+    "profile read grant, minutes the first time",
+    "profile read grant: AppData\\Local (1 of 40)",
+  ]);
   assert.ok(fake.calls.indexOf("reset") < fake.calls.lastIndexOf("initialize"), "this session's runtime is released before the install and re-initialized after");
   const skipped = await c.windowsSetup("install", { allowLoopback: false, profileGrant: false, force: true });
   assert.match(skipped, /Loopback closed; your profile not readable \(skipped\)\.$/);

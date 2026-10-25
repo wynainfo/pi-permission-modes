@@ -688,8 +688,10 @@ export interface WindowsInstallChoices {
   profileGrant: boolean;
   /** Replace an install made with other options (after the user agreed). */
   force?: boolean;
-  /** Progress of the profile grant (a line per top-level item batch) and its start notice. */
+  /** The runtime's profile grant start notice and its progress lines (one per folder), for the user to read. */
   onProgress?: (line: string) => void;
+  /** The step in flight, for the footer: the UAC prompt, the profile grant, the session initialize. */
+  onStage?: (stage: string) => void;
 }
 
 /** The command-file directory with read access for the sandbox user, or undefined when that cannot be arranged (files are then inlined). */
@@ -1086,7 +1088,8 @@ export class SandboxController {
       return this.degrade(
         profile,
         WINDOWS_REINSTALL_WARN,
-        `permission-mode: ${deps.reinstallRequired.split("\n")[0]} Run /sandbox install (one UAC prompt; it upgrades the install in place). ` +
+        // The runtime's text goes on with its own re-run advice; the first sentence is the fact.
+        `permission-mode: ${deps.reinstallRequired.split(/(?<=\.)\s/)[0]} Run /sandbox install (one UAC prompt; it upgrades the install in place). ` +
           `Until then the sandboxed modes ask before every bash command; see ${docRef("windowsInstall")}`,
       );
     }
@@ -1270,13 +1273,17 @@ export class SandboxController {
       // An install replaces this session's runtime state: release it first
       // (kept write grants stay, by the runtime's design).
       await this.reset();
+      c.onStage?.("install, waiting for the UAC prompt");
       const r = await rt.installWindowsSandboxAsync({
         srtWin,
         allowLoopback: c.allowLoopback,
         skipProfileGrant: !c.profileGrant,
         force: c.force,
-        onProfileGrantStart: c.onProgress,
-        onProfileGrantProgress: c.onProgress,
+        onProfileGrantStart: (notice) => {
+          c.onProgress?.(notice);
+          c.onStage?.("profile read grant, minutes the first time");
+        },
+        onProfileGrantProgress: (line) => c.onStage?.(`profile read grant: ${line.length > 60 ? `${line.slice(0, 57)}...` : line}`),
       });
       if (r.cancelled) return "Windows sandbox install cancelled (the UAC prompt was dismissed).";
       const grant = r.profileGrant;
@@ -1289,7 +1296,10 @@ export class SandboxController {
       const r = rt.uninstallWindowsSandbox({ srtWin });
       if (r.cancelled) return "Windows sandbox uninstall cancelled (the UAC prompt was dismissed).";
     }
-    if (this.lastInit) await this.init(this.lastInit);
+    if (this.lastInit) {
+      choices?.onStage?.("initializing this session, permission entries over the project");
+      await this.init(this.lastInit);
+    }
     if (this.ready) return `Windows sandbox installed and active.${outcome}`;
     return action === "install"
       ? `Windows sandbox installed, but not active: ${this.warn ?? "unknown"}.${outcome}`

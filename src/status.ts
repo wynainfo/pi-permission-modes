@@ -23,6 +23,8 @@ export function updateStatus(
   mode: ModeDef,
   sandbox: Pick<SandboxController, "ready" | "warn" | "disabled"> & { switching?: boolean },
   networkOpen: boolean,
+  /** A long-running sandbox step in flight (the Windows install and its profile grant), with its elapsed time; shown instead of the warn. */
+  busy?: string,
 ): void {
   const t = ctx.ui.theme;
   const enforcing = mode.sandbox.enabled && sandbox.ready;
@@ -30,9 +32,10 @@ export function updateStatus(
   // A profile switch in flight (the runtime re-initializes; on Windows it
   // re-stamps permission entries over the project) is marked: the mode has
   // changed, the sandbox follows in a moment.
-  if (enforcing && sandbox.switching) status += " " + t.fg("warning", "(applying sandbox profile...)");
+  if (busy) status += " " + t.fg("warning", `(sandbox: ${busy})`);
+  else if (enforcing && sandbox.switching) status += " " + t.fg("warning", "(applying sandbox profile...)");
   else status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");
-  if (mode.sandbox.enabled && sandbox.warn && !sandbox.disabled) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
+  if (!busy && mode.sandbox.enabled && sandbox.warn && !sandbox.disabled) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
   if (enforcing && networkFiltered(mode.sandbox)) {
     status +=
       "  " + (networkOpen ? t.fg("warning", "Network: open (alt+n)") : t.fg("success", "Network: filtered (alt+n)"));
