@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.5.0]
+
 ### Added
 - **Background shells: bash with `run_in_background: true`.** A dev server,
   a watcher, a long build or a monitor runs as its own process tree that
@@ -96,6 +98,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   machine may connect to it while the command runs (a dev server under
   test, a preview in the browser); the command's end closes it. On by
   default; a project config may set it to `false`, never back to `true`.
+  Configs from 2.5.0 that spell it `sandbox.macos.allowLocalBinding` keep
+  working (the top-level value wins when both are set).
   On macOS it maps to the runtime's `network.allowLocalBinding`, which also
   lets sandboxed bash reach loopback services directly (database drivers,
   `psql`), past the proxy and its prompt: the profile otherwise allows

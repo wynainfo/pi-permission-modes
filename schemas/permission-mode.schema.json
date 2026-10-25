@@ -106,7 +106,8 @@
           "additionalProperties": false,
           "description": "macOS-only runtime options, off unless set and without effect elsewhere. Projects may set a key to false, never true.",
           "properties": {
-            "enableWeakerNetworkIsolation": { "type": "boolean", "description": "Let Go programs (gh, kubectl, terraform, gcloud) verify TLS by allowing the trustd lookup. trustd fetches revocation and issuer URLs outside the proxy, so this is an exfiltration channel." }
+            "enableWeakerNetworkIsolation": { "type": "boolean", "description": "Let Go programs (gh, kubectl, terraform, gcloud) verify TLS by allowing the trustd lookup. trustd fetches revocation and issuer URLs outside the proxy, so this is an exfiltration channel." },
+            "allowLocalBinding": { "type": "boolean", "description": "The 2.5.0 spelling of the top-level sandbox.allowLocalBinding; still read, and the top-level value wins when both are set." }
           }
         },
         "linux": {
