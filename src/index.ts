@@ -892,8 +892,9 @@ export default async function (pi: ExtensionAPI) {
                   : []),
               ]
             : []),
-          `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
-          `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
+          ...(networkFiltered(m.sandbox)
+            ? [`Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`, `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`]
+            : ["Network: unrestricted in this mode (no allowlist configured)"]),
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
           ...(sandbox.lastSwitch ? [`Last profile switch: ${sandbox.lastSwitch === "hot" ? "in place (updateConfig; running commands kept their sandbox)" : "runtime restart (reset + initialize)"}`] : []),
           ...(sandbox.pendingProfile ? [`Pending profile: the previous one stays in force until ${shellsRunning()} background shell(s) end (/shells stop all applies it now)`] : []),
