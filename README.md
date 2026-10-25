@@ -16,7 +16,7 @@ boundaries so it works within them, and every blocked step points at the
 documentation that explains it. **Linux** (including WSL2), **macOS** and
 **Windows** are supported.
 
-![pi with the permission modes extension: the header, the footer with the mode and the network state, and the /sandbox command typed in the prompt](https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/misc/screenshot-pi-permission-modes.jpg)
+![pi in Build mode asking before a read outside the project: Allow once, Allow for session, Deny, Deny and block; the footer shows the sandboxed mode, the filtered network and two background shells](https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/misc/screenshot-pi-permission-modes.png)
 
 The complete reference lives in [`docs/`](docs/index.md) and ships with the
 extension, so the agent can read it too. [SECURITY.md](SECURITY.md) has the
