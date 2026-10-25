@@ -177,6 +177,42 @@ sandboxed mode, and to change the installed mode set it in the config and
 run `/sandbox install` again (one UAC prompt; an install made with other
 options asks before it is replaced).
 
+## Reading your profile on Windows
+
+Since sandbox-runtime 0.0.81, `/sandbox install` asks whether your user
+profile should be readable to sandboxed commands. Yes grants the sandbox
+account read access to the profile minus the runtime's exclusion list
+(`.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.config\gh`,
+browser profiles, the Windows credential vaults and the local Temp folder):
+tools installed for your user alone run, and npm, pip, NuGet, Maven, Gradle
+and git find your configuration, feed sign-ins included. The grant is per
+machine and user, not per project or mode: every sandboxed session on the
+machine reads the profile until `/sandbox uninstall` (or `/sandbox install`
+answered No). On a shared machine answer No; the sandbox then reads the
+project and the known tool roots only, as before.
+
+`/sandbox` shows the state as `Profile reads: granted at install` or
+`absent`, with the variables the grant adds (`NPM_CONFIG_USERCONFIG`,
+`PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`, `CARGO_HOME`) so the tools
+read your files in place. With the grant, an `allowRead` inside the
+profile is redundant and left out of the runtime's grants; a mode that
+names an excluded store on purpose (`"allowRead": ["~/.ssh"]`) gets it
+through the runtime's explicit read option, never as a write root. A
+project directory that is, or holds, an excluded store (your profile
+itself, `AppData`) cannot be granted write access: the footer says
+`Windows sandbox off: a write root holds a protected store`; choose a
+narrower directory.
+
+`Windows sandbox: profile read grant needs /sandbox install` in the footer
+means the grant recorded on this machine is one the runtime refuses to
+rely on: its run did not finish, it was made by a release with an older
+exclusion list, or for another profile. Run `/sandbox install` again (one
+UAC prompt; it refreshes the grant), or answer No there to go without. A
+grant warning after initialize (`profile read grant warning(s): ...`)
+names a protected path that is readable after all through an entry an
+earlier run left and could not remove; its message carries the `icacls`
+command that removes it, to run from an elevated prompt.
+
 ## Windows sandbox self-check
 
 On Windows the sandbox runs each command as the local user `srt-sandbox`

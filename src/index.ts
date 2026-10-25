@@ -741,6 +741,10 @@ export default async function (pi: ExtensionAPI) {
                 `Last initialize: ${((sandbox.lastInitMs ?? 0) / 1000).toFixed(1)} s` +
                   (sandbox.lastResetMs !== undefined ? `, last reset: ${(sandbox.lastResetMs / 1000).toFixed(1)} s` : "") +
                   " (a mode switch pays both; the runtime copies permission entries over every granted tree, blocking pi meanwhile)",
+                sandbox.windowsStatus()!.profileRead === "granted"
+                  ? `Profile reads: granted at install (your profile minus the credential stores${sandbox.windowsStatus()!.profileEnv.length ? `; env ${sandbox.windowsStatus()!.profileEnv.join(", ")}` : ""})`
+                  : "Profile reads: absent (the project and the tool roots only; /sandbox install grants them)",
+                ...(sandbox.windowsStatus()!.profileWarnings.length ? [`Profile grant warnings: ${sandbox.windowsStatus()!.profileWarnings.join(" ")}`] : []),
               ]
             : []),
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
@@ -1050,6 +1054,7 @@ export default async function (pi: ExtensionAPI) {
       scratchDir,
       platform: process.platform,
       windowsLoopback: sandbox.windowsStatus()?.loopbackInstalled,
+      windowsProfileRead: sandbox.windowsStatus()?.profileRead,
     });
     if (aware) parts.push(aware);
     // Where the reference lives, in every mode: config questions arise in YOLO too.

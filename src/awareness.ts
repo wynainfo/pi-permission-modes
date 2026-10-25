@@ -70,6 +70,8 @@ export interface AwarenessOptions {
   platform?: NodeJS.Platform;
   /** Windows: the loopback mode the sandbox was installed with, which is what applies (the mode's `allowLocalBinding` does not). */
   windowsLoopback?: boolean;
+  /** Windows: whether the user's profile is readable through the install's profile read grant (minus the credential stores). */
+  windowsProfileRead?: "granted" | "absent";
 }
 
 /** The one-sentence scratch-directory instruction, shared by every variant. */
@@ -160,9 +162,23 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   if (win32) {
     // The Windows backend runs commands as another account: reads are what
     // the profile grants, not "everything but the denies".
-    const home = grantsHome(sb.allowRead);
-    const carve = (sb.allowRead ?? []).filter((p) => !grantsHome([p])).map(renderWritePath);
-    const readable = ["the project", "Windows and Program Files", ...(home ? ["your user profile (~)"] : []), ...carve];
+    const granted = opts.windowsProfileRead === "granted";
+    const home = grantsHome(sb.allowRead) || granted;
+    const homeDir = expandHome("~").toLowerCase();
+    // With the grant, a listed path inside the profile is readable through it anyway.
+    const carve = (sb.allowRead ?? [])
+      .filter((p) => !grantsHome([p]) && !(granted && expandHome(p).toLowerCase().startsWith(homeDir)))
+      .map(renderWritePath);
+    const readable = [
+      "the project",
+      "Windows and Program Files",
+      ...(granted
+        ? ["your user profile (~) except the credential stores (.ssh, .gnupg, .aws, .azure, .kube, .docker, .config\\gh, browser profiles, Windows credential vaults, the Temp folder)"]
+        : home
+          ? ["your user profile (~)"]
+          : []),
+      ...carve,
+    ];
     lines.push(
       `- This is the native Windows sandbox: commands run in Git Bash as a separate local account (srt-sandbox). Readable: ${readable.join(", ")}` +
         `${sb.denyRead?.length ? `, EXCEPT ${sb.denyRead.join(", ")}` : ""}. Anything else reads as absent or "Access is denied"` +

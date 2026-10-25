@@ -686,10 +686,20 @@ interface WindowsBackend {
   loopbackInstalled: boolean;
   /** Whether the installing user's profile is readable to sandboxed commands (the install's profile read grant). */
   profileRead: "granted" | "absent" | undefined;
+  /** The grant's record while it is current: what it excludes, what it leaves ungranted, the variables it offers. */
+  profileStatus?: WindowsProfileGrant;
+  /** What the runtime said about the grant at the last initialize (excluded paths that are readable after all, and the like). */
+  profileWarnings: string[];
 }
+
+type WindowsProfileGrant = Awaited<ReturnType<SandboxRuntime["getWindowsProfileReadStatusAsync"]>>;
 
 /** Footer reason while the install predates this runtime release (setup version changed). */
 export const WINDOWS_REINSTALL_WARN = "Windows sandbox set up by another release (/sandbox install)";
+/** Footer reason while the install's profile read grant is one the runtime refuses to rely on. */
+export const WINDOWS_PROFILE_GRANT_WARN = "Windows sandbox: profile read grant needs /sandbox install";
+/** Footer reason when the mode's write roots collide with the grant's exclusions (the runtime would refuse the session). */
+export const WINDOWS_PROFILE_CONFLICT_WARN = "Windows sandbox off: a write root holds a protected store";
 
 /** What `windowsSetup("install")` passes on; the UI asks the questions. */
 export interface WindowsInstallChoices {
@@ -795,9 +805,33 @@ export class SandboxController {
   }
 
   /** What the Windows backend runs with, for `/sandbox`; undefined off Windows or while degraded. */
-  windowsStatus(): { bash: string; srtWinPath: string; readOnly: boolean; grants: string[]; loopbackInstalled: boolean; profileRead: "granted" | "absent" | undefined } | undefined {
+  windowsStatus():
+    | {
+        bash: string;
+        srtWinPath: string;
+        readOnly: boolean;
+        grants: string[];
+        loopbackInstalled: boolean;
+        profileRead: "granted" | "absent" | undefined;
+        /** The configuration-file variables the grant adds to sandboxed commands (names). */
+        profileEnv: string[];
+        profileWarnings: string[];
+      }
+    | undefined {
     const w = this.win;
-    return w ? { bash: w.bash, srtWinPath: w.srtWinPath, readOnly: w.readOnly, grants: w.grants, loopbackInstalled: w.loopbackInstalled, profileRead: w.profileRead } : undefined;
+    if (!w) return undefined;
+    return {
+      bash: w.bash,
+      srtWinPath: w.srtWinPath,
+      readOnly: w.readOnly,
+      grants: w.grants,
+      loopbackInstalled: w.loopbackInstalled,
+      profileRead: w.profileRead,
+      profileEnv: Object.entries(w.profileStatus?.env ?? {})
+        .filter(([k, v]) => w.extraEnv[k] === v)
+        .map(([k]) => k),
+      profileWarnings: w.profileWarnings,
+    };
   }
 
   /**
@@ -1081,8 +1115,29 @@ export class SandboxController {
     this.dependencyWarnings = deps.warnings;
     if (deps.warnings.length > 0 && hasUI) notify(`permission-mode: sandbox dependency warning(s): ${deps.warnings.join("; ")}`);
 
+    // The install's profile read grant (0.0.81): current, absent, or one the
+    // runtime would refuse at initialize (an unfinished run, an older
+    // exclusion list, another profile). Its record carries the exclusions
+    // (for the mode's paths) and the configuration-file variables.
+    let grant: WindowsProfileGrant;
+    try {
+      grant = await rt.getWindowsProfileReadStatusAsync({ srtWin });
+    } catch (err) {
+      return unavailable(`profile read grant: ${errMsg(err)}`, `See ${docRef("windowsProfile")}`);
+    }
+    if (grant.state !== "none" && grant.state !== "current") {
+      return this.degrade(
+        profile,
+        WINDOWS_PROFILE_GRANT_WARN,
+        `permission-mode: the profile read grant on this machine cannot be relied on (${grant.state}${grant.reason ? `: ${grant.reason}` : ""}), so the runtime refuses every session. ` +
+          `Run /sandbox install again (one UAC prompt; it refreshes the grant, or answer No to go without). Until then the sandboxed modes ask before every bash command; see ${docRef("windowsProfile")}`,
+      );
+    }
+    const profileRead = grant.state === "current" ? "granted" : "absent";
     const readable = [...(profile.allowRead ?? []), ...(profile.allowWrite ?? [])].map((p) => winAbs(p, cwd, env));
-    const bash = hooks.findBash ? hooks.findBash(readable) : findGitBash(env, existsSync, readable);
+    // With the grant, a Git for Windows installed for the user alone is readable too.
+    const bashRoots = profileRead === "granted" && env.USERPROFILE ? [...readable, env.USERPROFILE] : readable;
+    const bash = hooks.findBash ? hooks.findBash(bashRoots) : findGitBash(env, existsSync, bashRoots);
     if (!bash) {
       return this.degrade(
         profile,
@@ -1106,15 +1161,51 @@ export class SandboxController {
       );
     }
     this.manager = rt.SandboxManager;
-    const extraEnv = { ...gitIdentityEnv(id.name, id.email), ...windowsGitEnv(env) };
+    // The grant's variables point tools at the user's own configuration
+    // files (npm, pip, Maven, rustup/cargo); ours come after them, so the
+    // staged git config and the identity still win.
+    const profileEnv = profileRead === "granted" ? rt.windowsProfileReadEnv(grant, env) : {};
+    const extraEnv = { ...profileEnv, ...gitIdentityEnv(id.name, id.email), ...windowsGitEnv(env) };
     let gitConfig: string | undefined;
     try {
       gitConfig = hooks.gitConfig ? hooks.gitConfig(commandDir) : commandDir ? stageGitConfig(commandDir, env) : undefined;
     } catch {
       gitConfig = undefined; // the identity still travels as environment
     }
-    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, gitConfig, grants: readable, probed: false, sid: grantee, readOnly: !profile.writable, loopbackInstalled, profileRead: undefined };
+    this.win = {
+      bash,
+      srtWinPath: staged,
+      extraEnv,
+      commandDir,
+      gitConfig,
+      grants: readable,
+      probed: false,
+      sid: grantee,
+      readOnly: !profile.writable,
+      loopbackInstalled,
+      profileRead,
+      profileStatus: profileRead === "granted" ? grant : undefined,
+      profileWarnings: [],
+    };
     await this.applyProfile(profile);
+  }
+
+  /**
+   * How a path of the mode stands to the profile read grant's exclusions:
+   * `protected` when it is, or lies inside, an excluded store (the runtime
+   * refuses to grant it, or needs the explicit dangerous option for a read),
+   * `ungranted` for the user's temporary directory (grantable), `above` when
+   * an exclusion lies beneath it (never grantable; as a read, redundant with
+   * the grant itself), `none` otherwise.
+   */
+  private profileRelation(abs: string, grant: WindowsProfileGrant, write: boolean): "protected" | "ungranted" | "above" | "none" {
+    const rt = this.rt;
+    if (!rt) return "none";
+    const conflicts = rt.windowsProfileExclusionConflicts([abs], grant, { write });
+    if (conflicts.some((c) => c.kind === "protected" && c.relation !== "above")) return "protected";
+    if (conflicts.some((c) => c.relation === "above")) return "above";
+    if (conflicts.length > 0) return "ungranted";
+    return "none";
   }
 
   /**
@@ -1265,14 +1356,59 @@ export class SandboxController {
     // read-only mode (Plan) is applied here: the session runs without project
     // writes until the next mode switch re-initializes.
     if (win && !profile.writable) cfg = readOnlyOverride(cfg, this.keepWritable);
+    /** Reads of protected stores the mode names explicitly; passed to initialize as the runtime's dangerous option. */
+    let exclusionReads: string[] = [];
     if (win) {
       const env = this.lastInit?.windows?.env ?? process.env;
       const fs = cfg.filesystem;
-      win.grants = [...(fs.allowRead ?? []), ...fs.allowWrite].map((p) => winAbs(p, this.cwd, env));
+      const abs = (p: string) => winAbs(p, this.cwd, env);
+      let allowRead = fs.allowRead ?? [];
+      const grant = win.profileStatus;
+      const home = grant && env.USERPROFILE ? abs(env.USERPROFILE) : undefined;
+      if (grant && home) {
+        // With the profile readable through the grant, a read inside it is
+        // redundant (the tool roots, `~` itself, a folder above a store: the
+        // runtime refuses the last kind outright), except a protected store
+        // the mode names on purpose, which goes through the dangerous option,
+        // and the ungranted temporary directory, which is granted as usual.
+        const kept: string[] = [];
+        for (const p of allowRead) {
+          const a = abs(p);
+          if (isOutsideWin(home, a)) {
+            kept.push(p);
+            continue;
+          }
+          const rel = this.profileRelation(a, grant, false);
+          if (rel === "protected") exclusionReads.push(a);
+          if (rel === "protected" || rel === "ungranted") kept.push(p);
+        }
+        allowRead = kept;
+        // A write root that is, holds or lies inside a protected store cannot
+        // be granted at all: say which, instead of the runtime's refusal.
+        const writeConflicts = fs.allowWrite.map(abs).filter((a) => !isOutsideWin(home, a) && this.profileRelation(a, grant, true) !== "none");
+        if (writeConflicts.length > 0) {
+          this.ready = false;
+          this.warn = WINDOWS_PROFILE_CONFLICT_WARN;
+          if (this.hasUI) {
+            this.notifyFn(
+              `permission-mode: the sandbox cannot grant write access to ${writeConflicts.join(", ")}: the profile read grant protects a credential store there (or beneath it), so the runtime refuses the session. ` +
+                `Choose a narrower project directory, or take the path out of allowWrite; see ${docRef("windowsProfile")}`,
+            );
+          }
+          return;
+        }
+      }
+      win.grants = [...allowRead, ...fs.allowWrite].map(abs);
       // The user's global git config applies inside the sandbox as it does on
       // Linux: unless the mode masks ~/.gitconfig (a strict home).
       if (win.gitConfig && !gitConfigMasked(profile, env)) win.extraEnv.GIT_CONFIG_GLOBAL = win.gitConfig.replace(/\\/g, "/");
       else delete win.extraEnv.GIT_CONFIG_GLOBAL;
+      // Denies outside every grant would walk the profile for nothing; with
+      // the grant the profile counts as granted, and a deny on an excluded
+      // store is already in force (the runtime keeps it unreadable).
+      const denyScope = home ? [...win.grants, home] : win.grants;
+      const effective = (denies: readonly string[]) =>
+        deniesInsideGrants(denies, denyScope, this.cwd, env).filter((d) => !(grant && home && !isOutsideWin(home, abs(d)) && this.profileRelation(abs(d), grant, false) === "protected"));
       // Loopback is the install's mode on Windows: the runtime refuses a
       // session that asks for the other one, so the mode's wish never
       // reaches it (loopbackConflict tells the user).
@@ -1282,12 +1418,13 @@ export class SandboxController {
         network: win.loopbackInstalled ? { ...network, allowLocalBinding: true } : network,
         filesystem: {
           ...fs,
-          denyRead: deniesInsideGrants(fs.denyRead, win.grants, this.cwd, env),
-          denyWrite: deniesInsideGrants(fs.denyWrite, win.grants, this.cwd, env),
+          allowRead,
+          denyRead: effective(fs.denyRead),
+          denyWrite: effective(fs.denyWrite),
         },
       };
     }
-    const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem });
+    const key = JSON.stringify({ n: cfg.network, f: cfg.filesystem, x: exclusionReads });
     if (this.ready && key === this.appliedKey) return;
 
     if (this.inflight > 0) {
@@ -1321,11 +1458,20 @@ export class SandboxController {
         runtimeCfg as never,
         ask ? (p: { host: string; port?: number }) => ask(p.host, p.port) : undefined,
         true,
+        exclusionReads.length > 0 ? { dangerouslyAllowReadOfProfileExclusions: exclusionReads } : undefined,
       );
       this.lastInitMs = Date.now() - started;
       this.runtimeInitialized = true;
       if (win) {
         win.readOnly = !profile.writable;
+        // What the runtime made of the grant for this session: its view wins
+        // over the record read at init, and its warnings are the user's to see.
+        win.profileRead = this.manager.getWindowsProfileRead?.() ?? win.profileRead;
+        const warnings = (this.manager.getWindowsProfileReadWarnings?.() ?? []).map((w) => w.message);
+        if (warnings.length > 0 && warnings.join("\n") !== win.profileWarnings.join("\n") && this.hasUI) {
+          this.notifyFn(`permission-mode: profile read grant warning(s): ${warnings.join(" ")} See ${docRef("windowsProfile")}`);
+        }
+        win.profileWarnings = warnings;
         if (!win.probed && !(await this.probeWindows(win, this.manager, cfg, profile))) return;
       }
       this.ready = true;
@@ -1344,6 +1490,17 @@ export class SandboxController {
         // /reload) can refuse a path replaced meanwhile; the resets above
         // released them, so one more attempt is cheap.
         return this.applyProfileNow(profile, true);
+      }
+      const code = (err as { code?: string }).code;
+      if (win && code === "profile_grant_outdated") {
+        this.warn = WINDOWS_PROFILE_GRANT_WARN;
+        if (this.hasUI) {
+          this.notifyFn(
+            `permission-mode: the runtime refuses to rely on the profile read grant on this machine (${errMsg(err)}). Run /sandbox install again (one UAC prompt; it refreshes the grant, or answer No to go without). ` +
+              `Until then the sandboxed modes ask before every bash command; see ${docRef("windowsProfile")}`,
+          );
+        }
+        return;
       }
       this.warn = `sandbox init failed: ${err instanceof Error ? err.message : String(err)}`;
       if (this.hasUI) {

@@ -11,7 +11,15 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SandboxController, type SandboxRuntime, WINDOWS_NOT_INSTALLED_WARN, WINDOWS_REINSTALL_WARN, createWindowsSandboxedBashOps } from "./sandbox.ts";
+import {
+  SandboxController,
+  type SandboxRuntime,
+  WINDOWS_NOT_INSTALLED_WARN,
+  WINDOWS_PROFILE_CONFLICT_WARN,
+  WINDOWS_PROFILE_GRANT_WARN,
+  WINDOWS_REINSTALL_WARN,
+  createWindowsSandboxedBashOps,
+} from "./sandbox.ts";
 
 interface Wrap {
   script: string;
@@ -31,13 +39,23 @@ function fakeWindowsRuntime(
     wfp?: { state: "installed" | "cannot-read" | "absent"; allowLoopback: boolean };
     /** The dependency check's reinstall notice (setup version changed). */
     reinstallRequired?: string;
+    /** The profile read grant's record (default: none recorded). */
+    profile?: { state: "none" | "current" | "outdated" | "incomplete" | "unknown"; reason?: string; env?: Record<string, string>; exclusions?: string[]; ungrantedOnly?: string[] };
+    /** What the manager reports about the grant after initialize. */
+    profileWarnings?: string[];
+    /** An initialize rejection with a runtime error code (consumed like failInits). */
+    failInitCodes?: { code: string; message: string }[];
   } = {},
 ) {
   const calls: string[] = [];
   const wraps: Wrap[] = [];
   const inits: unknown[] = [];
+  const initOptions: unknown[] = [];
   const installs: unknown[] = [];
   const wfp = opts.wfp ?? { state: "installed", allowLoopback: true };
+  const grant = { state: "none", env: {}, exclusions: [], ungrantedOnly: [], ...opts.profile };
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const under = (p: string, root: string) => p.toLowerCase().startsWith(`${root.toLowerCase()}\\`);
   const manager = {
     async wrapWithSandboxArgv(script: string, shell: unknown, cfg: unknown, _signal: unknown, cwd: string | undefined, options: unknown) {
       calls.push("wrap");
@@ -52,13 +70,18 @@ function fakeWindowsRuntime(
     async reset() {
       calls.push("reset");
     },
-    async initialize(cfg: unknown) {
+    async initialize(cfg: unknown, _ask: unknown, _monitors: unknown, options: unknown) {
       calls.push("initialize");
       inits.push(cfg);
+      initOptions.push(options);
       const fail = opts.failInits?.shift();
       if (fail) throw new Error(fail);
+      const coded = opts.failInitCodes?.shift();
+      if (coded) throw Object.assign(new Error(coded.message), { code: coded.code });
     },
     isSupportedPlatform: () => true,
+    getWindowsProfileRead: () => (grant.state === "current" ? "granted" : "absent"),
+    getWindowsProfileReadWarnings: () => (opts.profileWarnings ?? []).map((message) => ({ code: "profile_exclusion_unprotected", message, paths: [] })),
   };
   const provisioned = opts.provisioned ?? true;
   const rt = {
@@ -77,6 +100,28 @@ function fakeWindowsRuntime(
       };
     },
     getWindowsWfpStatusAsync: async () => ({ state: wfp.state, filters: wfp.state === "installed" ? 6 : 0, allowLoopback: wfp.allowLoopback }),
+    getWindowsProfileReadStatusAsync: async () => {
+      calls.push("profile-status");
+      return grant;
+    },
+    windowsProfileReadEnv: (status: { env: Record<string, string> }, env: Record<string, string | undefined>) =>
+      Object.fromEntries(Object.entries(status.env).filter(([k]) => env[k] === undefined)),
+    // The real one resolves paths and lists directories; this one compares names.
+    windowsProfileExclusionConflicts: (paths: readonly string[], g: { exclusions: string[]; ungrantedOnly: string[] }, o?: { write?: boolean }) => {
+      const out: { path: string; exclusion: string; kind: string; access: string; relation: string }[] = [];
+      for (const p of paths) {
+        for (const [kind, list] of [
+          ["protected", g.exclusions],
+          ["ungranted-only", g.ungrantedOnly],
+        ] as const) {
+          for (const x of list) {
+            const relation = same(p, x) ? "equal" : under(p, x) ? "inside" : under(x, p) ? "above" : undefined;
+            if (relation) out.push({ path: p, exclusion: x, kind, access: o?.write ? "write" : "read", relation });
+          }
+        }
+      }
+      return out;
+    },
     installWindowsSandboxAsync: async (o: unknown) => {
       installs.push(o);
       const skip = (o as { skipProfileGrant?: boolean }).skipProfileGrant;
@@ -84,7 +129,7 @@ function fakeWindowsRuntime(
     },
     parseWindowsSandboxError: opts.parseError ?? (() => undefined),
   };
-  return { calls, wraps, inits, installs, manager: manager as unknown as Parameters<typeof createWindowsSandboxedBashOps>[0], rt: rt as unknown as SandboxRuntime };
+  return { calls, wraps, inits, initOptions, installs, manager: manager as unknown as Parameters<typeof createWindowsSandboxedBashOps>[0], rt: rt as unknown as SandboxRuntime };
 }
 
 const exec = (ops: ReturnType<typeof createWindowsSandboxedBashOps>, command: string, env?: NodeJS.ProcessEnv, timeout = 10) => {
@@ -140,8 +185,13 @@ const baseInit = (
   c: SandboxController,
   fake: ReturnType<typeof fakeWindowsRuntime>,
   notes: string[],
-  profile: { enabled: boolean; writable: boolean; allowWrite: string[]; denyRead?: string[]; denyWrite?: string[]; allowLocalBinding?: boolean } = { enabled: true, writable: true, allowWrite: ["."] },
+  profile: { enabled: boolean; writable: boolean; allowWrite: string[]; allowRead?: string[]; denyRead?: string[]; denyWrite?: string[]; allowLocalBinding?: boolean } = {
+    enabled: true,
+    writable: true,
+    allowWrite: ["."],
+  },
   cwd = process.cwd(),
+  seenBashRoots?: string[],
 ) =>
   c.init({
     cwd,
@@ -154,7 +204,10 @@ const baseInit = (
     loadRuntime: async () => fake.rt,
     windows: {
       env: { USERPROFILE: "C:\\Users\\me", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" },
-      findBash: () => "C:\\Program Files\\Git\\bin\\bash.exe",
+      findBash: (roots) => {
+        seenBashRoots?.push(...roots);
+        return "C:\\Program Files\\Git\\bin\\bash.exe";
+      },
       stageHelper: (exe, grantee) => `C:\\Users\\me\\AppData\\Local\\pi-permission-modes\\srt-win-${grantee.length}\\${path.win32.basename(exe)}`,
       readIdentity: () => ({ name: "Ann", email: "ann@x.io" }),
       commandDir: () => undefined,
@@ -294,6 +347,95 @@ test("controller (win32): windowsSetup passes the install choices on and reports
   assert.equal(o2.allowLoopback, false);
   assert.equal(o2.skipProfileGrant, true);
   assert.equal(o2.force, true);
+});
+
+const passingProbe = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+const grantedProfile = {
+  state: "current" as const,
+  env: { NPM_CONFIG_USERCONFIG: "C:\\Users\\me\\.npmrc", GIT_CONFIG_GLOBAL: "C:\\Users\\me\\.gitconfig", PIP_CONFIG_FILE: "C:\\Users\\me\\pip\\pip.ini" },
+  exclusions: ["C:\\Users\\me\\.ssh", "C:\\Users\\me\\.aws", "C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\User Data"],
+  ungrantedOnly: ["C:\\Users\\me\\AppData\\Local\\Temp"],
+};
+
+test("controller (win32): with the profile read grant, reads inside the profile are redundant except a named store (dangerous option) and Temp; denies on stores are dropped; the grant's variables ride along", async () => {
+  const fake = fakeWindowsRuntime({ argv: passingProbe, profile: grantedProfile });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  const roots: string[] = [];
+  await baseInit(
+    c,
+    fake,
+    notes,
+    {
+      enabled: true,
+      writable: true,
+      allowWrite: ["."],
+      allowRead: ["C:\\Users\\me\\AppData\\Local\\Programs", "~", "~/.ssh", "C:\\Users\\me\\AppData\\Local\\Temp", "D:\\tools"],
+      denyRead: ["~/.aws", "~/.npmrc", "./.env"],
+    },
+    process.cwd(),
+    roots,
+  );
+  assert.equal(c.ready, true, notes.join("\n"));
+  assert.ok(roots.includes("C:\\Users\\me"), "Git Bash may live anywhere in the profile now");
+  const init = fake.inits[0] as { filesystem: { allowRead: string[]; denyRead: string[] } };
+  assert.deepEqual(init.filesystem.allowRead, ["~/.ssh", "C:\\Users\\me\\AppData\\Local\\Temp", "D:\\tools"], "the tool root and ~ are readable through the grant; the store, Temp and the path outside stay");
+  assert.deepEqual(fake.initOptions[0], { dangerouslyAllowReadOfProfileExclusions: ["C:\\Users\\me\\.ssh"] });
+  assert.deepEqual(init.filesystem.denyRead, ["~/.npmrc", "./.env"], "a deny on a protected store is already in force; one on a readable profile file now matters");
+  const st = c.windowsStatus()!;
+  assert.equal(st.profileRead, "granted");
+  assert.deepEqual(st.profileEnv, ["NPM_CONFIG_USERCONFIG", "PIP_CONFIG_FILE"], "GIT_CONFIG_GLOBAL is ours (the staged copy)");
+  const r = await exec(c.bashOps({ readOnly: false })!, "echo \"$NPM_CONFIG_USERCONFIG|$GIT_CONFIG_GLOBAL\"", { PATH: process.env.PATH });
+  assert.equal(r.out, "C:\\Users\\me\\.npmrc|C:/Users/me/AppData/Local/Temp/pi-x/gitconfig\n");
+  // Without the grant: the reads go through as written, no variables, the profile is not a bash root.
+  const absent = fakeWindowsRuntime({ argv: passingProbe });
+  const c2 = new SandboxController();
+  const roots2: string[] = [];
+  await baseInit(c2, absent, notes, { enabled: true, writable: true, allowWrite: ["."], allowRead: ["C:\\Users\\me\\AppData\\Local\\Programs"] }, process.cwd(), roots2);
+  assert.equal(c2.ready, true, notes.join("\n"));
+  assert.equal(roots2.includes("C:\\Users\\me"), false);
+  assert.deepEqual((absent.inits[0] as { filesystem: { allowRead: string[] } }).filesystem.allowRead, ["C:\\Users\\me\\AppData\\Local\\Programs"]);
+  assert.equal(absent.initOptions[0], undefined);
+  assert.equal(c2.windowsStatus()?.profileRead, "absent");
+  assert.deepEqual(c2.windowsStatus()?.profileEnv, []);
+});
+
+test("controller (win32): a grant the runtime would refuse degrades up front; so does a write root over a protected store; the runtime's own refusal is read too", async () => {
+  const outdated = fakeWindowsRuntime({ argv: passingProbe, profile: { state: "outdated", reason: "made with an older exclusion list" } });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  await baseInit(c, outdated, notes);
+  assert.equal(c.ready, false);
+  assert.equal(c.warn, WINDOWS_PROFILE_GRANT_WARN);
+  assert.match(notes.join("\n"), /cannot be relied on \(outdated: made with an older exclusion list\).*Run \/sandbox install again.*troubleshooting\.md#reading-your-profile-on-windows/);
+  assert.deepEqual(outdated.inits, []);
+  // A write root above an excluded store: named, and the runtime is not asked.
+  const above = fakeWindowsRuntime({ argv: passingProbe, profile: grantedProfile });
+  const c2 = new SandboxController();
+  notes.length = 0;
+  await baseInit(c2, above, notes, { enabled: true, writable: true, allowWrite: [".", "C:\\Users\\me\\AppData\\Local"] });
+  assert.equal(c2.ready, false);
+  assert.equal(c2.warn, WINDOWS_PROFILE_CONFLICT_WARN);
+  assert.match(notes.join("\n"), /cannot grant write access to C:\\Users\\me\\AppData\\Local: the profile read grant protects a credential store there/);
+  assert.deepEqual(above.inits, []);
+  // The runtime rejects with profile_grant_outdated (a record that changed since the status was read).
+  const refused = fakeWindowsRuntime({ argv: passingProbe, profile: grantedProfile, failInitCodes: [{ code: "profile_grant_outdated", message: "profile grant outdated" }] });
+  const c3 = new SandboxController();
+  notes.length = 0;
+  await baseInit(c3, refused, notes);
+  assert.equal(c3.ready, false);
+  assert.equal(c3.warn, WINDOWS_PROFILE_GRANT_WARN);
+  assert.match(notes.join("\n"), /refuses to rely on the profile read grant .*\(profile grant outdated\)\. Run \/sandbox install again/);
+  // Warnings from the runtime about the grant are shown once and kept for /sandbox.
+  const warned = fakeWindowsRuntime({ argv: passingProbe, profile: grantedProfile, profileWarnings: ["C:\\Users\\me\\.aws is readable through an entry made earlier."] });
+  const c4 = new SandboxController();
+  notes.length = 0;
+  await baseInit(c4, warned, notes);
+  assert.equal(c4.ready, true, notes.join("\n"));
+  assert.equal(notes.filter((n) => /profile read grant warning\(s\): C:\\Users\\me\\.aws is readable/.test(n)).length, 1);
+  assert.deepEqual(c4.windowsStatus()?.profileWarnings, ["C:\\Users\\me\\.aws is readable through an entry made earlier."]);
+  await c4.applyProfile({ enabled: true, writable: false, allowWrite: ["."] });
+  assert.equal(notes.filter((n) => /profile read grant warning/.test(n)).length, 1, "the same warnings are not repeated at the next initialize");
 });
 
 /** A project whose parent folder is writable, as a folder created at a drive root is on Windows. */

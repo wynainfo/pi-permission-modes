@@ -264,6 +264,12 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   const strict = sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.gitconfig"] }), { active: true, platform: "win32" })!;
   assert.match(strict, /Readable: the project, Windows and Program Files, ~\/\.gitconfig, EXCEPT ~\./);
   assert.match(strict, /command not found.*docs\/troubleshooting\.md#per-user-tools-on-windows/);
+  // With the install's profile read grant the profile is readable minus the stores, whatever the mode lists inside it; a path outside stays listed.
+  const granted = sandboxAwarenessPrompt(mode({}, { allowRead: ["~/AppData/Local/Programs", "D:\\tools"] }), { active: true, platform: "win32", windowsProfileRead: "granted" })!;
+  assert.match(granted, /Readable: the project, Windows and Program Files, your user profile \(~\) except the credential stores \(\.ssh, \.gnupg, \.aws, .*the Temp folder\), D:\\tools, EXCEPT ~\/\.ssh/);
+  assert.doesNotMatch(granted, /Programs/);
+  assert.doesNotMatch(granted, /command not found/);
+  assert.match(sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.gitconfig"] }), { active: true, platform: "win32", windowsProfileRead: "absent" })!, /command not found/);
   const linux = sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!;
   assert.doesNotMatch(linux, /native Windows sandbox/);
   assert.match(linux, /Reads are broadly allowed EXCEPT/);

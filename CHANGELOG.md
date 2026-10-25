@@ -94,7 +94,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `.config\gh` stay unreadable, the grant is per machine and takes
   minutes once; answer No on a shared machine), opens loopback for
   `sandbox.allowLocalBinding` unless every sandboxed mode turns it off, and
-  asks before replacing an install made with other options. Write grants
+  asks before replacing an install made with other options. With the
+  grant, a session passes the grant's configuration-file variables
+  (`NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`,
+  `CARGO_HOME`) to sandboxed commands, leaves the now redundant tool roots
+  and other `allowRead` entries inside the profile out of its grants
+  (an excluded store a mode names on purpose goes through the runtime's
+  explicit read option), keeps a mode's denies inside the profile in
+  force, and refuses up front, with the reason, a write root that holds a
+  protected store or a grant the runtime would not rely on; `/sandbox`
+  shows `Profile reads: granted at install` or `absent`
+  ([docs/troubleshooting.md, Reading your profile on Windows](docs/troubleshooting.md#reading-your-profile-on-windows)).
+  Write grants
   on project roots are kept between sessions, so only the first session in
   a project walks its tree. The install has to be run once more
   (`/sandbox install`, one UAC prompt, in place): until then the sandbox
