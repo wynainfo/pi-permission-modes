@@ -763,6 +763,11 @@ export default async function (pi: ExtensionAPI) {
                 `Last initialize: ${((sandbox.lastInitMs ?? 0) / 1000).toFixed(1)} s` +
                   (sandbox.lastResetMs !== undefined ? `, last reset: ${(sandbox.lastResetMs / 1000).toFixed(1)} s` : "") +
                   " (a mode switch pays both; the runtime copies permission entries over every granted tree, blocking pi meanwhile)",
+                `Session init steps: ${
+                  Object.entries(sandbox.initSteps)
+                    .map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`)
+                    .join(", ") || "(none)"
+                }`,
                 sandbox.windowsStatus()!.profileRead === "granted"
                   ? `Profile reads: granted at install (your profile minus the credential stores${sandbox.windowsStatus()!.profileEnv.length ? `; env ${sandbox.windowsStatus()!.profileEnv.join(", ")}` : ""})`
                   : "Profile reads: absent (the project and the tool roots only; /sandbox install grants them)",

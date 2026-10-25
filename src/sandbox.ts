@@ -833,6 +833,8 @@ export class SandboxController {
 
   /** Wall time of the last successful runtime initialize, in milliseconds (the permission-entry walks on Windows show here). */
   lastInitMs: number | undefined;
+  /** Windows: how long each step of the session's own init took (ms), for /sandbox: the account status, the firewall record, the dependency check, the profile grant record. */
+  initSteps: Record<string, number> = {};
   /** Wall time of the most recent runtime `reset()` (a mode switch pays this on top of the initialize). */
   lastResetMs: number | undefined;
   private identity: { name?: string; email?: string } | undefined;
@@ -1052,6 +1054,15 @@ export class SandboxController {
     this.rt = rt;
     const unavailable = (why: string, fix: string): void =>
       this.degrade(profile, why, `permission-mode: OS sandbox unavailable - protection is heuristic-only.\n${why}\n${fix}`);
+    this.initSteps = {};
+    const timed = async <T>(step: string, run: () => Promise<T>): Promise<T> => {
+      const t0 = Date.now();
+      try {
+        return await run();
+      } finally {
+        this.initSteps[step] = Date.now() - t0;
+      }
+    };
     let srtWin: ReturnType<SandboxRuntime["resolveSrtWin"]>;
     try {
       srtWin = rt.resolveSrtWin({ path: rt.VENDORED_SRT_WIN_EXE });
@@ -1060,7 +1071,7 @@ export class SandboxController {
     }
     let status: Awaited<ReturnType<SandboxRuntime["getWindowsSandboxUserStatusAsync"]>>;
     try {
-      status = await rt.getWindowsSandboxUserStatusAsync({ srtWin });
+      status = await timed("account status", () => rt.getWindowsSandboxUserStatusAsync({ srtWin }));
     } catch (err) {
       return unavailable(`Windows sandbox check failed: ${errMsg(err)}`, `See ${docRef("windowsInstall")}`);
     }
@@ -1077,10 +1088,10 @@ export class SandboxController {
     // The loopback mode is the install's (0.0.81): read it, and check the
     // dependencies against it so the check never reports a mismatch with
     // the mode's wish (loopbackConflict tells the user about that instead).
-    const loopbackInstalled = await this.installedLoopback(rt, srtWin, profile.allowLocalBinding !== false);
+    const loopbackInstalled = await timed("firewall record", () => this.installedLoopback(rt, srtWin, profile.allowLocalBinding !== false));
     let deps: { errors: string[]; warnings: string[]; reinstallRequired?: string };
     try {
-      deps = await rt.checkWindowsDependenciesAsync({ srtWin, allowLoopback: loopbackInstalled });
+      deps = await timed("dependency check", () => rt.checkWindowsDependenciesAsync({ srtWin, allowLoopback: loopbackInstalled }));
     } catch (err) {
       deps = { errors: [errMsg(err)], warnings: [] };
     }
@@ -1103,7 +1114,7 @@ export class SandboxController {
     // (for the mode's paths) and the configuration-file variables.
     let grant: WindowsProfileGrant;
     try {
-      grant = await rt.getWindowsProfileReadStatusAsync({ srtWin });
+      grant = await timed("profile grant record", () => rt.getWindowsProfileReadStatusAsync({ srtWin }));
     } catch (err) {
       return unavailable(`profile read grant: ${errMsg(err)}`, `See ${docRef("windowsProfile")}`);
     }
