@@ -1534,3 +1534,48 @@ test("bare-word symlink out of the project prompts as an escape and can be denie
     h.cleanup();
   }
 });
+
+// Ported from PR #9 by ammoniak: the session events.
+test("session_shutdown: session approvals and network grants do not outlive the session", { skip }, async () => {
+  const h = await setup();
+  try {
+    h.ctx.answers.push("Allow for session");
+    const first = await h.call("bash", { command: "cat ~/notes.txt" });
+    assert.equal(first?.block, undefined);
+    const second = await h.call("bash", { command: "cat ~/notes.txt" });
+    assert.equal(second?.block, undefined);
+    assert.equal(h.ctx.prompts.length, 1, "the session grant covers the second call");
+    await h.pi.commands.get("net")!("allow api.example.com", h.ctx);
+    await h.pi.commands.get("net")!("", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /api\.example\.com/);
+
+    await h.pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, h.ctx);
+
+    h.ctx.answers.push("Deny");
+    const again = await h.call("bash", { command: "cat ~/notes.txt" });
+    assert.equal(again?.block, true, "the grant is gone: the same command prompts again");
+    assert.equal(h.ctx.prompts.length, 2);
+    await h.pi.commands.get("net")!("", h.ctx);
+    assert.doesNotMatch(h.ctx.notices.at(-1) ?? "", /api\.example\.com/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("session_tree: a branch switch re-picks the mode from the session entries, not from the mode left behind", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("plan");
+    assert.match(h.ctx.status, /^Plan Mode/);
+    // The entries of the branch switched to say Build: that wins over the Plan this branch had.
+    h.ctx.sessionManager.getEntries = () => [{ type: "custom", customType: "perm-mode", data: { mode: "build" } }];
+    await h.pi.emit("session_tree", { type: "session_tree" }, h.ctx);
+    assert.match(h.ctx.status, /^Build/);
+    // A branch without a recorded mode keeps the mode in effect (an implicit choice is never recorded).
+    h.ctx.sessionManager.getEntries = () => [];
+    await h.pi.emit("session_tree", { type: "session_tree" }, h.ctx);
+    assert.match(h.ctx.status, /^Build/);
+  } finally {
+    h.cleanup();
+  }
+});
