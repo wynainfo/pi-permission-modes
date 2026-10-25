@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **The mode text is written as pi prompt sections instead of replacing the
+  system prompt.** The sandbox awareness block, the docs pointer and a mode's
+  own `systemPrompt` become the sections `permission_mode`,
+  `permission_mode_docs` and `permission_mode_steering`. pi records them in
+  the session and, on models that accept mid-conversation system messages
+  (pi 0.86 or newer; the catalog entries of Anthropic, OpenAI, OpenRouter and
+  others; custom endpoints with `compat.supportsMidConvoSystemMessages`), a
+  mode switch, a network grant or a blocked path now sends a short patch
+  after the conversation instead of rewriting its head, so the provider's
+  prompt cache keeps the whole context. Other models and older pi versions
+  behave as before. Idea from [#9](https://github.com/wynainfo/pi-permission-modes/pull/9)
+  by [@ammoniak](https://github.com/ammoniak).
+
 ## [2.6.0]
 
 ### Added

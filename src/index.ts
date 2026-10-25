@@ -53,6 +53,7 @@ import { withGitHubTokenHelper } from "./git-auth.ts";
 import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { localBindingNote, sandboxAwarenessPrompt } from "./awareness.ts";
 import { PROFILE_GRANT_QUESTION, profileExclusions, profileGrantText } from "./sandbox-win.ts";
+import { type PromptParts, writePromptSections } from "./prompt-sections.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
@@ -1080,17 +1081,20 @@ export default async function (pi: ExtensionAPI) {
     pi.appendEntry<PlanEntry>(PLAN_ENTRY, { path: planPath, ...(sha ? { sha } : {}) });
   });
 
-  // Inject the sandbox-awareness section and the active mode's system prompt
-  // (if any). The handler runs each turn and reads the live mode + sandbox
-  // state, so it auto-updates when the mode changes. The "@plan" sentinel
-  // resolves to the date-stamped Plan-mode prompt. A mode picked as the
-  // implicit headless fallback keeps the FACTUAL awareness section (boundary
-  // knowledge helps a worker avoid failing commands) but skips the mode's
-  // STEERING systemPrompt, which would misdirect a headless worker.
+  // The sandbox-awareness section, the docs pointer and the active mode's
+  // system prompt (if any), written as pi prompt sections (prompt-sections.ts)
+  // so a mode switch sends a patch instead of rewriting the request head. The
+  // handler runs each turn and reads the live mode + sandbox state, so it
+  // auto-updates when the mode changes; pi diffs the sections and sends
+  // nothing when they are unchanged. The "@plan" sentinel resolves to the
+  // date-stamped Plan-mode prompt. A mode picked as the implicit headless
+  // fallback keeps the FACTUAL awareness section (boundary knowledge helps a
+  // worker avoid failing commands) but skips the mode's STEERING systemPrompt,
+  // which would misdirect a headless worker.
   pi.on("before_agent_start", async (event) => {
     applyToolVisibility(); // keep hidden tools hidden as the tool set evolves
     const m = currentMode();
-    const parts: string[] = [];
+    const parts: PromptParts = {};
     // The effective profile carries the session's blocked paths in denyRead,
     // so the model sees them under "Reads are broadly allowed EXCEPT".
     const aware = sandboxAwarenessPrompt({ ...m, sandbox: effectiveSandbox(m) }, {
@@ -1103,15 +1107,14 @@ export default async function (pi: ExtensionAPI) {
       windowsLoopback: sandbox.windowsStatus()?.loopbackInstalled,
       windowsProfileRead: sandbox.windowsStatus()?.profileRead,
     });
-    if (aware) parts.push(aware);
+    if (aware) parts.aware = aware;
     // Where the reference lives, in every mode: config questions arise in YOLO too.
-    if (!fallbackMode) parts.push(docsPromptBlock(docsDir()));
+    if (!fallbackMode) parts.docs = docsPromptBlock(docsDir());
     const sp = m.systemPrompt;
     if (sp && !fallbackMode) {
-      parts.push(sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp);
+      parts.steering = sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp;
     }
-    if (parts.length === 0) return undefined;
-    return { systemPrompt: [event.systemPrompt, ...parts].join("\n\n") };
+    return writePromptSections(event, parts);
   });
 
   // Skill gating: skills aren't tools — they're invoked via `/skill:<name>` text,
