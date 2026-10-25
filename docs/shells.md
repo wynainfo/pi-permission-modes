@@ -135,16 +135,34 @@ other platforms `expose` is accepted and checked, and the result says the
 server is reachable directly (on macOS with local binding off, the start is
 refused: nothing could listen).
 
+The agent's own commands reach an exposed port too. A foreground command
+on Linux has a loopback of its own as well, so while any running shell
+exposes ports, every sandboxed command starts with a small listener inside
+on those ports; a connection to `127.0.0.1:8123` from the command (`curl`,
+a test runner, a browser automation) is handed out of the command and into
+the shell that owns the port. Nothing is granted and nothing needs revoking:
+the listener lives and dies with the command and is only started for ports
+whose shell is running at that moment, so when the shell ends, the next
+command finds the port closed again ("connection refused", no prompt).
+While a shell exposes a port, that port is taken inside foreground
+commands; a second server on it there fails with "address in use". The
+start costs node's startup inside the sandbox, about a tenth of a second
+per command, only while something is exposed.
+
 How the relay works, and why it is temporary: the sandbox's seccomp filter
 blocks the creation of Unix sockets but not their use, so the shell is
 started with a node IPC channel on fd 3 that bwrap passes through. A line
 in front of the command starts a small relay on the node that runs pi
 (`relay.cjs` next to the shell's log; the fd and the variables are gone for
 the command itself), which holds the channel and dials `127.0.0.1:<port>`
-for each connection the host hands it. The node binary's directory is
-readable inside the sandbox for that, even under a strict home. All of
-this disappears once the runtime relays ports itself (requested upstream);
-the `expose` parameter stays as it is.
+for each connection the host hands it. The inbound direction is the same
+channel the other way round: a foreground command's listener
+(`inbound.cjs`, written once per session under the scratch directory) hands
+each accepted connection to pi over the command's own channel, and pi
+passes it into the owning shell. The node binary's directory is readable
+inside the sandbox for that, even under a strict home. All of this
+disappears once the runtime relays ports itself (requested upstream); the
+`expose` parameter stays as it is.
 
 ## Limits
 

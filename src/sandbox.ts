@@ -56,6 +56,19 @@ export interface SandboxedBashOps extends BashOperations {
   startShell(command: string, cwd: string, opts: ShellStartOptions): Promise<StartedShell>;
 }
 
+/**
+ * Linux: the loopback of a foreground command reaches the ports running
+ * background shells expose (src/shells/relay.ts, inbound). `ports()` is read
+ * at every spawn; with ports, the command gets `prelude(ports)` in front and
+ * an IPC channel on fd 3, and each connection the listener inside hands out
+ * goes to `deliver`, which passes it into the owning shell or refuses it.
+ */
+export interface InboundHooks {
+  ports(): number[];
+  prelude(ports: number[]): string;
+  deliver(port: number, sock: import("node:net").Socket): boolean;
+}
+
 /** The attribution key of a background shell: 16 random bytes, the floor the runtime sets for a per-command network list. */
 export function shellCommandId(): string {
   return `pi-${randomBytes(16).toString("base64url")}`;
@@ -320,6 +333,8 @@ export function createSandboxedBashOps(
     onRun?: () => () => void;
     /** Same for a background shell, counted apart: a profile switch never waits for one. */
     onShell?: () => () => void;
+    /** Linux: foreground commands reach the ports background shells expose. */
+    inbound?: InboundHooks;
   } = {},
 ): SandboxedBashOps {
   return {
@@ -376,8 +391,11 @@ export function createSandboxedBashOps(
       // pi itself. Deleting them from the host while a parallel command runs
       // would detach that command's deny mounts.
       // Command transport (see above): the runtime quotes what we hand it, so
-      // hand it a launcher and keep the real command in a file.
-      const commandFile = writeCommandFile(command);
+      // hand it a launcher and keep the real command in a file. While
+      // background shells expose ports, the inbound listener goes in front.
+      const inboundPorts = runOpts.inbound?.ports() ?? [];
+      const text = inboundPorts.length > 0 ? `${runOpts.inbound!.prelude(inboundPorts)}\n${command}` : command;
+      const commandFile = writeCommandFile(text);
       const launcher = commandFile ? commandLauncher(commandFile, runOpts.tmpdir) : undefined;
       // Violations the runtime observes while the command runs (refused
       // writes, denied hosts) are filed under this id; the ORIGINAL command
@@ -388,7 +406,7 @@ export function createSandboxedBashOps(
       try {
         // The signal rides into the runtime too (its project scan can take a
         // while on big trees); an abort during the wrap must not start the run.
-        wrapped = await SandboxManager.wrapWithSandbox(launcher ?? command, undefined, customConfig as never, signal as never, {
+        wrapped = await SandboxManager.wrapWithSandbox(launcher ?? text, undefined, customConfig as never, signal as never, {
           commandId,
           commandText: command,
         });
@@ -406,7 +424,21 @@ export function createSandboxedBashOps(
       try {
         if (signal?.aborted) throw new Error("aborted");
         const head = new StderrHead();
-        const child = spawn("bash", ["-c", wrapped], { cwd, env: withGitHubTokenHelper(env ?? process.env), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn("bash", ["-c", wrapped], {
+          cwd,
+          env: withGitHubTokenHelper(env ?? process.env),
+          detached: true,
+          stdio: inboundPorts.length > 0 ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
+        });
+        if (inboundPorts.length > 0) {
+          // Connections the listener inside accepted: into the owning shell, or refused.
+          child.on("message", (m, sock) => {
+            const port = (m as { port?: unknown } | null)?.port;
+            if (!sock || typeof port !== "number") return;
+            if (!runOpts.inbound!.deliver(port, sock as import("node:net").Socket)) (sock as import("node:net").Socket).destroy();
+          });
+          child.channel?.unref(); // the channel closes with the command's namespace; it must not hold the loop
+        }
         const kill = () => {
           if (child.pid) {
             try {
@@ -1062,8 +1094,12 @@ export class SandboxController {
       tmpdir: opts.tmpdir,
       onRun: () => this.runStarted(),
       onShell: () => this.shellStarted(),
+      inbound: this.inbound,
     });
   }
+
+  /** Linux: set by the extension once background shells exist; foreground commands then reach the exposed ports (src/shells/relay.ts). */
+  inbound: InboundHooks | undefined;
 
   /** Sandboxed commands currently running (wrapped, not yet cleaned up). */
   private inflight = 0;

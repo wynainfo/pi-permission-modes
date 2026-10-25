@@ -143,6 +143,37 @@ test("networkFiltered: an absent allowlist is unrestricted, an empty one is filt
   assert.equal(networkFiltered({ enabled: false, writable: true, network: { allowedDomains: ["a"] } }), false);
 });
 
+test("exec: with inbound ports the command gets the prelude and an IPC channel on fd 3; without, neither", async () => {
+  const fakeManager = {
+    wrapWithSandbox: (cmd: string) => Promise.resolve(cmd),
+    cleanupAfterCommand: () => {},
+  } as unknown as Parameters<typeof createSandboxedBashOps>[0];
+  let ports: number[] = [];
+  const delivered: number[] = [];
+  const ops = createSandboxedBashOps(fakeManager, undefined, {
+    inbound: {
+      ports: () => ports,
+      prelude: (p) => `echo PRELUDE ${p.join(",")}`,
+      deliver: (port) => {
+        delivered.push(port);
+        return false;
+      },
+    },
+  });
+  const run = async () => {
+    let out = "";
+    await ops.exec("if [ -e /proc/self/fd/3 ]; then echo FD3; else echo NOFD3; fi", process.cwd(), { onData: (d) => (out += d), timeout: 10 });
+    return out;
+  };
+  assert.match(await run(), /^NOFD3/m, "no shells exposing: today's spawn");
+  assert.doesNotMatch(await run(), /PRELUDE/);
+  ports = [8123, 5173];
+  const out = await run();
+  assert.match(out, /^PRELUDE 8123,5173$/m, "the prelude runs first");
+  assert.match(out, /^FD3$/m, "the channel is on fd 3");
+  assert.deepEqual(delivered, []);
+});
+
 test("exec: an aborted signal never spawns; an abort during the wrap kills before the command completes", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "perm-abort-"));
   const marker = path.join(dir, "marker");

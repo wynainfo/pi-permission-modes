@@ -237,7 +237,12 @@ you can rely on it appropriately. The reference for every setting is in
   per port and session) whose connections a relay inside the shell dials
   to the shell's own loopback. It carries bytes only, in one direction of
   initiative (host to shell), and ends with the shell; the shell's outbound
-  network stays behind the proxy ([docs/shells.md](docs/shells.md)).
+  network stays behind the proxy. While a shell exposes a port, the agent's
+  own foreground commands reach that port as well (a listener inside each
+  command hands connections to pi, which passes them into the shell):
+  loopback only, between two sandboxes of the same session, bounded by the
+  shell's lifetime, with no allowlist entry and nothing to revoke
+  ([docs/shells.md](docs/shells.md)).
 - **Pinned directories on Linux.** Every existing ancestor of a path the
   sandbox protects (a denied read, a mandatory-deny dotfile, the runtime's
   own binds) is a mount point inside the sandbox. Renaming or removing such a

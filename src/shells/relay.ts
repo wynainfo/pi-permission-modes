@@ -186,3 +186,102 @@ export function startRelays(child: ChildProcess, entries: ExposeEntry[], readyTi
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// The other direction: the agent's own foreground commands reach a port a
+// running shell exposes. A foreground command has a loopback of its own too,
+// so while shells expose ports, each sandboxed command starts with a small
+// listener inside (`INBOUND_SOURCE`) on those ports; every accepted
+// connection is handed OUT over the command's IPC channel (child to parent
+// handle passing, allowed like the other direction) and pi passes it into
+// the shell that owns the port over that shell's channel, where `RELAY_SOURCE`
+// dials the server. No allowlist entry and no grant: the listener lives and
+// dies with the command, and is only started for ports whose shell runs when
+// the command spawns, so a shell's end revokes the access by itself.
+
+/** The inbound relay's file name (written once per session under the scratch dir). */
+export const INBOUND_FILE = "inbound.cjs";
+
+/** Longest wait, in 50 ms steps, for the inbound listeners before the command runs. */
+export const INBOUND_WAIT_STEPS = 40;
+
+/** The listener that runs inside a foreground command: argv names the ports. */
+export const INBOUND_SOURCE = `// pi-permission-modes: loopback of a foreground command to the ports of background shells (temporary; see docs/shells.md, Network).
+"use strict";
+const net = require("node:net");
+const parent = process.ppid;
+for (const arg of process.argv.slice(2)) {
+  const port = Number(arg);
+  const server = net.createServer({ pauseOnConnect: true }, (sock) => {
+    if (!process.connected) return sock.destroy();
+    process.send({ port }, sock, { keepOpen: false }, (err) => { if (err) sock.destroy(); });
+  });
+  server.on("error", () => {});
+  server.listen(port, "127.0.0.1");
+}
+process.on("disconnect", () => process.exit(0));
+setInterval(() => { if (process.ppid !== parent) process.exit(0); }, 500);
+`;
+
+/** A port as `/proc/net/tcp` prints it in the local address column. */
+export const hexPort = (port: number): string => port.toString(16).toUpperCase().padStart(4, "0");
+
+/**
+ * The lines that start the inbound listener before a foreground command:
+ * node with the channel on fd 3, the fd closed and the variables unset for
+ * the command, then a wait of at most 2 s until every port shows as
+ * listening in the namespace's own /proc/net/tcp, so the command's first
+ * connection does not race node's start.
+ */
+export function inboundPrelude(inboundPath: string, ports: number[], execPath: string = process.execPath): string {
+  const args = ports.map((p) => String(p)).join(" ");
+  const checks = ports.map((p) => `grep -q ':${hexPort(p)} ' /proc/net/tcp /proc/net/tcp6`).join(" && ");
+  return (
+    `NODE_CHANNEL_FD=3 ${q(execPath)} ${q(inboundPath)} ${args} & exec 3<&-; unset NODE_CHANNEL_FD NODE_CHANNEL_SERIALIZATION_MODE\n` +
+    `_pi_i=0; while [ $_pi_i -lt ${INBOUND_WAIT_STEPS} ] && ! { ${checks}; } 2>/dev/null; do sleep 0.05; _pi_i=$((_pi_i+1)); done; unset _pi_i`
+  );
+}
+
+/** The command with the inbound prelude in front (its own lines: the command may start with a comment). */
+export function withInbound(command: string, inboundPath: string, ports: number[], execPath?: string): string {
+  return `${inboundPrelude(inboundPath, ports, execPath)}\n${command}`;
+}
+
+/** What a shell's relay needs to receive a connection: the channel of the shell's process. */
+type RelayTarget = Pick<ChildProcess, "connected" | "send">;
+
+/**
+ * Which running shell owns which exposed port. Registered when a shell's
+ * relays are up, removed when the shell ends; a connection for a port
+ * nobody owns is refused.
+ */
+export class InboundRouter {
+  private readonly targets = new Map<number, RelayTarget>();
+
+  /** Claim the ports for a shell; the returned function releases them (idempotent). */
+  register(ports: number[], child: RelayTarget): () => void {
+    for (const p of ports) this.targets.set(p, child);
+    return () => {
+      for (const p of ports) if (this.targets.get(p) === child) this.targets.delete(p);
+    };
+  }
+
+  /** The ports foreground commands should listen on right now, ascending. */
+  ports(): number[] {
+    return [...this.targets.keys()].sort((a, b) => a - b);
+  }
+
+  /** Pass an accepted connection into the shell that owns the port; false when none does. */
+  deliver(port: number, sock: net.Socket): boolean {
+    const child = this.targets.get(port);
+    if (!child?.connected) return false;
+    try {
+      child.send({ port }, sock, { keepOpen: false }, (err) => {
+        if (err) sock.destroy();
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}

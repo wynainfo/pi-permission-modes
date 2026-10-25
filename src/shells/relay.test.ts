@@ -115,3 +115,100 @@ test("relay: a request on the host address reaches the server inside the shell; 
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Inbound: the agent's own commands reach exposed ports.
+
+import { INBOUND_FILE, INBOUND_SOURCE, InboundRouter, hexPort, inboundPrelude, withInbound } from "./relay.ts";
+
+test("inbound prelude: node on fd 3 with the ports, the fd closed, then a bounded wait on /proc/net/tcp", () => {
+  const p = inboundPrelude("/scratch/inbound.cjs", [8123, 80], "/usr/bin/node");
+  const [start, wait] = p.split("\n");
+  assert.equal(start, "NODE_CHANNEL_FD=3 '/usr/bin/node' '/scratch/inbound.cjs' 8123 80 & exec 3<&-; unset NODE_CHANNEL_FD NODE_CHANNEL_SERIALIZATION_MODE");
+  assert.equal(hexPort(8123), "1FBB");
+  assert.match(wait, /grep -q ':1FBB ' \/proc\/net\/tcp \/proc\/net\/tcp6 && grep -q ':0050 ' \/proc\/net\/tcp \/proc\/net\/tcp6/);
+  assert.match(wait, /_pi_i -lt 40/);
+  assert.match(wait, /sleep 0\.05/);
+  assert.equal(withInbound("# c\necho hi", "/s/inbound.cjs", [1], "/n"), `${inboundPrelude("/s/inbound.cjs", [1], "/n")}\n# c\necho hi`);
+});
+
+test("inbound router: ports follow registrations, deliver passes to the owner and refuses the rest", () => {
+  const router = new InboundRouter();
+  assert.deepEqual(router.ports(), []);
+  const sent: Array<{ port: number }> = [];
+  const shellA = { connected: true, send: (m: unknown) => sent.push(m as { port: number }) } as unknown as import("node:child_process").ChildProcess;
+  const shellB = { connected: false, send: () => assert.fail("a disconnected shell never gets a socket") } as unknown as import("node:child_process").ChildProcess;
+  const releaseA = router.register([8123, 5173], shellA);
+  const releaseB = router.register([9000], shellB);
+  assert.deepEqual(router.ports(), [5173, 8123, 9000]);
+  const sock = new net.Socket();
+  assert.equal(router.deliver(8123, sock), true);
+  assert.deepEqual(sent, [{ port: 8123 }]);
+  assert.equal(router.deliver(9000, sock), false, "owner gone (channel closed)");
+  assert.equal(router.deliver(1, sock), false, "nobody owns it");
+  releaseA();
+  releaseA(); // idempotent
+  assert.deepEqual(router.ports(), [9000]);
+  assert.equal(router.deliver(8123, sock), false, "released with the shell");
+  // A port re-registered by another shell is not released by the first shell's late release.
+  const shellC = { connected: true, send: () => {} } as unknown as import("node:child_process").ChildProcess;
+  const releaseC = router.register([9000], shellC);
+  releaseB();
+  assert.deepEqual(router.ports(), [9000]);
+  releaseC();
+  assert.deepEqual(router.ports(), []);
+  sock.destroy();
+});
+
+test("inbound source: a connection to the listener inside arrives at the parent as a socket handle (no sandbox)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "perm-inbound-"));
+  const file = path.join(dir, INBOUND_FILE);
+  writeFileSync(file, INBOUND_SOURCE);
+  // A free port: bind 0, read it, close.
+  const port = await new Promise<number>((r) => {
+    const s = net.createServer().listen(0, "127.0.0.1", () => {
+      const p = (s.address() as net.AddressInfo).port;
+      s.close(() => r(p));
+    });
+  });
+  const child = spawn(process.execPath, [file, String(port)], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  try {
+    // The listener is up when a connection succeeds; retry briefly.
+    const received = new Promise<{ port: number; sock: net.Socket }>((r) => {
+      child.on("message", (m, sock) => {
+        if (sock) r({ port: (m as { port: number }).port, sock: sock as net.Socket });
+      });
+    });
+    let client: net.Socket | undefined;
+    for (let i = 0; i < 40 && !client; i++) {
+      client = await new Promise<net.Socket | undefined>((r) => {
+        const c = net.connect(port, "127.0.0.1", () => r(c));
+        c.on("error", () => r(undefined));
+      });
+      if (!client) await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(client, "connected to the listener inside");
+    client!.write("ping");
+    const got = await received;
+    assert.equal(got.port, port);
+    const data = await new Promise<string>((r) => {
+      got.sock.once("data", (d) => r(String(d)));
+      got.sock.resume();
+    });
+    assert.equal(data, "ping", "the first bytes travel with the handle (pauseOnConnect)");
+    got.sock.end("pong");
+    const back = await new Promise<string>((r) => client!.once("data", (d) => r(String(d))));
+    assert.equal(back, "pong");
+    client!.destroy();
+    child.disconnect();
+    const code = await new Promise<number | null>((r) => child.once("exit", (c) => r(c)));
+    assert.equal(code, 0, "exits on disconnect");
+  } finally {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // gone
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -49,10 +49,11 @@ import { createBashTool, getAgentDir, getShellConfig } from "@earendil-works/pi-
 import { spawn } from "node:child_process";
 import { effectiveShells } from "./config-load.ts";
 import { type AdoptedRuntime, killWindowsTree, processViolations } from "./sandbox.ts";
-import { type ExposeEntry, formatEntry, parseExpose, RELAY_FILE, RELAY_SOURCE, startRelays, withRelay } from "./shells/relay.ts";
+import { type ExposeEntry, formatEntry, INBOUND_FILE, INBOUND_SOURCE, InboundRouter, inboundPrelude, parseExpose, RELAY_FILE, RELAY_SOURCE, startRelays, withRelay } from "./shells/relay.ts";
 import { describeShell, PROFILE_CHANGED_REASON, readLog, type ShellLaunchArgs, ShellManager, type ShellRecord, STOP_SIGNALS, type StopSignal, tailLines } from "./shells/shells.ts";
 import { createShellTools } from "./shells/tools.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 import { withGitHubTokenHelper } from "./git-auth.ts";
@@ -174,6 +175,8 @@ export default async function (pi: ExtensionAPI) {
   const shellsRunning = () => shells?.running().length ?? 0;
   /** Ports the user agreed to expose on every interface (bash `expose: ["0.0.0.0:N"]`), once per port and session. */
   const lanPortsAllowed = new Set<number>();
+  /** Linux: which running shell owns which exposed port, for the agent's own commands (src/shells/relay.ts, inbound). */
+  const inbound = new InboundRouter();
   /** Violation lines already copied into a shell's violations.log (the runtime's store is a ring of 100). */
   let shellViolationsSeen = new Map<string, Set<string>>();
   /**
@@ -247,6 +250,18 @@ export default async function (pi: ExtensionAPI) {
   const effectiveSandbox = (m: ModeDef): SandboxProfile => withDeniedReads(runtimeProfile(m), blocked.list());
 
   const sandbox = new SandboxController();
+  if (process.platform === "linux") {
+    sandbox.inbound = {
+      ports: () => inbound.ports(),
+      prelude: (ports) => {
+        // Written once per session, next to the shells' folders.
+        const file = path.join(scratchDir ?? tmpdir(), INBOUND_FILE);
+        if (!existsSync(file)) writeFileSync(file, INBOUND_SOURCE, { mode: 0o600 });
+        return inboundPrelude(file, ports);
+      },
+      deliver: (port, sock) => inbound.deliver(port, sock),
+    };
+  }
   // toolCallIds the user explicitly approved to run OUTSIDE the sandbox.
   const approvedUnsandboxed = new Set<string>();
   // "Allow for session" memory, keyed per-mode.
@@ -1040,12 +1055,15 @@ export default async function (pi: ExtensionAPI) {
           const s = await ops.startShell(withRelay(cmd, relayPath), cwd, { logFd, env: process.env, allowedDomains, ipc: true });
           try {
             const relays = await startRelays(s.child, relayEntries);
+            // From now on the agent's own commands reach these ports too; a shell's end releases them.
+            const release = inbound.register(relayEntries.map((e) => e.port), s.child);
             return {
               child: s.child,
               sandboxed: true,
               commandId: s.commandId,
               ports: relays.bound,
               onClose: () => {
+                release();
                 relays.close();
                 s.onClose();
               },
@@ -1072,7 +1090,7 @@ export default async function (pi: ExtensionAPI) {
       return text(
         `Background shell ${r.id} started (pid ${r.pid}, log ${r.logFile}). It runs ${r.sandboxed ? "under the same sandbox as bash" : "unsandboxed, as bash does in this mode"}. ` +
           `Read it with bash_output (bash_id "${r.id}"), stop it with kill_shell; you will be told when it ends.` +
-          (r.ports ? ` Reachable from this machine at ${r.ports.join(", ")} while it runs (relayed to the same port inside the shell; bind the server there to 127.0.0.1): for the user's browser and host programs, not for your bash calls, whose sandbox has a loopback of its own; check the server through bash_output.` : exposeNote),
+          (r.ports ? ` Reachable at ${r.ports.join(", ")} while it runs (relayed to the same port inside the shell; bind the server there to 127.0.0.1): for the user's browser, for host programs, and for your own bash calls (curl http://127.0.0.1:${r.ports.length === 1 ? r.ports[0].split(":").pop() : "<port>"}/). An idle server logs nothing until a request arrives.` : exposeNote),
       );
     }
     const last = tailLines(readLog(r.logFile, 0).text, 20);

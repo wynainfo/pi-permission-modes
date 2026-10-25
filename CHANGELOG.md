@@ -25,8 +25,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its launch allowlist (registered with the runtime under its own id). On
   Linux, where the sandbox has a loopback of its own, bash's `expose`
   parameter relays ports of this machine into the shell (`[5173]` for
-  127.0.0.1, `["0.0.0.0:5173"]` for every interface after one question);
-  elsewhere a server in the shell is reachable as it binds. A
+  127.0.0.1, `["0.0.0.0:5173"]` for every interface after one question),
+  and the model's own foreground commands reach an exposed port too, for as
+  long as that shell runs (a listener inside each command hands connections
+  into the shell; nothing is granted, nothing to revoke); elsewhere a server
+  in the shell is reachable as it binds. A
   switch that must restart the runtime (Windows: every change; elsewhere
   between a filtered and an unfiltered network) asks before it stops them;
   No keeps the mode. `/reload` keeps them: the new extension instance
