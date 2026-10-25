@@ -21,6 +21,9 @@ test("updateStatus: a switch in flight is marked while the sandbox enforces", ()
   assert.doesNotMatch(c.status, /sandboxed in project dir/);
   updateStatus(c as never, mode({ enabled: true, writable: true }), { ready: false, warn: "x", disabled: false, switching: true }, false);
   assert.doesNotMatch(c.status, /applying sandbox profile/);
+  // A long sandbox step (the Windows install) shows as busy, in place of the warn and the switch mark.
+  updateStatus(c as never, mode({ enabled: true, writable: true }), { ready: false, warn: "x", disabled: false, switching: true }, false, { busy: "profile read grant, 42 s" });
+  assert.equal(c.status, "Build (sandbox: profile read grant, 42 s)  Network: open");
 });
 
 test("updateStatus: filtered / open / unrestricted / degraded", () => {
@@ -38,4 +41,17 @@ test("updateStatus: filtered / open / unrestricted / degraded", () => {
   c = ctx();
   updateStatus(c as never, mode({ enabled: true, writable: true, network: { allowedDomains: ["a.com"] } }), { ready: false, warn: "sandbox init failed", disabled: false }, false);
   assert.equal(c.status, "Build (alt+m) (!) sandbox init failed  Network: open");
+});
+
+test("updateStatus: the warn is suppressed under --no-sandbox, and a mode without a sandbox never claims one", () => {
+  // Ported from PR #9 by ammoniak.
+  let c = ctx();
+  updateStatus(c as never, mode({ enabled: true, writable: true, network: { allowedDomains: ["a.com"] } }), { ready: false, warn: "some warning", disabled: true }, false);
+  assert.equal(c.status, "Build (alt+m)  Network: open", "disabled on purpose: no (!) for a warn that explains an unwanted sandbox");
+  c = ctx();
+  updateStatus(c as never, mode({ enabled: false, writable: true }), { ready: true, warn: undefined, disabled: false }, false);
+  assert.equal(c.status, "Build (alt+m)  Network: open", "sandbox off in the mode: neither sandboxed nor filtered, whatever the controller says");
+  c = ctx();
+  updateStatus(c as never, mode({ enabled: true, writable: true, network: { allowedDomains: ["a.com"] } }), { ready: false, warn: undefined, disabled: false }, true);
+  assert.equal(c.status, "Build (alt+m)  Network: open", "not ready and no reason yet: plain, and the open toggle is not shown as a chip");
 });

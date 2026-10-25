@@ -159,6 +159,24 @@ function makeCtx(cwd: string, opts: { hasUI?: boolean; entries?: Array<{ type: s
 
 // --- harness ------------------------------------------------------------------
 
+/**
+ * Emit before_agent_start the way pi 0.86+ does: a mutable `sections` object
+ * and a `systemPrompt` getter that renders BASE plus the sections in insertion
+ * order. `systemPrompt` is what the model would see; `returned` is the
+ * handler's result (undefined when pi renders the sections itself).
+ */
+async function startPrompt(h: Harness) {
+  const sections: Record<string, string> = {};
+  const event = {
+    systemPromptOptions: { sections },
+    get systemPrompt() {
+      return ["BASE", ...Object.entries(sections).map(([n, t]) => `<${n}>\n${t}\n</${n}>`)].join("\n\n");
+    },
+  };
+  const returned = (await h.pi.emit("before_agent_start", event, h.ctx)) as { systemPrompt: string } | undefined;
+  return { systemPrompt: returned?.systemPrompt ?? event.systemPrompt, sections, returned };
+}
+
 interface Harness {
   pi: FakePi;
   ctx: FakeCtx;
@@ -536,7 +554,7 @@ test("session scratch dir: created per session, TMPDIR, in-bounds, advertised, s
     assert.match(h.ctx.prompts[0]?.title ?? "", /sandbox unavailable/);
 
     // Advertised in the awareness section (degraded variant here).
-    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    const res = await startPrompt(h);
     assert.match(res.systemPrompt, /Sandbox & permissions \(Default\)/);
     assert.ok(res.systemPrompt.includes(dir));
     assert.match(res.systemPrompt, /\$TMPDIR inside bash points there/);
@@ -698,7 +716,7 @@ test("plan mode: Markdown-only writes, plan prompt injected, show_plan stays vis
     // The @plan sentinel resolves into the injected system prompt, and the
     // sandbox-awareness section rides along above it (degraded variant here,
     // since the harness runs --no-sandbox).
-    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    const res = await startPrompt(h);
     assert.match(res.systemPrompt, /^BASE\n\n/);
     assert.match(res.systemPrompt, /Sandbox & permissions \(Plan Mode\)/);
     assert.match(res.systemPrompt, /Plan Mode is active/);
@@ -717,7 +735,7 @@ test("tool visibility: respects the user's active set, hides/restores only hideT
     // Session start must not enable tools the user has off (grep/find/ls stay absent).
     const initial = ["read", "bash", "edit", "write", "bash_output", "kill_shell", "show_plan", "request_network_access"];
     assert.deepEqual(h.pi.activeTools, initial);
-    await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx); // runs every turn: idempotent
+    await startPrompt(h); // runs every turn: idempotent
     assert.deepEqual(h.pi.activeTools, initial);
 
     // A mode hiding edit/write/grep/show_plan: edit+write+show_plan go (an
@@ -742,7 +760,7 @@ test("tool visibility: respects the user's active set, hides/restores only hideT
     await h.pi.emit("session_start", {}, h.ctx);
     await h.perm("review");
     assert.deepEqual(h.pi.activeTools, ["read", "bash", "bash_output", "kill_shell", "request_network_access"]);
-    await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx);
+    await startPrompt(h);
     assert.deepEqual(h.pi.activeTools, ["read", "bash", "bash_output", "kill_shell", "request_network_access"]);
 
     // Switching back restores exactly what we hid (incl. show_plan) — grep stays off.
@@ -765,7 +783,7 @@ test("yolo: never prompts, never blocks, protected paths bypassed", { skip }, as
     assert.equal(await h.call("write", { path: ".git/config" }), undefined);
     assert.equal(h.ctx.prompts.length, 0);
     // Unsandboxed mode: no sandbox boundary briefing — only the scratch-dir pointer.
-    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    const res = await startPrompt(h);
     assert.match(res.systemPrompt, /## Scratch directory \(YOLO\)/);
     assert.ok(res.systemPrompt.includes(h.scratchDir));
     assert.doesNotMatch(res.systemPrompt, /Sandbox & permissions/);
@@ -936,7 +954,7 @@ test("headless fallback: restrictive policy WITHOUT the plan prompt, not exporte
     // … but the planning system prompt is NOT injected into the headless
     // worker — only the FACTUAL sandbox-awareness section is (boundary
     // knowledge helps; a planning prompt would misdirect).
-    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    const res = await startPrompt(h);
     assert.match(res.systemPrompt, /Sandbox & permissions/);
     assert.doesNotMatch(res.systemPrompt, /Plan Mode is active/);
     // The implicit fallback is not forwarded as if it were an explicit choice:
@@ -951,7 +969,7 @@ test("headless child with an explicitly forwarded mode keeps its system prompt",
   const h = await setup({ hasUI: false, envMode: "plan" });
   try {
     assert.match(h.ctx.status, /^Plan Mode /);
-    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    const res = await startPrompt(h);
     assert.match(res.systemPrompt, /Plan Mode is active/); // explicit → injected
     assert.equal(process.env.PI_PERMISSION_MODE, "plan"); // and re-exported onward
   } finally {
@@ -1432,7 +1450,7 @@ test("injectSandboxInfo:false opts a mode out of the awareness injection", { ski
   const h = await setup();
   try {
     // Default (sandboxed, no systemPrompt) injects the awareness section …
-    const before = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    const before = await startPrompt(h);
     assert.match(before.systemPrompt, /Sandbox & permissions \(Default\)/);
 
     // … until the global config opts it out; then only the docs pointer remains.
@@ -1443,9 +1461,65 @@ test("injectSandboxInfo:false opts a mode out of the awareness injection", { ski
       JSON.stringify({ modes: { default: { injectSandboxInfo: false } } }),
     );
     await h.pi.emit("session_start", {}, h.ctx);
-    const after = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    const after = await startPrompt(h);
     assert.doesNotMatch(after.systemPrompt, /Sandbox & permissions/);
     assert.match(after.systemPrompt, /## permission-mode documentation/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("prompt sections: the mode text is written by name, stable within a mode, patched per change", { skip }, async () => {
+  const h = await setup();
+  try {
+    // Default: awareness + docs pointer, no steering, nothing returned (pi renders the sections).
+    const first = await startPrompt(h);
+    assert.equal(first.returned, undefined);
+    assert.deepEqual(Object.keys(first.sections), ["permission_mode", "permission_mode_docs"]);
+    assert.match(first.sections.permission_mode, /^## Sandbox & permissions \(Default\)/);
+    assert.match(first.sections.permission_mode_docs, /^## permission-mode documentation/);
+
+    // Same mode next turn: byte-identical sections (pi diffs them to "no patch").
+    const second = await startPrompt(h);
+    assert.deepEqual(second.sections, first.sections);
+
+    // Default -> Plan Mode: awareness changes, steering appears, docs pointer is the same string.
+    await h.perm("plan");
+    const plan = await startPrompt(h);
+    assert.equal(plan.returned, undefined);
+    assert.match(plan.sections.permission_mode, /^## Sandbox & permissions \(Plan Mode\)/);
+    assert.match(plan.sections.permission_mode_steering, /Plan Mode is active/);
+    assert.equal(plan.sections.permission_mode_docs, first.sections.permission_mode_docs);
+
+    // Plan Mode -> YOLO: the steering section is deleted, awareness becomes the scratch pointer.
+    await h.perm("yolo");
+    const yolo = await startPrompt(h);
+    assert.deepEqual(Object.keys(yolo.sections).sort(), ["permission_mode", "permission_mode_docs"]);
+    assert.match(yolo.sections.permission_mode, /^## Scratch directory \(YOLO\)/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("prompt sections: a pi without sections still gets the joined systemPrompt", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("plan");
+    const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+    assert.match(res.systemPrompt, /^BASE\n\n## Sandbox & permissions \(Plan Mode\)/);
+    assert.match(res.systemPrompt, /## permission-mode documentation/);
+    assert.match(res.systemPrompt, /Plan Mode is active/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("prompt sections: the headless fallback writes the awareness section only", { skip }, async () => {
+  const h = await setup({ hasUI: false });
+  try {
+    const res = await startPrompt(h);
+    assert.equal(res.returned, undefined);
+    assert.deepEqual(Object.keys(res.sections), ["permission_mode"]);
   } finally {
     h.cleanup();
   }
@@ -1456,7 +1530,7 @@ test("docs pointer: every mode names the shipped docs folder; the headless fallb
   try {
     for (const mode of ["default", "plan", "build", "yolo"]) {
       await h.perm(mode);
-      const res = (await h.pi.emit("before_agent_start", { systemPrompt: "BASE" }, h.ctx)) as { systemPrompt: string };
+      const res = await startPrompt(h);
       assert.match(res.systemPrompt, /## permission-mode documentation/, mode);
       assert.ok(res.systemPrompt.includes(docsDir()), `${mode} names the absolute docs dir`);
       assert.doesNotMatch(res.systemPrompt, /README/, "the prompt points at docs/, not the README");
@@ -1468,7 +1542,7 @@ test("docs pointer: every mode names the shipped docs folder; the headless fallb
   // factual awareness stays, steering and the docs pointer are skipped.
   const headless = await setup({ hasUI: false });
   try {
-    const res = (await headless.pi.emit("before_agent_start", { systemPrompt: "BASE" }, headless.ctx)) as { systemPrompt: string };
+    const res = await startPrompt(headless);
     assert.match(res.systemPrompt, /Sandbox & permissions/);
     assert.doesNotMatch(res.systemPrompt, /## permission-mode documentation/);
   } finally {
@@ -1712,6 +1786,51 @@ test("bare-word symlink out of the project prompts as an escape and can be denie
     assert.match(again?.reason ?? "", /blocked for this session/);
   } finally {
     rmSync(outside, { recursive: true, force: true });
+    h.cleanup();
+  }
+});
+
+// Ported from PR #9 by ammoniak: the session events.
+test("session_shutdown: session approvals and network grants do not outlive the session", { skip }, async () => {
+  const h = await setup();
+  try {
+    h.ctx.answers.push("Allow for session");
+    const first = await h.call("bash", { command: "cat ~/notes.txt" });
+    assert.equal(first?.block, undefined);
+    const second = await h.call("bash", { command: "cat ~/notes.txt" });
+    assert.equal(second?.block, undefined);
+    assert.equal(h.ctx.prompts.length, 1, "the session grant covers the second call");
+    await h.pi.commands.get("net")!("allow api.example.com", h.ctx);
+    await h.pi.commands.get("net")!("", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /api\.example\.com/);
+
+    await h.pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, h.ctx);
+
+    h.ctx.answers.push("Deny");
+    const again = await h.call("bash", { command: "cat ~/notes.txt" });
+    assert.equal(again?.block, true, "the grant is gone: the same command prompts again");
+    assert.equal(h.ctx.prompts.length, 2);
+    await h.pi.commands.get("net")!("", h.ctx);
+    assert.doesNotMatch(h.ctx.notices.at(-1) ?? "", /api\.example\.com/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("session_tree: a branch switch re-picks the mode from the session entries, not from the mode left behind", { skip }, async () => {
+  const h = await setup();
+  try {
+    await h.perm("plan");
+    assert.match(h.ctx.status, /^Plan Mode/);
+    // The entries of the branch switched to say Build: that wins over the Plan this branch had.
+    h.ctx.sessionManager.getEntries = () => [{ type: "custom", customType: "perm-mode", data: { mode: "build" } }];
+    await h.pi.emit("session_tree", { type: "session_tree" }, h.ctx);
+    assert.match(h.ctx.status, /^Build/);
+    // A branch without a recorded mode keeps the mode in effect (an implicit choice is never recorded).
+    h.ctx.sessionManager.getEntries = () => [];
+    await h.pi.emit("session_tree", { type: "session_tree" }, h.ctx);
+    assert.match(h.ctx.status, /^Build/);
+  } finally {
     h.cleanup();
   }
 });

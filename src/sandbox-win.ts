@@ -283,6 +283,102 @@ export function windowsEnvFile(exports: readonly string[]): string {
  * the sandbox is the sandbox account's, so git, npm and friends would not
  * read them anyway (the git identity travels as environment instead).
  */
+/**
+ * How an absolute Windows path stands to one entry of the profile read
+ * grant's exclusion list (runtime 0.0.81): entries are absolute, may carry
+ * the `\\?\` prefix, `*` stands for one name and a trailing `*` for a
+ * prefix. Pure: no path is resolved or listed (the runtime does that at
+ * initialize, and refuses with `profile_exclusion_read_grant`); this is the
+ * cheap answer the session needs for every path of the mode.
+ */
+export function profileExclusionRelation(abs: string, exclusion: string): "equal" | "inside" | "above" | undefined {
+  const parts = (p: string) =>
+    p
+      .replace(/^\\\\\?\\/, "")
+      .toLowerCase()
+      .split(/[\\/]+/)
+      .filter(Boolean);
+  const a = parts(abs);
+  const x = parts(exclusion);
+  const matches = (name: string, pat: string) => pat === "*" || (pat.endsWith("*") ? name.startsWith(pat.slice(0, -1)) : name === pat);
+  const n = Math.min(a.length, x.length);
+  for (let i = 0; i < n; i++) if (!matches(a[i], x[i])) return undefined;
+  if (a.length === x.length) return "equal";
+  return a.length > x.length ? "inside" : "above";
+}
+
+/**
+ * The deny paths of the global config's sandboxed modes that lie inside the
+ * user's profile, absolute: what `/sandbox install` records as exclusions of
+ * the profile read grant (runtime 0.0.81). A deny the grant excludes costs a
+ * session nothing; one it does not, the runtime writes at every initialize
+ * and removes at every reset, several seconds each. Project-relative entries
+ * (`./.env`) are left out: an exclusion is machine-wide and lasting. The
+ * project overlay is not consulted for the same reason.
+ */
+export function profileExclusions(modes: Iterable<SandboxProfile>, env: NodeJS.ProcessEnv = process.env): string[] {
+  const home = env.USERPROFILE;
+  if (!home) return [];
+  const out = new Map<string, string>();
+  for (const sb of modes) {
+    if (!sb.enabled) continue;
+    for (const d of [...(sb.denyRead ?? []), ...(sb.denyWrite ?? [])]) {
+      let e = expandWinEnv(d, env);
+      if (e === "~" || e.startsWith("~/") || e.startsWith("~\\")) e = home + e.slice(1);
+      if (!path.win32.isAbsolute(e)) continue;
+      const abs = path.win32.resolve(e);
+      if (isOutsideWin(home, abs) || abs.toLowerCase() === home.toLowerCase()) continue;
+      if (!out.has(abs.toLowerCase())) out.set(abs.toLowerCase(), abs);
+    }
+  }
+  return [...out.values()];
+}
+
+/**
+ * The docs section for a runtime error code (`WindowsSandboxError.code`,
+ * runtime 0.0.81) when one helps: the install for setup and account
+ * states, the loopback and profile sections for theirs. Undefined for codes
+ * that explain themselves (a mapped drive, a session that ended).
+ */
+export function windowsErrorRef(code: string | undefined): string | undefined {
+  switch (code) {
+    case "reinstall_required":
+    case "seclogon_disabled":
+    case "install_config_conflict":
+    case "kept_grants_in_use":
+    case "srt_win_outdated":
+      return docRef("windowsInstall");
+    case "wfp_loopback_mismatch":
+      return docRef("windowsLoopback");
+    case "profile_grant_outdated":
+    case "profile_grant_failed":
+    case "profile_operation_in_progress":
+    case "profile_grant_blocked_by_session":
+      return docRef("windowsProfile");
+    default:
+      return undefined;
+  }
+}
+
+/** Title of the question `/sandbox install` asks before the runtime's profile read grant. */
+export const PROFILE_GRANT_QUESTION = "Read your user profile inside the sandbox?";
+
+/**
+ * The trade behind the profile read grant, for the install question. The
+ * runtime (0.0.81) grants the sandbox account read access to the user's
+ * profile minus its exclusion list; the grant is per machine and user, not
+ * per project, and takes minutes the first time.
+ */
+export function profileGrantText(): string {
+  return (
+    "Yes makes your user profile readable to sandboxed commands, so per-user tools (nvm, pyenv, cargo, go, .NET, VS Code) and feed sign-ins " +
+    "(.npmrc, pip, NuGet, Maven, Gradle, .gitconfig) work like outside the sandbox. Credential stores stay unreadable: .ssh, .gnupg, .aws, .azure, .kube, .docker, " +
+    ".config\\gh, browser profiles, Windows credential vaults and the local Temp folder.\n\n" +
+    "The grant applies to every sandboxed session on this machine, by any project, until /sandbox uninstall. It takes minutes once (one line of progress per folder).\n\n" +
+    "No keeps the current behaviour: commands read the project and the known tool roots only. Answer No on a shared machine."
+  );
+}
+
 export const WINDOWS_TOOL_ROOTS = [
   "%LOCALAPPDATA%\\Programs",
   "%APPDATA%\\npm",

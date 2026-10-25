@@ -35,6 +35,8 @@ export const DOC_REFS = {
   linuxNamespaces: "troubleshooting.md#nested-sandboxes-on-linux",
   windowsSelfCheck: "troubleshooting.md#windows-sandbox-self-check",
   windowsInstall: "troubleshooting.md#windows-sandbox-install",
+  windowsLoopback: "troubleshooting.md#loopback-mode-on-windows",
+  windowsProfile: "troubleshooting.md#reading-your-profile-on-windows",
   windowsMappedDrive: "troubleshooting.md#mapped-drive-or-unc-project-on-windows",
   windowsSandbox: "sandbox.md#windows",
   windowsRevocation: "troubleshooting.md#tls-revocation-on-windows",

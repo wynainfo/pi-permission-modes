@@ -60,7 +60,44 @@ export function normalizeDomain(raw: string): string | undefined {
   return d.length > 0 ? d : undefined;
 }
 
+/** One answer the user gave to a live network prompt, for the model to read in the command's output. */
+export interface PromptedHost {
+  host: string;
+  result: NetAskResult;
+}
+
+/**
+ * The block appended to a command's output when the user answered network
+ * prompts during it: the model only sees a connection that worked, or one
+ * that failed, and would otherwise not know a person decided it.
+ */
+export function promptNote(prompted: readonly PromptedHost[]): string {
+  if (prompted.length === 0) return "";
+  const line = (p: PromptedHost): string => {
+    switch (p.result) {
+      case "allow-session":
+        return `the user was asked and allowed ${p.host} for this session`;
+      case "allow-forever":
+        return `the user was asked and allowed ${p.host} for this mode permanently`;
+      case "deny":
+        return `the user was asked and denied ${p.host} for this session: do not retry it, ask the user if it is needed`;
+      default:
+        return `the user dismissed the prompt for ${p.host}: this connection was denied, a retry asks again`;
+    }
+  };
+  return `<sandbox_network>\n${prompted.map(line).join("\n")}\n</sandbox_network>`;
+}
+
 export class NetworkSession {
+  private prompted: PromptedHost[] = [];
+
+  /** The prompts answered since the last call (drained): the running command's. */
+  takePrompted(): PromptedHost[] {
+    const out = this.prompted;
+    this.prompted = [];
+    return out;
+  }
+
   /** `/net open`: filtering suspended for the session — every host allowed. */
   open = false;
   private allow = new Set<string>(); // session-granted patterns
@@ -110,6 +147,7 @@ export class NetworkSession {
     if (!p) {
       p = (async () => {
         const result = await ask(host, port);
+        this.prompted.push({ host, result });
         if (result === "allow-session" || result === "allow-forever") {
           this.grant([host]);
           return true;

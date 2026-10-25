@@ -10,6 +10,7 @@ shape of the code.
 |---|---|
 | `src/index.ts` | Wiring: flags, commands, shortcuts, the `tool_call` dispatcher, the `input` hook for skills, `before_agent_start` (system prompt), lifecycle (`session_start`, `session_tree`, `session_shutdown`) |
 | `src/schema.ts` | Mode schema types and the Plan-mode prompt. The shipped defaults are data: `permission-mode.defaults.json` |
+| `src/prompt-sections.ts` | The mode text as pi prompt sections (`permission_mode`, `permission_mode_docs`, `permission_mode_steering`), with the fallback for a pi without sections |
 | `src/resolve.ts` | Pure resolution engine: `matchPattern`, `resolveSurface`, `mostRestrictive`, `decide`, `decideBashChain` |
 | `src/bash-parse.ts` | tree-sitter command extraction (pure core), the lazily loaded WASM parser, the heuristic fallback |
 | `src/bash-enforce.ts` | Pure bash gate (`bashGate`) and exec plan: how a policy action composes with the sandbox state |
@@ -52,10 +53,13 @@ shape of the code.
    (`wrapWithSandbox`, with a per-command id and the per-run extras), streams
    output, and afterwards appends the runtime's violation block for that id
    and the grantable-host hint, then calls `cleanupAfterCommand`.
-6. **System prompt**: `before_agent_start` adds the awareness section built
-   from the effective profile (mode profile plus scratch dir plus session
-   blocks), the docs pointer, and the mode's `systemPrompt` (`@plan`
-   expands to the dated Plan-mode prompt).
+6. **System prompt**: `before_agent_start` writes three pi prompt sections
+   (`src/prompt-sections.ts`): the awareness section built from the
+   effective profile (mode profile plus scratch dir plus session blocks),
+   the docs pointer, and the mode's `systemPrompt` (`@plan` expands to the
+   dated Plan-mode prompt). pi diffs them per turn and patches the changed
+   ones in the transcript, so a switch does not rewrite the request head;
+   a pi without sections gets the text appended to the system prompt.
 
 ## Invariants
 

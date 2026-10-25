@@ -6,7 +6,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [2.5.0]
+### Changed
+- **The mode text is written as pi prompt sections instead of replacing the
+  system prompt.** The sandbox awareness block, the docs pointer and a mode's
+  own `systemPrompt` become the sections `permission_mode`,
+  `permission_mode_docs` and `permission_mode_steering`. pi records them in
+  the session and, on models that accept mid-conversation system messages
+  (pi 0.86 or newer; the catalog entries of Anthropic, OpenAI, OpenRouter and
+  others; custom endpoints with `compat.supportsMidConvoSystemMessages`), a
+  mode switch, a network grant or a blocked path now sends a short patch
+  after the conversation instead of rewriting its head, so the provider's
+  prompt cache keeps the whole context. Other models and older pi versions
+  behave as before. Idea from [#9](https://github.com/wynainfo/pi-permission-modes/pull/9)
+  by [@ammoniak](https://github.com/ammoniak).
+
+## [2.6.0]
 
 ### Added
 - **Background shells: bash with `run_in_background: true`.** A dev server,
@@ -45,8 +59,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Reads are what the profile grants there: the stock profiles grant the
   project and the per-user tool roots that exist on the machine (per-user
   Python, Git, npm, pnpm, fnm, Scoop, WinGet and friends), nothing else of
-  the profile, so the credential list holds by construction; a mode's own
-  `allowRead` replaces that list. Before
+  the profile unless the install's profile read grant makes it readable
+  minus the credential stores (asked at `/sandbox install`, see the
+  runtime entry below), so the credential list holds by construction; a
+  mode's own `allowRead` replaces that list. Before
   trusting the sandbox the extension probes the project's parent and the
   drive root from inside it and prompts instead when they are writable (a
   folder created at a drive root grants every local user Modify; a project
@@ -62,8 +78,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot leave the fence. The bash escape heuristic understands Windows
   paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script arguments,
   and `runas` / `gsudo`; Git Bash's `/tmp` is not an escape. Limits, the runtime's: per-user tool
-  installs need the profile's read grant, mapped-drive and UNC projects are
-  refused, DNS is not fenced, System32 curl needs `--ssl-no-revoke`
+  installs need the profile read grant or a tool root, mapped-drive and
+  UNC projects are refused, DNS is not fenced, Schannel clients (curl in
+  both builds, PowerShell, .NET) cannot do TLS inside the sandbox
   ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). Built on the work
   of [@ammoniak](https://github.com/ammoniak) in
   [#9](https://github.com/wynainfo/pi-permission-modes/pull/9): the path
@@ -80,18 +97,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model is told to stop and offer the user the choice between that token
   and one-off `!git clone` / `!git push` steps on the host, and never to ask
   for the token in chat ([docs/network.md, Git authentication](docs/network.md#git-authentication)).
-- **A shipped `docs/` reference, and every hint points into it.** The
-  package now carries `docs/` (configuration, modes, permissions, sandbox,
-  network, troubleshooting, architecture). The system prompt names the
-  folder in every mode, like pi does for its own docs, and each message that
-  explains a limit (a blocked path, a refused host, bubblewrap failing to
-  start, an unavailable sandbox, an outdated default) ends with
-  `see docs/<file>#<section>`, so the model reads the explanation instead of
-  guessing. Reading the shipped docs is not an out-of-project escape in the
-  sandboxed modes, nor is reading pi's own docs, examples and README, which
-  pi's prompt points the model at (writing to them still is). A test keeps every reference
-  pointing at an existing heading and every schema key documented. The
-  README is the short version now.
 - **`sandbox.allowLocalBinding`: a server a sandboxed command starts is
   reachable from this machine.** One top-level key with one meaning on
   every platform: a sandboxed command may listen on a local port and this
@@ -104,8 +109,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lets sandboxed bash reach loopback services directly (database drivers,
   `psql`), past the proxy and its prompt: the profile otherwise allows
   direct TCP only to the proxy, so no allowlist entry could help. On
-  Windows the inbound side is open regardless, so `false` is reported as
-  not enforced in `/sandbox` and in the awareness section; on Linux the
+  Windows loopback is an install-time mode of the firewall set:
+  `/sandbox install` opens it unless every sandboxed mode sets the key to
+  `false`, the install's mode is what every session gets, and selecting a
+  mode whose value differs says so once per mode and session (`/sandbox`
+  shows the installed mode); on Linux the
   sandbox's loopback is its own, so nothing is reachable from the host
   until managed jobs relay declared ports. The awareness section tells the
   model what a server it starts can do on the current platform. The costs
@@ -116,18 +124,86 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
   [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
   tighten-only logic, tests, and security notes this takes over.
-- **`sandbox.macos.enableWeakerNetworkIsolation`: the runtime's macOS-only
-  switch for Go TLS, opt-in per mode.** It allows the `trustd` lookup Go
-  programs (`gh`, `kubectl`, `terraform`, `gcloud`) need to verify TLS
-  certificates, which otherwise fails with `x509: OSStatus -26276` and a
-  misleading "token invalid" from `gh`. Off unless set, forwarded under the
-  runtime's own name, accepted but without effect on Linux and Windows, and
-  settable only in the global config (a project may turn it off, never on).
-  The awareness section tells the model about the Go TLS limit while the
-  switch is off; `/sandbox` shows it. The cost (the `trustd` exfiltration
-  channel) is in SECURITY.md and `docs/sandbox.md`. Requested by
-  [@MagneticNeedle](https://github.com/MagneticNeedle) in
-  [#18](https://github.com/wynainfo/pi-permission-modes/issues/18).
+- **The model is told how you answered a network prompt.** A command whose
+  run prompted you for a host ends its output with a `<sandbox_network>`
+  block naming the host and your answer (allowed for the session or the
+  mode, denied, dismissed), so the model no longer takes a connection that
+  worked after your approval for an unfiltered network, and does not retry
+  one you denied.
+
+### Changed
+- **`@anthropic-ai/sandbox-runtime` 0.0.80 -> 0.0.81.** Every change is on
+  Windows; Linux and macOS are untouched. Two ways out of the sandbox are
+  closed: a sandboxed process could start an AppContainer child whose
+  connections the fence did not match, and could impersonate the real user
+  through the inherited stdin pipe. Sandboxed commands now run under a
+  write-restricted token (an ordinary token of the sandbox account could
+  write wherever `Users` holds write access, whatever the allow list said);
+  Schannel clients cannot do TLS under it: `curl` in both builds (Git for
+  Windows ships a Schannel curl too), PowerShell web requests and .NET
+  HTTP; `git`, Node, Python and Go programs work.
+  `/sandbox install` now asks one question, whether your user profile
+  should be readable to sandboxed commands (default Yes: per-user tools and
+  feed sign-ins work, the credential stores such as `.ssh`, `.aws`, `.gnupg`
+  and `.config\gh` stay unreadable, the grant is per machine and takes
+  minutes once; answer No on a shared machine), opens loopback for
+  `sandbox.allowLocalBinding` unless every sandboxed mode turns it off, and
+  asks before replacing an install made with other options. With the
+  grant, a session passes the grant's configuration-file variables
+  (`NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`,
+  `CARGO_HOME`) to sandboxed commands, records the global config's denies
+  inside the profile as exclusions of the grant at install (a deny the
+  grant does not exclude costs the runtime seconds at every initialize;
+  `/sandbox` lists any left), leaves the now redundant tool roots
+  and other `allowRead` entries inside the profile out of its grants
+  (an excluded store a mode names on purpose goes through the runtime's
+  explicit read option), keeps a mode's denies inside the profile in
+  force, and refuses up front, with the reason, a write root that holds a
+  protected store or a grant the runtime would not rely on; `/sandbox`
+  shows `Profile reads: granted at install` or `absent`
+  ([docs/troubleshooting.md, Reading your profile on Windows](docs/troubleshooting.md#reading-your-profile-on-windows)).
+  Write grants on project roots are kept between sessions, so only the
+  first session in a project walks its tree. The install has to be run once more
+  (`/sandbox install`, one UAC prompt, in place): until then the sandbox
+  reports that an earlier release set it up, and the sandboxed modes ask
+  before every bash command.
+
+## [2.5.0]
+
+### Added
+- **A shipped `docs/` reference, and every hint points into it.** The
+  package now carries `docs/` (configuration, modes, permissions, sandbox,
+  network, troubleshooting, architecture). The system prompt names the
+  folder in every mode, like pi does for its own docs, and each message that
+  explains a limit (a blocked path, a refused host, bubblewrap failing to
+  start, an unavailable sandbox, an outdated default) ends with
+  `see docs/<file>#<section>`, so the model reads the explanation instead of
+  guessing. Reading the shipped docs is not an out-of-project escape in the
+  sandboxed modes (writing to them still is). A test keeps every reference
+  pointing at an existing heading and every schema key documented. The
+  README is the short version now.
+- **`sandbox.macos`: the runtime's macOS-only switches, opt-in per mode.**
+  `allowLocalBinding` lets sandboxed bash reach loopback services and bind
+  local ports (database drivers, dev servers under test); on macOS the
+  profile otherwise allows direct TCP only to the proxy, so no allowlist
+  entry could help. `enableWeakerNetworkIsolation` allows the `trustd`
+  lookup Go programs (`gh`, `kubectl`, `terraform`, `gcloud`) need to verify
+  TLS certificates, which otherwise fails with `x509: OSStatus -26276` and a
+  misleading "token invalid" from `gh`. Both are off unless set, forwarded
+  under the runtime's own names, accepted but without effect on Linux and
+  Windows, and settable only in the global config (a project may turn a
+  switch off, never on). The awareness section tells the model about the
+  loopback carve-out when it is on and about the Go TLS limit when the
+  second switch is off; `/sandbox` shows both. The costs (unsandboxed
+  loopback services, LAN exposure of `0.0.0.0` servers, the `trustd`
+  exfiltration channel) are in SECURITY.md and `docs/sandbox.md`. An unknown
+  key inside `sandbox.network` now warns instead of doing nothing. Requested
+  by [@MagneticNeedle](https://github.com/MagneticNeedle) in
+  [#18](https://github.com/wynainfo/pi-permission-modes/issues/18) and by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
+  [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
+  tighten-only logic, tests, and security notes this takes over.
 - **`sandbox.linux.allowNestedUserNamespaces`: opt-in for programs that
   sandbox themselves.** Runtime 0.0.80 keeps a sandboxed command in the
   namespaces made for it, so Chromium and Electron (Playwright, Puppeteer),

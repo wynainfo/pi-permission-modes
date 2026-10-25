@@ -144,11 +144,23 @@ needed and your own network is unaffected. `/sandbox uninstall` removes all
 of it again.
 
 Commands run in Git Bash, so Git for Windows must be installed for all users
-(under Program Files), or the mode's profile must grant read access to a
-per-user install (the stock defaults grant `%USERPROFILE%` read access).
-Until the backend is installed, or when one of its checks fails, the
-sandboxed modes ask before every bash command; the footer shows the reason
-and `/sandbox` the details.
+(under Program Files), or be readable through the profile read grant or the
+mode's `allowRead`. Until the backend is installed, or when one of its
+checks fails, the sandboxed modes ask before every bash command; the footer
+shows the reason and `/sandbox` the details.
+
+The install asks one question, whether your user profile should be readable
+to sandboxed commands ([Reading your profile on Windows](#reading-your-profile-on-windows)),
+and opens loopback unless every sandboxed mode sets
+`sandbox.allowLocalBinding` to `false` ([Loopback mode on Windows](#loopback-mode-on-windows)).
+An install made with other options asks before it is replaced.
+
+`Windows sandbox set up by another release (/sandbox install)` in the
+footer: the runtime shipped with this version of the extension needs a newer
+install than the one on the machine (its setup version changed). Run
+`/sandbox install` again; it upgrades in place with one UAC prompt and keeps
+the write grants of earlier sessions. Until then the sandboxed modes ask
+before every bash command.
 
 `file_id changed since prior grant - path was substituted (refusing)`: a
 folder this pi process granted earlier was replaced on disk since, which
@@ -157,6 +169,73 @@ folder this pi process granted earlier was replaced on disk since, which
 were reinstalled while the entries of the previous load were still held.
 The extension retries the initialize once after releasing them; should the
 message stay, restart pi.
+
+## Loopback mode on Windows
+
+Since sandbox-runtime 0.0.81 the Windows firewall set is installed either
+with loopback open (a sandboxed command may listen on a port, and this
+machine reaches it while the command runs) or closed (no listening, local
+services through the proxy and its prompt only). It is an install-time
+choice: `/sandbox install` opens loopback unless every sandboxed mode sets
+`sandbox.allowLocalBinding` to `false`, and a session cannot ask the
+runtime for the other mode.
+
+So on Windows the key in a mode does not switch anything. When you select
+a mode whose value differs from the installed one, pi says so once per mode
+and session ("... the Windows sandbox is installed with loopback open: the
+install decides until /sandbox install runs again"); `/sandbox` shows the
+installed mode as the `Local binding` line. Use the same value in every
+sandboxed mode, and to change the installed mode set it in the config and
+run `/sandbox install` again (one UAC prompt; an install made with other
+options asks before it is replaced).
+
+## Reading your profile on Windows
+
+Since sandbox-runtime 0.0.81, `/sandbox install` asks whether your user
+profile should be readable to sandboxed commands. Yes grants the sandbox
+account read access to the profile minus the runtime's exclusion list
+(`.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.config\gh`,
+browser profiles, the Windows credential vaults and the local Temp folder):
+tools installed for your user alone run, and npm, pip, NuGet, Maven, Gradle
+and git find your configuration, feed sign-ins included. The grant is per
+machine and user, not per project or mode: every sandboxed session on the
+machine reads the profile until `/sandbox uninstall` (or `/sandbox install`
+answered No). On a shared machine answer No; the sandbox then reads the
+project and the known tool roots only, as before.
+
+The install also records the denied paths of your global config's modes
+that lie inside the profile (`~/.netrc`, `~/.git-credentials`, pi's own
+`auth.json` and the rest of the credential list) as exclusions of the
+grant, so no session has to write them: a deny inside the granted profile
+that the grant does not exclude is written by the runtime at every
+initialize and removed at every reset, several seconds each, which turns
+a mode switch into a minute. `/sandbox` lists such denies under
+`Profile denies not recorded with the grant`, and the session says so
+once; after a change to the global config's deny lists run `/sandbox
+install` again (one UAC prompt, then a refresh of the grant). A recorded
+exclusion stays until `/sandbox uninstall`.
+
+`/sandbox` shows the state as `Profile reads: granted at install` or
+`absent`, with the variables the grant adds (`NPM_CONFIG_USERCONFIG`,
+`PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`, `CARGO_HOME`) so the tools
+read your files in place. With the grant, an `allowRead` inside the
+profile is redundant and left out of the runtime's grants; a mode that
+names an excluded store on purpose (`"allowRead": ["~/.ssh"]`) gets it
+through the runtime's explicit read option, never as a write root. A
+project directory that is, or holds, an excluded store (your profile
+itself, `AppData`) cannot be granted write access: the footer says
+`Windows sandbox off: a write root holds a protected store`; choose a
+narrower directory.
+
+`Windows sandbox: profile read grant needs /sandbox install` in the footer
+means the grant recorded on this machine is one the runtime refuses to
+rely on: its run did not finish, it was made by a release with an older
+exclusion list, or for another profile. Run `/sandbox install` again (one
+UAC prompt; it refreshes the grant), or answer No there to go without. A
+grant warning after initialize (`profile read grant warning(s): ...`)
+names a protected path that is readable after all through an entry an
+earlier run left and could not remove; its message carries the `icacls`
+command that removes it, to run from an elevated prompt.
 
 ## Windows sandbox self-check
 
@@ -312,14 +391,24 @@ the host with your own credentials.
 
 ## TLS revocation on Windows
 
-Inside the Windows sandbox, schannel (the TLS stack of System32 `curl`,
-default-backend `git`, .NET and PowerShell) fetches certificate revocation
-lists over WinHTTP, outside the proxy variables, and the firewall rule
-blocks that. Tools that check revocation by default fail with
+Since sandbox-runtime 0.0.81 sandboxed commands run under a write-restricted
+token, and Schannel cannot complete a TLS handshake under it: every Schannel
+client fails on every `https` URL inside the sandbox with
+`SEC_E_NO_CREDENTIALS (0x8009030E)`, whatever the options (`--ssl-no-revoke`
+no longer helps). That is `curl` in both builds, System32 and the one Git
+for Windows ships (also a Schannel build, `curl --version` says so),
+PowerShell's `Invoke-WebRequest` and .NET HTTP. git works through its
+OpenSSL backend, as do Node, Python, cargo's own TLS and Go programs such
+as `gh`; the awareness section tells the model to make HTTP requests with
+`node -e` or `python -c` instead of curl.
+
+Revocation is the older half and still applies to git: schannel fetches
+certificate revocation lists over WinHTTP, outside the proxy variables, and
+the firewall rule blocks that, so tools that check revocation fail with
 `CRYPT_E_REVOCATION_OFFLINE` (`0x80092013`). The extension exports
 `GIT_CONFIG_PARAMETERS='http.schannelCheckRevoke=false'` and
 `CARGO_HTTP_CHECK_REVOKE=false` into every sandboxed command, so git and
-cargo work; for System32 curl pass `--ssl-no-revoke`. Git is also set to
+cargo work. Git is also set to
 `http.proxyAuthMethod=basic`: its libcurl otherwise sends the first CONNECT
 to the sandbox proxy without credentials, gets a 407 and a closed
 connection, and fails with "Proxy CONNECT aborted". Git also runs with
@@ -328,13 +417,15 @@ there: a remote that wants credentials fails at once instead of waiting on
 a prompt the sandbox account cannot show (use a token, see
 [network.md, Git authentication](network.md#git-authentication)), and Git
 Credential Manager does not spend two seconds detecting a host provider
-for the proxy when git hands it the proxy credentials to store. `gh`, PowerShell's
-`Invoke-WebRequest` and .NET do not check revocation by default, and tools
-on OpenSSL (Node, Python, cargo's own TLS) are unaffected.
+for the proxy when git hands it the proxy credentials to store.
 
 ## Per-user tools on Windows
 
-The sandboxed command runs as `srt-sandbox`, not as you. A tool installed
+With the install's profile read grant
+([Reading your profile on Windows](#reading-your-profile-on-windows)) the
+tools under your profile are readable and this section does not apply.
+Without it, the sandboxed command runs as `srt-sandbox`, not as you, and
+nothing of your profile is readable by default. A tool installed
 for your user only (`%LOCALAPPDATA%\Programs`, Scoop, nvm or fnm Node,
 `pip install --user`, `winget` without `--scope machine`) is on the
 inherited `PATH` but fails with "command not found" or "Access is denied"

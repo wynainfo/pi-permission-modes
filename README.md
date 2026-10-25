@@ -70,10 +70,11 @@ ports are open unless a mode turns `sandbox.allowLocalBinding` off
 
 > **Native Windows (alpha).** The sandbox is the runtime's Windows backend:
 > commands run as a separate local account behind a firewall rule keyed on
-> it, with the profile as NTFS permissions. It needs Git for Windows installed
-> for all users and one `/sandbox install` in pi (one UAC prompt). Until then
-> the sandboxed modes degrade to *prompting only*. Details and limits:
-> [docs/sandbox.md](docs/sandbox.md#windows).
+> it, with the profile as NTFS permissions. It needs Git for Windows and one
+> `/sandbox install` in pi (one UAC prompt, then one question: whether your
+> user profile is readable to sandboxed commands, minus the credential
+> stores). Until then the sandboxed modes degrade to *prompting only*.
+> Details and limits: [docs/sandbox.md](docs/sandbox.md#windows).
 
 ### Verify
 

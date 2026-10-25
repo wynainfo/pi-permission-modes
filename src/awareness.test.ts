@@ -186,14 +186,18 @@ test("sandbox.allowLocalBinding: the server line per platform, the direct-loopba
   assert.match(open, listens);
   assert.doesNotMatch(open, loop);
   assert.doesNotMatch(open, go);
-  // Windows: the server line always (the fence stops outbound connects only); false is named as unenforced.
-  const win = sandboxAwarenessPrompt(mode(), { active: true, platform: "win32" })!;
+  // Windows: the installed loopback mode decides, not the mode's key (windowsLoopback is what the install reports).
+  const win = sandboxAwarenessPrompt(mode({}, { allowLocalBinding: false }), { active: true, platform: "win32", windowsLoopback: true })!;
   assert.match(win, listens);
-  assert.doesNotMatch(win, /cannot enforce/);
   assert.doesNotMatch(win, loop);
-  const winOff = sandboxAwarenessPrompt(mode({}, { allowLocalBinding: false }), { active: true, platform: "win32" })!;
-  assert.match(winOff, listens);
-  assert.match(winOff, /Windows cannot enforce/);
+  const winOff = sandboxAwarenessPrompt(mode(), { active: true, platform: "win32", windowsLoopback: false })!;
+  assert.doesNotMatch(winOff, listens);
+  assert.match(winOff, /Local binding is closed on this machine .* cannot listen on a port/);
+  assert.doesNotMatch(winOff, /macos-loopback-services/);
+  assert.match(win, /Services on this machine \(localhost, 127\.0\.0\.1\) are reached directly, without the proxy or a prompt/);
+  assert.match(winOff, /reached through the proxy and prompt the user once per session \(loopback is closed at install/);
+  // Without the install's answer (no sandbox yet) the mode's key stands in.
+  assert.match(sandboxAwarenessPrompt(mode(), { active: true, platform: "win32" })!, listens);
 });
 
 test("denyWrite entries are listed when present", () => {
@@ -261,7 +265,10 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   assert.doesNotMatch(home, /Reads are broadly allowed/);
   assert.doesNotMatch(home, /Readable again inside/);
   assert.doesNotMatch(home, /command not found/);
-  assert.match(home, /git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke/);
+  assert.match(home, /Schannel clients cannot complete a TLS handshake .* curl, PowerShell's Invoke-WebRequest and \.NET HTTP fail on every https URL/);
+  assert.match(home, /use node -e .* not curl/);
+  assert.doesNotMatch(home, /ssl-no-revoke/);
+  assert.match(home, /Services on this machine \(localhost\) are reached through the proxy and prompt the user once per session\./);
   assert.match(home, /docs\/sandbox\.md#windows/);
   assert.match(home, /docs\/troubleshooting\.md#tls-revocation-on-windows/);
   assert.match(home, /A server you start within a command listens for real: the user can open it in a browser while the command runs/);
@@ -271,6 +278,12 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   const strict = sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.gitconfig"] }), { active: true, platform: "win32" })!;
   assert.match(strict, /Readable: the project, Windows and Program Files, ~\/\.gitconfig, EXCEPT ~\./);
   assert.match(strict, /command not found.*docs\/troubleshooting\.md#per-user-tools-on-windows/);
+  // With the install's profile read grant the profile is readable minus the stores, whatever the mode lists inside it; a path outside stays listed.
+  const granted = sandboxAwarenessPrompt(mode({}, { allowRead: ["~/AppData/Local/Programs", "D:\\tools"] }), { active: true, platform: "win32", windowsProfileRead: "granted" })!;
+  assert.match(granted, /Readable: the project, Windows and Program Files, your user profile \(~\) except the credential stores \(\.ssh, \.gnupg, \.aws, .*the Temp folder\), D:\\tools, EXCEPT ~\/\.ssh/);
+  assert.doesNotMatch(granted, /Programs/);
+  assert.doesNotMatch(granted, /command not found/);
+  assert.match(sandboxAwarenessPrompt(mode({}, { denyRead: ["~"], allowRead: ["~/.gitconfig"] }), { active: true, platform: "win32", windowsProfileRead: "absent" })!, /command not found/);
   const linux = sandboxAwarenessPrompt(mode(), { active: true, platform: "linux" })!;
   assert.doesNotMatch(linux, /native Windows sandbox/);
   assert.match(linux, /Reads are broadly allowed EXCEPT/);

@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NetworkSession, isHostAllowed, matchesDomainPattern, normalizeDomain } from "./network.ts";
+import { isHostAllowed, matchesDomainPattern, NetworkSession, normalizeDomain, promptNote } from "./network.ts";
 
 test("matchesDomainPattern mirrors the sandbox-runtime semantics", () => {
   // Exact, case-insensitive.
@@ -62,7 +62,10 @@ test("decide: explicit deny is remembered, dismiss is not", async () => {
     return "deny";
   };
   assert.equal(await s.decide("blocked.io", 443, deny), false);
-  assert.equal(await s.decide("blocked.io", 443, deny), false); // remembered — no second prompt
+  // Every answer is kept for the command's output until drained; a decision without a prompt is not.
+  assert.deepEqual(s.takePrompted().map((p) => `${p.host}:${p.result}`).slice(-1), ["blocked.io:deny"]);
+  assert.equal(await s.decide("blocked.io", 443, deny), false); // remembered - no second prompt
+  assert.deepEqual(s.takePrompted(), []);
   assert.equal(calls, 1);
   assert.deepEqual(s.denies(), ["blocked.io"]);
 
@@ -134,4 +137,19 @@ test("NetworkSession: hostnames are case-insensitive in grants and remembered de
   n.grant(["API.example.com"]);
   assert.equal(await n.decide("api.EXAMPLE.com", 443, ask), true);
   assert.deepEqual(n.grants(), ["api.example.com"]);
+});
+
+test("promptNote: one line per answered prompt, nothing without one", () => {
+  assert.equal(promptNote([]), "");
+  const note = promptNote([
+    { host: "example.com", result: "allow-session" },
+    { host: "cdn.example.com", result: "allow-forever" },
+    { host: "evil.io", result: "deny" },
+    { host: "late.io", result: "dismiss" },
+  ]);
+  assert.match(note, /^<sandbox_network>\n/);
+  assert.match(note, /the user was asked and allowed example\.com for this session\n/);
+  assert.match(note, /allowed cdn\.example\.com for this mode permanently\n/);
+  assert.match(note, /denied evil\.io for this session: do not retry it, ask the user if it is needed\n/);
+  assert.match(note, /dismissed the prompt for late\.io: this connection was denied, a retry asks again\n<\/sandbox_network>$/);
 });

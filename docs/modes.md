@@ -82,6 +82,22 @@ says so and points at the confirmation prompts instead. Every mode also gets
 a short pointer to this documentation. Opt a mode out of the boundary section
 with `"injectSandboxInfo": false`.
 
+The text is written as pi prompt sections (`permission_mode`,
+`permission_mode_docs`, `permission_mode_steering` for a mode's own
+`systemPrompt`), not as a replacement of the whole system prompt. pi records
+them in the session and, when one changes, sends only the changed section as
+a short patch after the conversation on models that accept mid-conversation
+system messages (the catalog entries of Anthropic, OpenAI, OpenRouter and
+others). A mode switch, a network grant or a blocked path then costs a few
+hundred tokens instead of a re-read of the whole context, and the provider's
+prompt cache keeps the prefix. On other models pi folds the patch into the
+leading prompt, which re-reads the context once per change. A custom
+endpoint in `models.json` (vLLM, SGLang, Ollama) opts in with
+`"compat": { "supportsMidConvoSystemMessages": true }` on the model entry,
+once you have checked the server accepts a `system` message after the first
+turn. pi older than 0.86 has no sections; there the text is appended to the
+system prompt as before.
+
 ## Approving a plan
 
 When a run in Plan Mode (any mode whose `systemPrompt` is `"@plan"`) has

@@ -1,26 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  expandWinEnv,
   findGitBash,
   gitConfigMasked,
   gitIdentityEnv,
   globalGitConfigSources,
-  stageGitConfig,
   grantReadExecute,
   parseProbe,
   probeAdvice,
   probeNotice,
   probeProblem,
-  sandboxAceIn,
   probeScript,
   probeTargets,
+  profileExclusionRelation,
+  profileExclusions,
   readGitIdentity,
+  sandboxAceIn,
   stagedSrtWinPath,
+  stageGitConfig,
   windowsEnvExports,
   windowsEnvFile,
-  expandWinEnv,
-  windowsReadGrants,
   windowsGitEnv,
+  windowsReadGrants,
   windowsScript,
   withWindowsReads,
 } from "./sandbox-win.ts";
@@ -231,6 +233,39 @@ test("windowsScript: sources the env file and runs the command file in a bash -c
   assert.equal(windowsScript("echo hi", odd, ["A='1'", "B='2'"]), "export A='1' B='2'; echo hi");
   assert.equal(windowsScript("echo hi", undefined, []), "echo hi");
   assert.equal(windowsEnvFile(["A='1'", "B='2'"]), "export A='1'\nexport B='2'\n");
+});
+
+test("profileExclusionRelation: equal, inside, above; one-name and prefix wildcards; the \\\\?\\ prefix and case are ignored", () => {
+  const ssh = "\\\\?\\C:\\Users\\me\\.ssh";
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\.SSH", ssh), "equal");
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\.ssh\\id_ed25519", ssh), "inside");
+  assert.equal(profileExclusionRelation("C:\\Users\\me", ssh), "above");
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\.sshx", ssh), undefined);
+  assert.equal(profileExclusionRelation("D:\\tools", ssh), undefined);
+  const web = "C:\\Users\\me\\AppData\\Local\\*\\EBWebView";
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Teams\\EBWebView\\Default", web), "inside");
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Teams", web), "above");
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Teams\\Cache", web), undefined);
+  const vault = "C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault*";
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault2", vault), "equal");
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Microsoft\\Vault2\\x.vcrd", vault), "inside");
+  assert.equal(profileExclusionRelation("C:\\Users\\me\\AppData\\Local\\Microsoft\\Edge", vault), undefined);
+});
+
+test("profileExclusions: the global modes' denies inside the profile, absolute and deduplicated; relative and outside entries left out", () => {
+  const env = { USERPROFILE: "C:\\Users\\me", APPDATA: "C:\\Users\\me\\AppData\\Roaming" };
+  const modes = [
+    { enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh", "~/.netrc", "./.env", "D:\\vault", "%APPDATA%\\gcloud"], denyWrite: ["~/.gitconfig"] },
+    { enabled: true, writable: false, allowWrite: [], denyRead: ["~\\.NETRC", "~"] },
+    { enabled: false, writable: true, allowWrite: [], denyRead: ["~/.yolo"] },
+  ];
+  assert.deepEqual(profileExclusions(modes, env), [
+    "C:\\Users\\me\\.ssh",
+    "C:\\Users\\me\\.netrc",
+    "C:\\Users\\me\\AppData\\Roaming\\gcloud",
+    "C:\\Users\\me\\.gitconfig",
+  ]);
+  assert.deepEqual(profileExclusions(modes, {}), [], "no profile, nothing to record");
 });
 
 test("windowsReadGrants: the tool roots that exist, expanded from the environment, deduplicated", () => {

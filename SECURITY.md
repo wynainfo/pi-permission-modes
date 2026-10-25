@@ -115,9 +115,10 @@ you can rely on it appropriately. The reference for every setting is in
   runs (bind `127.0.0.1`); and on macOS a process that backgrounds itself
   survives the command with its profile still applied, so a bound port does
   not close with the command. Set it to false for the modes that work next
-  to a trusting loopback service. On Windows the inbound side is always
-  open (the fence filters outbound connects only), so false is reported
-  as not enforced; on Linux the sandbox's loopback is its own and nothing
+  to a trusting loopback service. On Windows loopback is an install-time
+  mode of the firewall set (open by default; closed when every sandboxed
+  mode sets the key to false at install time), so a mode's value cannot
+  switch it and a mode that differs is told so; on Linux the sandbox's loopback is its own and nothing
   is reachable either way ([docs/sandbox.md, Local binding](docs/sandbox.md#local-binding)).
 - **The macOS switch widens the sandbox on purpose.** `sandbox.macos` is
   off unless set, global-config only (a project may turn the switch off,
@@ -192,20 +193,29 @@ you can rely on it appropriately. The reference for every setting is in
   the drive root from inside the sandbox and prompts instead when they are
   writable (a folder created at a drive root grants every local user
   Modify). Reads are allow-listed by the OS there: the stock profiles grant
-  the project and the per-user tool roots that exist, nothing else of your
-  profile (an entry on the profile itself would make NTFS rewrite every file
-  below it), so the credential list holds by construction and denies outside
-  the grants are dropped. Known gaps, all inherited from the runtime:
-  the proxy token is visible to local principals that can inspect the
-  runner's command line, DNS lookups are not fenced (connections are),
-  revocation checks cannot leave the fence (git and cargo are told to skip
-  them inside the sandbox; System32 curl needs `--ssl-no-revoke`), and the
-  sandboxed command's environment is your shell environment minus identity,
-  path, temp, proxy and CA variables, the same exposure as on Linux
+  the project and, without the install's profile read grant, the per-user
+  tool roots that exist, nothing else of your profile; with the grant
+  (asked at `/sandbox install`, default Yes, per machine and user) the
+  profile is readable minus the runtime's exclusion list of credential
+  stores, which no mode can reopen except an `allowRead` that names one on
+  purpose, and a write root that holds one is refused. So the credential
+  list holds by construction either way, and denies outside the grants are
+  dropped. The grant is the trade to know: it applies to every sandboxed
+  session on the machine, whatever its mode, and it makes the package-feed
+  sign-ins in `.npmrc` and the pip, NuGet, Maven and Gradle configuration
+  readable on purpose; answer No on a shared machine. Known gaps, all
+  inherited from the runtime: the proxy token is visible to local
+  principals that can inspect the runner's command line, DNS lookups are
+  not fenced (connections are), revocation checks cannot leave the fence
+  (git and cargo are told to skip them inside the sandbox) and Schannel
+  clients (curl in both builds, PowerShell, .NET) cannot do TLS at all
+  under the write-restricted token, and the sandboxed command's environment is your
+  shell environment minus identity, path, temp, proxy and CA variables, the
+  same exposure as on Linux
   ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). One difference
-  is deliberate and useful: the fence stops the account's outbound
-  connects only, so a server a sandboxed command starts is reachable from
-  the host while the command runs (previews, tests), and ends with it. The
+  is deliberate and useful: with loopback open at install (the default), a
+  server a sandboxed command starts is reachable from the host while the
+  command runs (previews, tests), and ends with it. The
   cost to know: bound to `0.0.0.0` it answers on the LAN as far as Windows
   Firewall allows, so servers belong on `127.0.0.1`. macOS reaches such a
   server through `sandbox.allowLocalBinding` (on by default); Linux (private

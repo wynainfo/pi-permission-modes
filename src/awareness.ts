@@ -70,6 +70,10 @@ export interface AwarenessOptions {
   platform?: NodeJS.Platform;
   /** Background shells available in this session (`shells.enabled`; default true). */
   shells?: boolean;
+  /** Windows: the loopback mode the sandbox was installed with, which is what applies (the mode's `allowLocalBinding` does not). */
+  windowsLoopback?: boolean;
+  /** Windows: whether the user's profile is readable through the install's profile read grant (minus the credential stores). */
+  windowsProfileRead?: "granted" | "absent";
 }
 
 /** The one-sentence scratch-directory instruction, shared by every variant. */
@@ -93,7 +97,7 @@ const renderWritePath = (p: string): string => (p === "." || p === "./" ? "the p
  * on this platform.
  */
 export function localBindingNote(on: boolean, platform: NodeJS.Platform): string {
-  if (platform === "win32") return on ? " (a server a command starts is reachable from this machine while the command runs)" : " (not enforced on Windows: a listener is reachable regardless)";
+  if (platform === "win32") return on ? " (installed with loopback open: a server a command starts is reachable from this machine while the command runs)" : " (installed with loopback closed: no listening, local services through the proxy only)";
   if (platform === "darwin") return on ? " (a server a command starts is reachable from this machine while the command runs; loopback is reached directly, past the proxy)" : " (no listening; loopback through the proxy only)";
   return " (the sandbox's loopback is its own on Linux: a server is reachable from this machine through a background shell's expose list only)";
 }
@@ -112,12 +116,14 @@ export function localBindingLine(on: boolean, platform: NodeJS.Platform, shells 
         : "")
     );
   }
-  if (on || platform === "win32") {
+  if (on) {
     return (
       `- A server you start within a command listens for real: the user can open it in a browser while the command runs, and ${within}; bind it to 127.0.0.1.` +
-      (shells ? " In a background shell it stays reachable while the shell runs (bash's expose parameter is accepted but not needed here)." : "") +
-      (on ? "" : " (This mode sets sandbox.allowLocalBinding false, which Windows cannot enforce: a listener is reachable regardless.)")
+      (shells ? " In a background shell it stays reachable while the shell runs (bash's expose parameter is accepted but not needed here)." : "")
     );
+  }
+  if (platform === "win32") {
+    return "- Local binding is closed on this machine (an install-time choice of the Windows sandbox): a sandboxed command cannot listen on a port, and a raw TCP client (database drivers, psql, redis-cli) cannot reach a service on localhost; proxy-aware clients (curl, package managers) reach localhost after the user's approval.";
   }
   return `- Local binding is off in this mode: a sandboxed command cannot listen on a port, and a raw TCP client (database drivers, psql, redis-cli) cannot reach a service on localhost; proxy-aware clients (curl, package managers) reach localhost after the user's approval (see ${docRef("macosLoopback")}).`;
 }
@@ -166,16 +172,34 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   if (win32) {
     // The Windows backend runs commands as another account: reads are what
     // the profile grants, not "everything but the denies".
-    const home = grantsHome(sb.allowRead);
-    const carve = (sb.allowRead ?? []).filter((p) => !grantsHome([p])).map(renderWritePath);
-    const readable = ["the project", "Windows and Program Files", ...(home ? ["your user profile (~)"] : []), ...carve];
+    const granted = opts.windowsProfileRead === "granted";
+    const home = grantsHome(sb.allowRead) || granted;
+    const homeDir = expandHome("~").toLowerCase();
+    // With the grant, a listed path inside the profile is readable through it anyway.
+    const carve = (sb.allowRead ?? [])
+      .filter((p) => !grantsHome([p]) && !(granted && expandHome(p).toLowerCase().startsWith(homeDir)))
+      .map(renderWritePath);
+    const readable = [
+      "the project",
+      "Windows and Program Files",
+      ...(granted
+        ? ["your user profile (~) except the credential stores (.ssh, .gnupg, .aws, .azure, .kube, .docker, .config\\gh, browser profiles, Windows credential vaults, the Temp folder)"]
+        : home
+          ? ["your user profile (~)"]
+          : []),
+      ...carve,
+    ];
     lines.push(
       `- This is the native Windows sandbox: commands run in Git Bash as a separate local account (srt-sandbox). Readable: ${readable.join(", ")}` +
         `${sb.denyRead?.length ? `, EXCEPT ${sb.denyRead.join(", ")}` : ""}. Anything else reads as absent or "Access is denied"` +
         `${home ? "" : `, including programs installed for the user only whose folder is not listed; a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
         ` (see ${docRef("windowsSandbox")}).`,
-      `- TLS revocation checks cannot leave the sandbox: git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke, and CRYPT_E_REVOCATION_OFFLINE (0x80092013) from another schannel tool means the same. PowerShell's Invoke-WebRequest, gh, Node and Python are unaffected (see ${docRef("windowsRevocation")}).`,
-      "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session.",
+      `- TLS: Schannel clients cannot complete a TLS handshake under the sandbox's restricted token, and curl is one on Windows in both builds (System32 and Git for Windows): curl, PowerShell's Invoke-WebRequest and .NET HTTP fail on every https URL with SEC_E_NO_CREDENTIALS. git (OpenSSL backend), Node, Python and Go programs work; for a plain HTTP request use node -e "fetch(process.argv[1]).then(r => r.text()).then(console.log)" <url> or python -c, not curl. Revocation checks are already skipped for git and cargo (see ${docRef("windowsRevocation")}).`,
+      opts.windowsLoopback === false
+        ? "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session (loopback is closed at install: no direct connection, no listening)."
+        : opts.windowsLoopback
+          ? "- Services on this machine (localhost, 127.0.0.1) are reached directly, without the proxy or a prompt (loopback is open at install)."
+          : "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session.",
     );
   }
   if (sb.denyRead?.length) {
@@ -231,7 +255,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       );
     }
   }
-  lines.push(localBindingLine(sb.allowLocalBinding !== false, platform, opts.shells !== false));
+  lines.push(localBindingLine(platform === "win32" && opts.windowsLoopback !== undefined ? opts.windowsLoopback : sb.allowLocalBinding !== false, platform, opts.shells !== false));
   if (platform === "linux" && !sb.linux?.allowNestedUserNamespaces) {
     // The runtime refuses nested user namespaces since 0.0.80; the programs
     // that need one fail with EPERM and a message that does not name the cause.

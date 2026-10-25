@@ -58,6 +58,8 @@ import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 import { withGitHubTokenHelper } from "./git-auth.ts";
 import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { localBindingNote, sandboxAwarenessPrompt } from "./awareness.ts";
+import { PROFILE_GRANT_QUESTION, profileExclusions, profileGrantText } from "./sandbox-win.ts";
+import { type PromptParts, writePromptSections } from "./prompt-sections.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
@@ -71,20 +73,21 @@ import {
   writeAuditState,
 } from "./config-audit.ts";
 import {
-  SCHEMA_URL,
   globalConfigFile,
   hasMode,
   isUnsafeDomain,
+  loadGlobalModeConfig,
   loadModeConfig,
   loadStockDefaults,
   persistModeDomains,
   persistModeRule,
   profileToConfig,
   readGlobalConfigRaw,
+  SCHEMA_URL,
   stockDefaultsFile,
 } from "./config-load.ts";
 import type { PermState } from "./modes.ts";
-import { type NetAskResult, NetworkSession, isHostAllowed, normalizeDomain } from "./network.ts";
+import { isHostAllowed, NetworkSession, normalizeDomain, promptNote, type NetAskResult } from "./network.ts";
 import { blockablePath, canonicalPath, displayPath, insideRoots, isOutside, isProtectedWrite, normalizeToolPath, resolvePlanPath, sandboxAllowedRoots } from "./paths.ts";
 import {
   approvalMessage,
@@ -153,6 +156,8 @@ export default async function (pi: ExtensionAPI) {
   // would misdirect it — and the fallback isn't exported to child processes
   // as if it were an explicit choice (children re-derive their own fallback).
   let fallbackMode = false;
+  /** Windows: modes already told that their allowLocalBinding differs from the installed loopback mode (once per session). */
+  const loopbackWarned = new Set<string>();
   const root = process.cwd();
 
   const currentMode = (): ModeDef => (hasMode(config.modes, modeName) ? config.modes[modeName] : config.modes[config.defaultMode]);
@@ -346,7 +351,7 @@ export default async function (pi: ExtensionAPI) {
       label: `Deny and block ${shown} for this session`,
       run: async () => {
         for (const t of eligible) blocked.add(t);
-        updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
+        updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
         ctx.ui.notify(
           `permission-mode: ${shown} ${eligible.length === 1 ? "is" : "are"} now unreadable inside the sandbox for this session (/perm blocks to list, /perm unblock <path> to lift)`,
           "info",
@@ -478,10 +483,17 @@ export default async function (pi: ExtensionAPI) {
     // controller drops superseded requests). Bash in the meantime is refused
     // with "run it again" rather than run under the previous profile.
     const applied = sandbox.applyProfile(runtimeProfile(m)).catch(() => {});
-    updateStatus(ctx, m, sandbox, net.open, shellsRunning());
+    // Windows: a mode whose allowLocalBinding differs from the installed
+    // loopback mode is told so, once per mode and session, at the switch.
+    const conflict = sandbox.loopbackConflict(m.sandbox, m.label);
+    if (conflict && ctx.hasUI && !loopbackWarned.has(name)) {
+      loopbackWarned.add(name);
+      ctx.ui.notify(conflict, "warning");
+    }
+    updateStatus(ctx, m, sandbox, net.open, { shellsRunning: shellsRunning() });
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
     void applied.then(() => {
-      if (modeName === name) updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
+      if (modeName === name) updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
     });
     if (persist) pi.appendEntry<PermState>("perm-mode", { mode: modeName });
     // B: a manual switch into the approve mode while a plan is pending (alt+m,
@@ -694,7 +706,7 @@ export default async function (pi: ExtensionAPI) {
       return ctx.ui.notify("permission-mode: network is not filtered in this mode/state — nothing to toggle", "info");
     }
     net.open = !net.open;
-    updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
+    updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
     ctx.ui.notify(
       net.open
         ? "Network: OPEN for this session — domain filtering disabled (alt+n or /net restrict to re-enable)"
@@ -744,7 +756,7 @@ export default async function (pi: ExtensionAPI) {
       }
       if (sub === "reset") {
         net.clear();
-        updateStatus(ctx, m, sandbox, net.open, shellsRunning());
+        updateStatus(ctx, m, sandbox, net.open, { shellsRunning: shellsRunning() });
         return ctx.ui.notify("permission-mode: cleared session network grants/denies; filtering restored", "info");
       }
       if (sub === "allow") {
@@ -788,14 +800,65 @@ export default async function (pi: ExtensionAPI) {
           return ctx.ui.notify(`permission-mode: /sandbox ${sub} is for the native Windows sandbox; see ${docRef("sandboxUnavailable")} for this platform`, "info");
         }
         if (!(await stopShellsForRestart(ctx, `/sandbox ${sub}`))) return ctx.ui.notify(`permission-mode: /sandbox ${sub} not run; the background shells keep running`, "info");
-        ctx.ui.notify(`permission-mode: Windows sandbox ${sub} (one UAC prompt)...`, "info");
         try {
-          const line = await sandbox.windowsSetup(sub);
-          ctx.ui.notify(`permission-mode: ${line}`, sandbox.ready ? "info" : "warning");
+          if (sub === "uninstall") {
+            ctx.ui.notify("permission-mode: Windows sandbox uninstall (one UAC prompt)...", "info");
+            ctx.ui.notify(`permission-mode: ${await sandbox.windowsSetup("uninstall")}`, "info");
+          } else {
+            // Loopback is an install-time mode: open unless every sandboxed
+            // mode turns it off (a mode that differs is told at the switch).
+            const sandboxed = Object.values(config.modes).filter((d) => d.sandbox.enabled);
+            const allowLoopback = !(sandboxed.length > 0 && sandboxed.every((d) => d.sandbox.allowLocalBinding === false));
+            const profileGrant = await ctx.ui.confirm(PROFILE_GRANT_QUESTION, profileGrantText());
+            // The global config's denies inside the profile become exclusions
+            // of the grant: recorded once, they cost no session anything.
+            const profileExclude = profileExclusions(Object.values(loadGlobalModeConfig(getAgentDir()).modes).map((d) => d.sandbox));
+            ctx.ui.notify(
+              `permission-mode: Windows sandbox install (one UAC prompt${profileGrant ? ", then the profile read grant, which takes minutes the first time" : ""})...`,
+              "info",
+            );
+            // The install, the profile grant and the first initialize take
+            // minutes together, without a word from the runtime in between:
+            // the footer shows the step in flight and the time spent.
+            const started = Date.now();
+            let stage = "install, waiting for the UAC prompt";
+            const show = () => updateStatus(ctx, currentMode(), sandbox, net.open, { busy: `${stage}, ${Math.round((Date.now() - started) / 1000)} s` });
+            const ticker = setInterval(show, 1000);
+            const choices = {
+              allowLoopback,
+              profileGrant,
+              profileExclude,
+              onProgress: (line: string) => ctx.ui.notify(`permission-mode: ${line}`, "info"),
+              onStage: (s: string) => {
+                stage = s;
+                show();
+              },
+            };
+            let line: string;
+            try {
+              try {
+                line = await sandbox.windowsSetup("install", choices);
+              } catch (e) {
+                if ((e as { code?: string }).code !== "install_config_conflict") throw e;
+                clearInterval(ticker);
+                const replace = await ctx.ui.confirm(
+                  "Replace the existing sandbox install?",
+                  `${e instanceof Error ? e.message : String(e)}\n\nYes installs again with loopback ${allowLoopback ? "open" : "closed"} (one more UAC prompt${profileGrant ? ", then the profile read grant, minutes the first time" : ""}); No leaves the install as it is.`,
+                );
+                if (!replace) return ctx.ui.notify("permission-mode: Windows sandbox install left as it is", "info");
+                ctx.ui.notify("permission-mode: Windows sandbox install again, replacing the filter set (one more UAC prompt); the footer shows the step in flight...", "info");
+                line = await sandbox.windowsSetup("install", { ...choices, force: true });
+              }
+            } finally {
+              clearInterval(ticker);
+              updateStatus(ctx, currentMode(), sandbox, net.open); // the busy text goes, whichever way the install ended
+            }
+            ctx.ui.notify(`permission-mode: ${line}`, sandbox.ready ? "info" : "warning");
+          }
         } catch (e) {
           ctx.ui.notify(`permission-mode: Windows sandbox ${sub} failed: ${e instanceof Error ? e.message : String(e)}`, "error");
         }
-        updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
+        updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
         return;
       }
       if (!m.sandbox.enabled) {
@@ -814,7 +877,19 @@ export default async function (pi: ExtensionAPI) {
                 `Windows: commands run as srt-sandbox in ${sandbox.windowsStatus()!.bash}; helper ${sandbox.windowsStatus()!.srtWinPath}; self-check passed`,
                 `Last initialize: ${((sandbox.lastInitMs ?? 0) / 1000).toFixed(1)} s` +
                   (sandbox.lastResetMs !== undefined ? `, last reset: ${(sandbox.lastResetMs / 1000).toFixed(1)} s` : "") +
-                  " (a mode switch pays both; the runtime copies permission entries over every granted tree, blocking pi meanwhile)",
+                  " (a mode switch pays both; the write grant on the project is kept between sessions, a deny inside your profile the grant does not exclude costs seconds)",
+                `Session init steps: ${
+                  Object.entries(sandbox.initSteps)
+                    .map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`)
+                    .join(", ") || "(none)"
+                }`,
+                sandbox.windowsStatus()!.profileRead === "granted"
+                  ? `Profile reads: granted at install (your profile minus the credential stores${sandbox.windowsStatus()!.profileEnv.length ? `; env ${sandbox.windowsStatus()!.profileEnv.join(", ")}` : ""})`
+                  : "Profile reads: absent (the project and the tool roots only; /sandbox install grants them)",
+                ...(sandbox.windowsStatus()!.profileWarnings.length ? [`Profile grant warnings: ${sandbox.windowsStatus()!.profileWarnings.join(" ")}`] : []),
+                ...(sandbox.windowsStatus()!.profileDenies.length
+                  ? [`Profile denies not recorded with the grant (seconds each per initialize; /sandbox install records them): ${sandbox.windowsStatus()!.profileDenies.join(", ")}`]
+                  : []),
               ]
             : []),
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
@@ -822,7 +897,12 @@ export default async function (pi: ExtensionAPI) {
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
           ...(sandbox.lastSwitch ? [`Last profile switch: ${sandbox.lastSwitch === "hot" ? "in place (updateConfig; running commands kept their sandbox)" : "runtime restart (reset + initialize)"}`] : []),
           ...(sandbox.pendingProfile ? [`Pending profile: the previous one stays in force until ${shellsRunning()} background shell(s) end (/shells stop all applies it now)`] : []),
-          `Local binding: ${c.network.allowLocalBinding ? "on" : "off"}${localBindingNote(Boolean(c.network.allowLocalBinding), process.platform)}`,
+          ...(sandbox.windowsStatus()
+            ? [
+                `Local binding: ${sandbox.windowsStatus()!.loopbackInstalled ? "on" : "off"}${localBindingNote(sandbox.windowsStatus()!.loopbackInstalled, process.platform)}` +
+                  (sandbox.loopbackConflict(m.sandbox, m.label) ? `; this mode asks for ${c.network.allowLocalBinding ? "on" : "off"}, no effect until /sandbox install runs again` : ""),
+              ]
+            : [`Local binding: ${c.network.allowLocalBinding ? "on" : "off"}${localBindingNote(Boolean(c.network.allowLocalBinding), process.platform)}`]),
           ...(m.sandbox.macos || process.platform === "darwin"
             ? [`macOS options: enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`]
             : []),
@@ -889,7 +969,19 @@ export default async function (pi: ExtensionAPI) {
       }
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
-      return sandboxed.execute(id, params, signal, onUpdate);
+      net.takePrompted(); // answers to an earlier command's prompts are not this one's
+      const result = await sandboxed.execute(id, params, signal, onUpdate);
+      // A prompt answered during the run is told to the model: it saw only a
+      // connection that worked (or did not), never that a person decided it.
+      const note = promptNote(net.takePrompted());
+      if (note) {
+        const content = [...(result.content ?? [])];
+        const last = content.length ? content[content.length - 1] : undefined;
+        if (last && last.type === "text") content[content.length - 1] = { ...last, text: `${last.text}\n${note}` };
+        else content.push({ type: "text", text: note });
+        return { ...result, content };
+      }
+      return result;
     },
   });
 
@@ -1011,7 +1103,7 @@ export default async function (pi: ExtensionAPI) {
         const ids = arg === "all" ? shells.running().map((r) => r.id) : [arg];
         if (ids.length === 0) return ctx.ui.notify("No background shell is running.", "info");
         const results = await Promise.all(ids.map((id) => shells!.stop(id, { signal: signal as StopSignal | undefined, by: "/shells stop" })));
-        updateStatus(ctx, currentMode(), sandbox, net.open, shellsRunning());
+        updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
         return ctx.ui.notify(results.join("\n"), "info");
       }
       if (sub === "logs") {
@@ -1219,12 +1311,12 @@ export default async function (pi: ExtensionAPI) {
       killTree: killWindowsTree,
       notify: notifyShellEnd,
       onChange: () => {
-        if (uiCtx) updateStatus(uiCtx, currentMode(), sandbox, net.open, shellsRunning());
+        if (uiCtx) updateStatus(uiCtx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
         // The last shell ended: a profile that waited for it (reload with a changed config) applies now.
         if (sandbox.pendingProfile && shellsRunning() === 0) {
           void sandbox.retryPending()?.then(() => {
             if (!uiCtx) return;
-            updateStatus(uiCtx, currentMode(), sandbox, net.open, shellsRunning());
+            updateStatus(uiCtx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
             if (uiCtx.hasUI) uiCtx.ui.notify(`permission-mode: the sandbox profile of ${currentMode().label} is applied (the last background shell ended)`, "info");
           });
         }
@@ -1314,17 +1406,20 @@ export default async function (pi: ExtensionAPI) {
     pi.appendEntry<PlanEntry>(PLAN_ENTRY, { path: planPath, ...(sha ? { sha } : {}) });
   });
 
-  // Inject the sandbox-awareness section and the active mode's system prompt
-  // (if any). The handler runs each turn and reads the live mode + sandbox
-  // state, so it auto-updates when the mode changes. The "@plan" sentinel
-  // resolves to the date-stamped Plan-mode prompt. A mode picked as the
-  // implicit headless fallback keeps the FACTUAL awareness section (boundary
-  // knowledge helps a worker avoid failing commands) but skips the mode's
-  // STEERING systemPrompt, which would misdirect a headless worker.
+  // The sandbox-awareness section, the docs pointer and the active mode's
+  // system prompt (if any), written as pi prompt sections (prompt-sections.ts)
+  // so a mode switch sends a patch instead of rewriting the request head. The
+  // handler runs each turn and reads the live mode + sandbox state, so it
+  // auto-updates when the mode changes; pi diffs the sections and sends
+  // nothing when they are unchanged. The "@plan" sentinel resolves to the
+  // date-stamped Plan-mode prompt. A mode picked as the implicit headless
+  // fallback keeps the FACTUAL awareness section (boundary knowledge helps a
+  // worker avoid failing commands) but skips the mode's STEERING systemPrompt,
+  // which would misdirect a headless worker.
   pi.on("before_agent_start", async (event) => {
     applyToolVisibility(); // keep hidden tools hidden as the tool set evolves
     const m = currentMode();
-    const parts: string[] = [];
+    const parts: PromptParts = {};
     // The effective profile carries the session's blocked paths in denyRead,
     // so the model sees them under "Reads are broadly allowed EXCEPT".
     const aware = sandboxAwarenessPrompt({ ...m, sandbox: effectiveSandbox(m) }, {
@@ -1335,16 +1430,17 @@ export default async function (pi: ExtensionAPI) {
       shells: shells !== undefined && shellsCfg().enabled,
       scratchDir,
       platform: process.platform,
+      windowsLoopback: sandbox.windowsStatus()?.loopbackInstalled,
+      windowsProfileRead: sandbox.windowsStatus()?.profileRead,
     });
-    if (aware) parts.push(aware);
+    if (aware) parts.aware = aware;
     // Where the reference lives, in every mode: config questions arise in YOLO too.
-    if (!fallbackMode) parts.push(docsPromptBlock(docsDir()));
+    if (!fallbackMode) parts.docs = docsPromptBlock(docsDir());
     const sp = m.systemPrompt;
     if (sp && !fallbackMode) {
-      parts.push(sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp);
+      parts.steering = sp === PLAN_PROMPT_SENTINEL ? planModeSystemPrompt(new Date().toISOString().slice(0, 10)) : sp;
     }
-    if (parts.length === 0) return undefined;
-    return { systemPrompt: [event.systemPrompt, ...parts].join("\n\n") };
+    return writePromptSections(event, parts);
   });
 
   // Skill gating: skills aren't tools — they're invoked via `/skill:<name>` text,
