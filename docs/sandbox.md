@@ -390,8 +390,10 @@ which cannot leave the fence
   during it is refused with "run the command again". Write grants on
   project roots are kept between sessions, so only the first session in a
   project pays for the walk; `/sandbox uninstall` removes them. Every
-  change of profile restarts the runtime here, so while background shells
-  run, every switch asks first ([shells.md, Lifetime](shells.md#lifetime)).
+  change of the runtime profile restarts the runtime here, so while
+  background shells run, a switch that changes it asks first (modes with
+  the same profile, such as the stock Default and Build, switch without a
+  question; [shells.md, Lifetime](shells.md#lifetime)).
 - A session block ("Deny and block") still rides along per command: denies
   are the one per-command filesystem change the backend supports.
 - Programs installed for your user only are reachable through the

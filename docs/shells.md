@@ -78,10 +78,12 @@ protections), so nothing is left behind, and the records show
 
 A mode switch is applied in place where the runtime allows it, and a shell
 keeps the sandbox it started with. A switch that needs a runtime restart
-(on Windows every change of profile; elsewhere one between a mode with a
-network allowlist and one without, see
-[sandbox.md](sandbox.md#how-a-profile-reaches-the-runtime)) asks you first
-while shells run. No keeps the mode and the shells; Yes stops them (status
+(on Windows every change of the runtime profile, so Default to Plan Mode
+asks while Default to Build, whose stock profiles are the same there, does
+not; elsewhere one between a mode with a network allowlist and one without,
+see [sandbox.md](sandbox.md#how-a-profile-reaches-the-runtime)) asks you
+first while shells run. A switch to an unsandboxed mode (YOLO) restarts
+nothing and leaves them running under their sandbox. No keeps the mode and the shells; Yes stops them (status
 `stopped (sandbox profile changed)`, the model is told in its next turn)
 and switches. The same question precedes `/sandbox install` on Windows.
 Headless, the shells are stopped without asking.
