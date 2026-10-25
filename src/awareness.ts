@@ -184,8 +184,12 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
         `${sb.denyRead?.length ? `, EXCEPT ${sb.denyRead.join(", ")}` : ""}. Anything else reads as absent or "Access is denied"` +
         `${home ? "" : `, including programs installed for the user only whose folder is not listed; a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
         ` (see ${docRef("windowsSandbox")}).`,
-      `- TLS revocation checks cannot leave the sandbox: git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke, and CRYPT_E_REVOCATION_OFFLINE (0x80092013) from another schannel tool means the same. PowerShell's Invoke-WebRequest, gh, Node and Python are unaffected (see ${docRef("windowsRevocation")}).`,
-      "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session.",
+      `- TLS: git, the curl of Git for Windows (what \`curl\` resolves to in Git Bash), Node and Python work; revocation checks are already skipped for git and cargo. Schannel clients cannot complete a TLS handshake under the sandbox's restricted token: System32 curl.exe, PowerShell's Invoke-WebRequest and .NET HTTP fail on every https URL, so use Git Bash's curl, Node or Python instead (see ${docRef("windowsRevocation")}).`,
+      opts.windowsLoopback === false
+        ? "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session (loopback is closed at install: no direct connection, no listening)."
+        : opts.windowsLoopback
+          ? "- Services on this machine (localhost, 127.0.0.1) are reached directly, without the proxy or a prompt (loopback is open at install)."
+          : "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session.",
     );
   }
   if (sb.denyRead?.length) {

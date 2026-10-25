@@ -144,11 +144,23 @@ needed and your own network is unaffected. `/sandbox uninstall` removes all
 of it again.
 
 Commands run in Git Bash, so Git for Windows must be installed for all users
-(under Program Files), or the mode's profile must grant read access to a
-per-user install (the stock defaults grant `%USERPROFILE%` read access).
-Until the backend is installed, or when one of its checks fails, the
-sandboxed modes ask before every bash command; the footer shows the reason
-and `/sandbox` the details.
+(under Program Files), or be readable through the profile read grant or the
+mode's `allowRead`. Until the backend is installed, or when one of its
+checks fails, the sandboxed modes ask before every bash command; the footer
+shows the reason and `/sandbox` the details.
+
+The install asks one question, whether your user profile should be readable
+to sandboxed commands ([Reading your profile on Windows](#reading-your-profile-on-windows)),
+and opens loopback unless every sandboxed mode sets
+`sandbox.allowLocalBinding` to `false` ([Loopback mode on Windows](#loopback-mode-on-windows)).
+An install made with other options asks before it is replaced.
+
+`Windows sandbox set up by another release (/sandbox install)` in the
+footer: the runtime shipped with this version of the extension needs a newer
+install than the one on the machine (its setup version changed). Run
+`/sandbox install` again; it upgrades in place with one UAC prompt and keeps
+the write grants of earlier sessions. Until then the sandboxed modes ask
+before every bash command.
 
 `file_id changed since prior grant - path was substituted (refusing)`: a
 folder this pi process granted earlier was replaced on disk since, which
@@ -367,14 +379,22 @@ the host with your own credentials.
 
 ## TLS revocation on Windows
 
-Inside the Windows sandbox, schannel (the TLS stack of System32 `curl`,
-default-backend `git`, .NET and PowerShell) fetches certificate revocation
-lists over WinHTTP, outside the proxy variables, and the firewall rule
-blocks that. Tools that check revocation by default fail with
+Since sandbox-runtime 0.0.81 sandboxed commands run under a write-restricted
+token, and Schannel, the TLS stack of System32 `curl.exe`, PowerShell's
+`Invoke-WebRequest` and .NET, cannot complete a TLS handshake under it:
+those clients fail on every `https` URL inside the sandbox, whatever the
+options (`--ssl-no-revoke` no longer helps). In Git Bash `curl` resolves to
+the curl of Git for Windows, which works, as do git, Node, Python, cargo's
+own TLS and Go programs such as `gh`; the awareness section tells the model
+to use those.
+
+Revocation is the older half and still applies to git: schannel fetches
+certificate revocation lists over WinHTTP, outside the proxy variables, and
+the firewall rule blocks that, so tools that check revocation fail with
 `CRYPT_E_REVOCATION_OFFLINE` (`0x80092013`). The extension exports
 `GIT_CONFIG_PARAMETERS='http.schannelCheckRevoke=false'` and
 `CARGO_HTTP_CHECK_REVOKE=false` into every sandboxed command, so git and
-cargo work; for System32 curl pass `--ssl-no-revoke`. Git is also set to
+cargo work. Git is also set to
 `http.proxyAuthMethod=basic`: its libcurl otherwise sends the first CONNECT
 to the sandbox proxy without credentials, gets a 407 and a closed
 connection, and fails with "Proxy CONNECT aborted". Git also runs with
@@ -383,13 +403,15 @@ there: a remote that wants credentials fails at once instead of waiting on
 a prompt the sandbox account cannot show (use a token, see
 [network.md, Git authentication](network.md#git-authentication)), and Git
 Credential Manager does not spend two seconds detecting a host provider
-for the proxy when git hands it the proxy credentials to store. `gh`, PowerShell's
-`Invoke-WebRequest` and .NET do not check revocation by default, and tools
-on OpenSSL (Node, Python, cargo's own TLS) are unaffected.
+for the proxy when git hands it the proxy credentials to store.
 
 ## Per-user tools on Windows
 
-The sandboxed command runs as `srt-sandbox`, not as you. A tool installed
+With the install's profile read grant
+([Reading your profile on Windows](#reading-your-profile-on-windows)) the
+tools under your profile are readable and this section does not apply.
+Without it, the sandboxed command runs as `srt-sandbox`, not as you, and
+nothing of your profile is readable by default. A tool installed
 for your user only (`%LOCALAPPDATA%\Programs`, Scoop, nvm or fnm Node,
 `pip install --user`, `winget` without `--scope machine`) is on the
 inherited `PATH` but fails with "command not found" or "Access is denied"

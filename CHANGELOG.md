@@ -15,8 +15,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Reads are what the profile grants there: the stock profiles grant the
   project and the per-user tool roots that exist on the machine (per-user
   Python, Git, npm, pnpm, fnm, Scoop, WinGet and friends), nothing else of
-  the profile, so the credential list holds by construction; a mode's own
-  `allowRead` replaces that list. Before
+  the profile unless the install's profile read grant makes it readable
+  minus the credential stores (asked at `/sandbox install`, see the
+  runtime entry below), so the credential list holds by construction; a
+  mode's own `allowRead` replaces that list. Before
   trusting the sandbox the extension probes the project's parent and the
   drive root from inside it and prompts instead when they are writable (a
   folder created at a drive root grants every local user Modify; a project
@@ -32,8 +34,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot leave the fence. The bash escape heuristic understands Windows
   paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script arguments,
   and `runas` / `gsudo`; Git Bash's `/tmp` is not an escape. Limits, the runtime's: per-user tool
-  installs need the profile's read grant, mapped-drive and UNC projects are
-  refused, DNS is not fenced, System32 curl needs `--ssl-no-revoke`
+  installs need the profile read grant or a tool root, mapped-drive and
+  UNC projects are refused, DNS is not fenced, Schannel clients (System32
+  curl, PowerShell, .NET) cannot do TLS inside the sandbox
   ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). Built on the work
   of [@ammoniak](https://github.com/ammoniak) in
   [#9](https://github.com/wynainfo/pi-permission-modes/pull/9): the path

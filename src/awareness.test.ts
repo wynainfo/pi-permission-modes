@@ -185,6 +185,8 @@ test("sandbox.allowLocalBinding: the server line per platform, the direct-loopba
   assert.doesNotMatch(winOff, listens);
   assert.match(winOff, /Local binding is closed on this machine .* cannot listen on a port/);
   assert.doesNotMatch(winOff, /macos-loopback-services/);
+  assert.match(win, /Services on this machine \(localhost, 127\.0\.0\.1\) are reached directly, without the proxy or a prompt/);
+  assert.match(winOff, /reached through the proxy and prompt the user once per session \(loopback is closed at install/);
   // Without the install's answer (no sandbox yet) the mode's key stands in.
   assert.match(sandboxAwarenessPrompt(mode(), { active: true, platform: "win32" })!, listens);
 });
@@ -254,7 +256,9 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   assert.doesNotMatch(home, /Reads are broadly allowed/);
   assert.doesNotMatch(home, /Readable again inside/);
   assert.doesNotMatch(home, /command not found/);
-  assert.match(home, /git over HTTPS and cargo are already told to skip them; System32 curl needs --ssl-no-revoke/);
+  assert.match(home, /Schannel clients cannot complete a TLS handshake .* System32 curl\.exe, PowerShell's Invoke-WebRequest and \.NET HTTP fail/);
+  assert.doesNotMatch(home, /ssl-no-revoke/);
+  assert.match(home, /Services on this machine \(localhost\) are reached through the proxy and prompt the user once per session\./);
   assert.match(home, /docs\/sandbox\.md#windows/);
   assert.match(home, /docs\/troubleshooting\.md#tls-revocation-on-windows/);
   assert.match(home, /A server you start within a command listens for real: the user can open it in a browser while the command runs/);

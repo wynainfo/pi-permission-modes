@@ -283,29 +283,48 @@ bubblewrap and `sandbox-exec`, with the same profile keys on top:
   Modify, `allowRead` grants Read and Execute, `denyRead` and `denyWrite`
   add Deny entries that win over a grant above them. The account has no
   rights of its own on your files, so on Windows reads are what the profile
-  grants, not "everything but the denies". Granting the whole user profile
-  is not an option: NTFS copies an inheriting entry onto every file below,
-  and a whole profile exceeds the runtime's 60 s limit for one grant. The
-  stock profiles therefore grant read access to the per-user tool roots
-  that exist on the machine (`AppData\Local\Programs`, npm, pnpm, Volta,
-  fnm, nvm, Scoop, WinGet, pip's user scripts, pyenv, uv, `.local\bin`,
-  `go\bin`, `.dotnet\tools`, `.bun\bin`, `.deno\bin`, `.cargo\bin`), so
-  tools installed for your user only still run; a mode that sets
-  `allowRead` itself replaces that list. Configuration files in your profile
-  are not granted and would not be read anyway: HOME inside the sandbox is
-  the sandbox account's (your global git config and identity travel along,
-  see below). Denies outside every grant are dropped before they reach the
+  grants, not "everything but the denies". Whether your user profile is
+  among them is decided at `/sandbox install`: the runtime's profile read
+  grant (default Yes) makes the profile readable minus its exclusion list
+  (`.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.config\gh`,
+  browser profiles, the Windows credential vaults, the local Temp folder),
+  for every sandboxed session on the machine, so tools installed for your
+  user alone run and npm, pip, NuGet, Maven, Gradle and git find your
+  configuration (the grant's variables `NPM_CONFIG_USERCONFIG`,
+  `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME` and `CARGO_HOME` point
+  them at your files). Without the grant the stock profiles grant read
+  access to the per-user tool roots that exist on the machine
+  (`AppData\Local\Programs`, npm, pnpm, Volta, fnm, nvm, Scoop, WinGet,
+  pip's user scripts, pyenv, uv, `.local\bin`, `go\bin`, `.dotnet\tools`,
+  `.bun\bin`, `.deno\bin`, `.cargo\bin`), so such tools still run, and
+  nothing else of your profile; a mode that sets `allowRead` itself
+  replaces that list, and with the grant an `allowRead` inside the profile
+  is redundant and left out (a store on the exclusion list named on purpose
+  is the exception). HOME inside the sandbox is the sandbox account's
+  either way (your global git config and identity travel along, see
+  below). Denies outside every grant are dropped before they reach the
   runtime: the account cannot read there in the first place, and the
-  runtime stamps each deny's parent folder too, so `~/.ssh` would walk the
-  whole profile. The credential list still holds: nothing of your profile
-  is readable but the tool roots.
+  runtime stamps each deny's parent folder too; with the grant a deny
+  inside the profile counts and rides along, one on an excluded store is
+  already in force. The credential list holds in both cases: the stores
+  are excluded by the grant, or unreadable with everything else
+  ([troubleshooting.md, Reading your profile on Windows](troubleshooting.md#reading-your-profile-on-windows)).
 
-**Install.** Git for Windows (for all users, under Program Files, or the
-profile must grant the per-user install read access) and one elevated
-`/sandbox install` per machine (one UAC prompt): it creates the account, a
-random password stored encrypted machine-wide, and the firewall rule.
-`/sandbox uninstall` removes them. Until then the sandboxed modes prompt
-before every bash command, as when the sandbox is unavailable anywhere
+**Install.** Git for Windows (for all users, under Program Files, or
+readable through the profile read grant or the mode's `allowRead`) and one
+elevated `/sandbox install` per machine (one UAC prompt): it creates the
+account, a random password stored encrypted machine-wide, and the firewall
+set, with loopback open unless every sandboxed mode sets
+`sandbox.allowLocalBinding` to `false` ([Local binding](#local-binding)),
+then asks whether your profile should be readable to sandboxed commands
+(above; minutes the first time, with a progress line per folder). A new
+release of the runtime can need the install again: the footer says so and
+the sandboxed modes prompt until it ran (in place, one UAC prompt). An
+install made with other options asks before it is replaced.
+`/sandbox uninstall` removes all of it, the profile read grant and the
+write grants kept between sessions included. Until installed, the
+sandboxed modes prompt before every bash command, as when the sandbox is
+unavailable anywhere
 ([troubleshooting.md, Windows sandbox install](troubleshooting.md#windows-sandbox-install)).
 
 **Self-check.** The backend only adds entries for its account, so it is as
@@ -328,9 +347,14 @@ and path variables, and the proxy and CA variables the runtime sets, so
 point at the session scratch directory. Your global git config is copied
 into the command folder and read as `GIT_CONFIG_GLOBAL`, since the account
 has no `.gitconfig` of yours (withheld by a mode that masks `~/.gitconfig`;
-your `user.name` and `user.email` are exported either way). Git and cargo
-are told to skip certificate revocation checks, which cannot leave the
-fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-revocation-on-windows)).
+your `user.name` and `user.email` are exported either way); with the
+profile read grant the grant's configuration-file variables come first and
+these win. The command runs under a write-restricted token, so Schannel,
+the TLS stack of System32 `curl.exe`, PowerShell's `Invoke-WebRequest` and
+.NET, cannot complete a TLS handshake inside the sandbox; git and the curl
+of Git for Windows, Node and Python work, and git and cargo are told to
+skip certificate revocation checks, which cannot leave the fence
+([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-revocation-on-windows)).
 
 **Differences to Linux and macOS.**
 
@@ -341,30 +365,36 @@ fence ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-re
   while it does), so it starts one quiet second after the last cycle step:
   cycling through several modes pays for the last one only. The footer
   says "applying sandbox profile" meanwhile; a bash call that arrives
-  during it is refused with "run the command again".
+  during it is refused with "run the command again". Write grants on
+  project roots are kept between sessions, so only the first session in a
+  project pays for the walk; `/sandbox uninstall` removes them.
 - A session block ("Deny and block") still rides along per command: denies
   are the one per-command filesystem change the backend supports.
-- Programs installed for your user only are reachable only through the
-  profile's read grant ([troubleshooting.md, Per-user tools on Windows](troubleshooting.md#per-user-tools-on-windows)).
+- Programs installed for your user only are reachable through the
+  install's profile read grant, or the tool roots the stock profiles grant
+  without it ([troubleshooting.md, Per-user tools on Windows](troubleshooting.md#per-user-tools-on-windows)).
 - A project on a mapped network drive or a UNC path is refused
   ([troubleshooting.md, Mapped drive or UNC project on Windows](troubleshooting.md#mapped-drive-or-unc-project-on-windows)).
-- Loopback services on the host go through the proxy like any other host,
-  so `localhost` needs the live prompt's approval once per session.
-- A sandboxed command can listen on a port, and anything on this machine
-  can connect to it while the command runs: the fence stops the account's
-  outbound connects, not inbound ones, so a dev server started inside a
-  command is reachable from your browser (on Linux the sandbox's loopback is
-  its own and it is not). Bind servers to `127.0.0.1`; one bound to
-  `0.0.0.0` answers on the LAN as far as Windows Firewall lets it.
-  `sandbox.allowLocalBinding: false` cannot be enforced here
+- Loopback is an install-time mode of the firewall set. Open (the
+  default), a sandboxed command can listen on a port and anything on this
+  machine can connect to it while the command runs, so a dev server started
+  inside a command is reachable from your browser (on Linux the sandbox's
+  loopback is its own and it is not), and services on this machine
+  (`localhost`) are reached directly, without the proxy or a prompt. Bind
+  servers to `127.0.0.1`; one bound to `0.0.0.0` answers on the LAN as far
+  as Windows Firewall lets it. Closed, nothing listens and `localhost` goes
+  through the proxy like any other host, with the live prompt's approval
+  once per session. A mode's `sandbox.allowLocalBinding` cannot switch
+  between the two; selecting a mode whose value differs says so
   ([Local binding](#local-binding)).
 - Background processes die with the command here too: the runner holds them
   in a job object, so a server has to be started and used within one
   command (`server & sleep 30; curl ...; kill %1`).
 
-`/sandbox` shows the account, the Git Bash in use and the staged helper. The
-awareness section tells the model about the account, what is readable, and
-the revocation workaround.
+`/sandbox` shows the account, the Git Bash in use, the staged helper, the
+installed loopback mode and whether your profile is readable. The awareness
+section tells the model about the account, what is readable, loopback and
+which TLS clients work.
 
 ## Platforms
 
