@@ -35,8 +35,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script arguments,
   and `runas` / `gsudo`; Git Bash's `/tmp` is not an escape. Limits, the runtime's: per-user tool
   installs need the profile read grant or a tool root, mapped-drive and
-  UNC projects are refused, DNS is not fenced, Schannel clients (System32
-  curl, PowerShell, .NET) cannot do TLS inside the sandbox
+  UNC projects are refused, DNS is not fenced, Schannel clients (curl in
+  both builds, PowerShell, .NET) cannot do TLS inside the sandbox
   ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). Built on the work
   of [@ammoniak](https://github.com/ammoniak) in
   [#9](https://github.com/wynainfo/pi-permission-modes/pull/9): the path
@@ -89,8 +89,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   through the inherited stdin pipe. Sandboxed commands now run under a
   write-restricted token (an ordinary token of the sandbox account could
   write wherever `Users` holds write access, whatever the allow list said);
-  Schannel clients such as System32 `curl.exe`, PowerShell web requests and
-  .NET HTTP cannot do TLS under it, Git for Windows `curl` and `git` work.
+  Schannel clients cannot do TLS under it: `curl` in both builds (Git for
+  Windows ships a Schannel curl too), PowerShell web requests and .NET
+  HTTP; `git`, Node, Python and Go programs work.
   `/sandbox install` now asks one question, whether your user profile
   should be readable to sandboxed commands (default Yes: per-user tools and
   feed sign-ins work, the credential stores such as `.ssh`, `.aws`, `.gnupg`

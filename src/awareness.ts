@@ -184,7 +184,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
         `${sb.denyRead?.length ? `, EXCEPT ${sb.denyRead.join(", ")}` : ""}. Anything else reads as absent or "Access is denied"` +
         `${home ? "" : `, including programs installed for the user only whose folder is not listed; a "command not found" for such a tool is the sandbox, tell the user (see ${docRef("windowsTools")})`}` +
         ` (see ${docRef("windowsSandbox")}).`,
-      `- TLS: git, the curl of Git for Windows (what \`curl\` resolves to in Git Bash), Node and Python work; revocation checks are already skipped for git and cargo. Schannel clients cannot complete a TLS handshake under the sandbox's restricted token: System32 curl.exe, PowerShell's Invoke-WebRequest and .NET HTTP fail on every https URL, so use Git Bash's curl, Node or Python instead (see ${docRef("windowsRevocation")}).`,
+      `- TLS: Schannel clients cannot complete a TLS handshake under the sandbox's restricted token, and curl is one on Windows in both builds (System32 and Git for Windows): curl, PowerShell's Invoke-WebRequest and .NET HTTP fail on every https URL with SEC_E_NO_CREDENTIALS. git (OpenSSL backend), Node, Python and Go programs work; for a plain HTTP request use node -e "fetch(process.argv[1]).then(r => r.text()).then(console.log)" <url> or python -c, not curl. Revocation checks are already skipped for git and cargo (see ${docRef("windowsRevocation")}).`,
       opts.windowsLoopback === false
         ? "- Services on this machine (localhost) are reached through the proxy and prompt the user once per session (loopback is closed at install: no direct connection, no listening)."
         : opts.windowsLoopback

@@ -256,7 +256,8 @@ test("win32: the Windows lines name the account, what is readable, the denies an
   assert.doesNotMatch(home, /Reads are broadly allowed/);
   assert.doesNotMatch(home, /Readable again inside/);
   assert.doesNotMatch(home, /command not found/);
-  assert.match(home, /Schannel clients cannot complete a TLS handshake .* System32 curl\.exe, PowerShell's Invoke-WebRequest and \.NET HTTP fail/);
+  assert.match(home, /Schannel clients cannot complete a TLS handshake .* curl, PowerShell's Invoke-WebRequest and \.NET HTTP fail on every https URL/);
+  assert.match(home, /use node -e .* not curl/);
   assert.doesNotMatch(home, /ssl-no-revoke/);
   assert.match(home, /Services on this machine \(localhost\) are reached through the proxy and prompt the user once per session\./);
   assert.match(home, /docs\/sandbox\.md#windows/);

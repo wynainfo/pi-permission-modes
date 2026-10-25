@@ -392,13 +392,15 @@ the host with your own credentials.
 ## TLS revocation on Windows
 
 Since sandbox-runtime 0.0.81 sandboxed commands run under a write-restricted
-token, and Schannel, the TLS stack of System32 `curl.exe`, PowerShell's
-`Invoke-WebRequest` and .NET, cannot complete a TLS handshake under it:
-those clients fail on every `https` URL inside the sandbox, whatever the
-options (`--ssl-no-revoke` no longer helps). In Git Bash `curl` resolves to
-the curl of Git for Windows, which works, as do git, Node, Python, cargo's
-own TLS and Go programs such as `gh`; the awareness section tells the model
-to use those.
+token, and Schannel cannot complete a TLS handshake under it: every Schannel
+client fails on every `https` URL inside the sandbox with
+`SEC_E_NO_CREDENTIALS (0x8009030E)`, whatever the options (`--ssl-no-revoke`
+no longer helps). That is `curl` in both builds, System32 and the one Git
+for Windows ships (also a Schannel build, `curl --version` says so),
+PowerShell's `Invoke-WebRequest` and .NET HTTP. git works through its
+OpenSSL backend, as do Node, Python, cargo's own TLS and Go programs such
+as `gh`; the awareness section tells the model to make HTTP requests with
+`node -e` or `python -c` instead of curl.
 
 Revocation is the older half and still applies to git: schannel fetches
 certificate revocation lists over WinHTTP, outside the proxy variables, and

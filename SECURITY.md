@@ -208,8 +208,8 @@ you can rely on it appropriately. The reference for every setting is in
   principals that can inspect the runner's command line, DNS lookups are
   not fenced (connections are), revocation checks cannot leave the fence
   (git and cargo are told to skip them inside the sandbox) and Schannel
-  clients (System32 curl, PowerShell, .NET) cannot do TLS at all under the
-  write-restricted token, and the sandboxed command's environment is your
+  clients (curl in both builds, PowerShell, .NET) cannot do TLS at all
+  under the write-restricted token, and the sandboxed command's environment is your
   shell environment minus identity, path, temp, proxy and CA variables, the
   same exposure as on Linux
   ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). One difference

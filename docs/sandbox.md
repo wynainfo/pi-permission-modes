@@ -352,10 +352,11 @@ has no `.gitconfig` of yours (withheld by a mode that masks `~/.gitconfig`;
 your `user.name` and `user.email` are exported either way); with the
 profile read grant the grant's configuration-file variables come first and
 these win. The command runs under a write-restricted token, so Schannel,
-the TLS stack of System32 `curl.exe`, PowerShell's `Invoke-WebRequest` and
-.NET, cannot complete a TLS handshake inside the sandbox; git and the curl
-of Git for Windows, Node and Python work, and git and cargo are told to
-skip certificate revocation checks, which cannot leave the fence
+the TLS stack of `curl` (both builds, Git for Windows' included),
+PowerShell's `Invoke-WebRequest` and .NET, cannot complete a TLS handshake
+inside the sandbox; git (OpenSSL backend), Node, Python and Go programs
+work, and git and cargo are told to skip certificate revocation checks,
+which cannot leave the fence
 ([troubleshooting.md, TLS revocation on Windows](troubleshooting.md#tls-revocation-on-windows)).
 
 **Differences to Linux and macOS.**
