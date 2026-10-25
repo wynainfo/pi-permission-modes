@@ -1056,7 +1056,7 @@ export default async function (pi: ExtensionAPI) {
           try {
             const relays = await startRelays(s.child, relayEntries);
             // From now on the agent's own commands reach these ports too; a shell's end releases them.
-            const release = inbound.register(relayEntries.map((e) => e.port), s.child);
+            const release = inbound.register(relayEntries, s.child);
             return {
               child: s.child,
               sandboxed: true,

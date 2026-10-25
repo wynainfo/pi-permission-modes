@@ -119,7 +119,7 @@ test("relay: a request on the host address reaches the server inside the shell; 
 // ---------------------------------------------------------------------------
 // Inbound: the agent's own commands reach exposed ports.
 
-import { INBOUND_FILE, INBOUND_SOURCE, InboundRouter, hexPort, inboundPrelude, withInbound } from "./relay.ts";
+import { INBOUND_FILE, INBOUND_SOURCE, InboundRouter, hexPort, inboundPrelude, inboundTarget, withInbound } from "./relay.ts";
 
 test("inbound prelude: node on fd 3 with the ports, the fd closed, then a bounded wait on /proc/net/tcp", () => {
   const p = inboundPrelude("/scratch/inbound.cjs", [8123, 80], "/usr/bin/node");
@@ -130,34 +130,52 @@ test("inbound prelude: node on fd 3 with the ports, the fd closed, then a bounde
   assert.match(wait, /_pi_i -lt 40/);
   assert.match(wait, /sleep 0\.05/);
   assert.equal(withInbound("# c\necho hi", "/s/inbound.cjs", [1], "/n"), `${inboundPrelude("/s/inbound.cjs", [1], "/n")}\n# c\necho hi`);
+  assert.equal(inboundTarget({ host: "0.0.0.0", port: 1, loopback: false }), "127.0.0.1");
+  assert.equal(inboundTarget({ host: "192.168.1.5", port: 1, loopback: false }), "192.168.1.5");
+  assert.equal(inboundTarget({ host: "127.0.0.1", port: 1, loopback: true }), "127.0.0.1");
 });
 
-test("inbound router: ports follow registrations, deliver passes to the owner and refuses the rest", () => {
+test("inbound router: ports follow registrations, deliver pipes into the exposed address and refuses the rest", async () => {
   const router = new InboundRouter();
   assert.deepEqual(router.ports(), []);
-  const sent: Array<{ port: number }> = [];
-  const shellA = { connected: true, send: (m: unknown) => sent.push(m as { port: number }) } as unknown as import("node:child_process").ChildProcess;
-  const shellB = { connected: false, send: () => assert.fail("a disconnected shell never gets a socket") } as unknown as import("node:child_process").ChildProcess;
-  const releaseA = router.register([8123, 5173], shellA);
-  const releaseB = router.register([9000], shellB);
-  assert.deepEqual(router.ports(), [5173, 8123, 9000]);
-  const sock = new net.Socket();
-  assert.equal(router.deliver(8123, sock), true);
-  assert.deepEqual(sent, [{ port: 8123 }]);
-  assert.equal(router.deliver(9000, sock), false, "owner gone (channel closed)");
-  assert.equal(router.deliver(1, sock), false, "nobody owns it");
+  // An echo server stands in for the host-side listener of a shell's relay.
+  const echo = net.createServer((s) => s.on("data", (d) => s.end("echo:" + d)));
+  await new Promise<void>((r) => echo.listen(0, "127.0.0.1", () => r()));
+  const port = (echo.address() as net.AddressInfo).port;
+  const entry = (p: number, host = "127.0.0.1") => ({ host, port: p, loopback: host.startsWith("127.") });
+  const shellA = {};
+  const shellB = {};
+  const releaseA = router.register([entry(port), entry(5173, "0.0.0.0")], shellA);
+  const releaseB = router.register([entry(9000)], shellB);
+  assert.deepEqual(router.ports(), [5173, 9000, port].sort((x, y) => x - y));
+  // A connection "from inside a command" (any socket pair will do): piped to the echo server and back.
+  const pair = await new Promise<{ a: net.Socket; b: net.Socket; close: () => void }>((r) => {
+    const srv = net.createServer((b) => r({ a, b, close: () => srv.close() }));
+    let a: net.Socket;
+    srv.listen(0, "127.0.0.1", () => {
+      a = net.connect((srv.address() as net.AddressInfo).port, "127.0.0.1");
+    });
+  });
+  assert.equal(router.deliver(port, pair.b), true);
+  pair.a.write("ping");
+  const back = await new Promise<string>((r) => pair.a.once("data", (d) => r(String(d))));
+  assert.equal(back, "echo:ping");
+  pair.close();
+  const stray = new net.Socket();
+  assert.equal(router.deliver(1, stray), false, "nobody exposes it");
   releaseA();
   releaseA(); // idempotent
   assert.deepEqual(router.ports(), [9000]);
-  assert.equal(router.deliver(8123, sock), false, "released with the shell");
+  assert.equal(router.deliver(port, stray), false, "released with the shell");
   // A port re-registered by another shell is not released by the first shell's late release.
-  const shellC = { connected: true, send: () => {} } as unknown as import("node:child_process").ChildProcess;
-  const releaseC = router.register([9000], shellC);
+  const shellC = {};
+  const releaseC = router.register([entry(9000)], shellC);
   releaseB();
   assert.deepEqual(router.ports(), [9000]);
   releaseC();
   assert.deepEqual(router.ports(), []);
-  sock.destroy();
+  stray.destroy();
+  echo.close();
 });
 
 test("inbound source: a connection to the listener inside arrives at the parent as a socket handle (no sandbox)", async () => {

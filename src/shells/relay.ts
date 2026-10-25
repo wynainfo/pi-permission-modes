@@ -193,11 +193,14 @@ export function startRelays(child: ChildProcess, entries: ExposeEntry[], readyTi
 // so while shells expose ports, each sandboxed command starts with a small
 // listener inside (`INBOUND_SOURCE`) on those ports; every accepted
 // connection is handed OUT over the command's IPC channel (child to parent
-// handle passing, allowed like the other direction) and pi passes it into
-// the shell that owns the port over that shell's channel, where `RELAY_SOURCE`
-// dials the server. No allowlist entry and no grant: the listener lives and
-// dies with the command, and is only started for ports whose shell runs when
-// the command spawns, so a shell's end revokes the access by itself.
+// handle passing, allowed like the other direction) and pi pipes it into a
+// fresh connection to the shell's exposed address on this machine, the path
+// a browser takes (the host listener, the shell's channel, `RELAY_SOURCE`).
+// Not by re-sending the handle: a handle received over one child's channel
+// stalls when sent on over another's (node 22). No allowlist entry and no
+// grant: the listener lives and dies with the command, and is only started
+// for ports whose shell runs when the command spawns, so a shell's end
+// revokes the access by itself.
 
 /** The inbound relay's file name (written once per session under the scratch dir). */
 export const INBOUND_FILE = "inbound.cjs";
@@ -247,22 +250,24 @@ export function withInbound(command: string, inboundPath: string, ports: number[
   return `${inboundPrelude(inboundPath, ports, execPath)}\n${command}`;
 }
 
-/** What a shell's relay needs to receive a connection: the channel of the shell's process. */
-type RelayTarget = Pick<ChildProcess, "connected" | "send">;
+/** The address on this machine pi dials for an exposed entry: a wildcard bind is reached through loopback. */
+export function inboundTarget(e: ExposeEntry): string {
+  return e.host === "0.0.0.0" || e.host === "::" ? "127.0.0.1" : e.host;
+}
 
 /**
- * Which running shell owns which exposed port. Registered when a shell's
- * relays are up, removed when the shell ends; a connection for a port
- * nobody owns is refused.
+ * Which exposed ports are live, and where on this machine each one answers.
+ * Registered when a shell's relays are up, released when the shell ends; a
+ * connection for a port nobody exposes is refused.
  */
 export class InboundRouter {
-  private readonly targets = new Map<number, RelayTarget>();
+  private readonly targets = new Map<number, { host: string; owner: object }>();
 
-  /** Claim the ports for a shell; the returned function releases them (idempotent). */
-  register(ports: number[], child: RelayTarget): () => void {
-    for (const p of ports) this.targets.set(p, child);
+  /** Claim the entries for one shell; the returned function releases them (idempotent, and only its own). */
+  register(entries: ExposeEntry[], owner: object = {}): () => void {
+    for (const e of entries) this.targets.set(e.port, { host: inboundTarget(e), owner });
     return () => {
-      for (const p of ports) if (this.targets.get(p) === child) this.targets.delete(p);
+      for (const e of entries) if (this.targets.get(e.port)?.owner === owner) this.targets.delete(e.port);
     };
   }
 
@@ -271,17 +276,25 @@ export class InboundRouter {
     return [...this.targets.keys()].sort((a, b) => a - b);
   }
 
-  /** Pass an accepted connection into the shell that owns the port; false when none does. */
+  /**
+   * Pipe a connection a foreground command handed out into the shell's
+   * exposed address on this machine; false when no running shell exposes
+   * the port (the caller destroys the socket: "connection refused" inside).
+   */
   deliver(port: number, sock: net.Socket): boolean {
-    const child = this.targets.get(port);
-    if (!child?.connected) return false;
-    try {
-      child.send({ port }, sock, { keepOpen: false }, (err) => {
-        if (err) sock.destroy();
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    const t = this.targets.get(port);
+    if (!t) return false;
+    const up = net.connect({ host: t.host, port });
+    const drop = () => {
+      sock.destroy();
+      up.destroy();
+    };
+    up.on("error", drop);
+    sock.on("error", drop);
+    up.on("connect", () => {
+      sock.pipe(up);
+      up.pipe(sock);
+    });
+    return true;
   }
 }

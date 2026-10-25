@@ -158,8 +158,9 @@ the command itself), which holds the channel and dials `127.0.0.1:<port>`
 for each connection the host hands it. The inbound direction is the same
 channel the other way round: a foreground command's listener
 (`inbound.cjs`, written once per session under the scratch directory) hands
-each accepted connection to pi over the command's own channel, and pi
-passes it into the owning shell. The node binary's directory is readable
+each accepted connection to pi over the command's own channel, and pi pipes
+it into a connection to the shell's exposed address on this machine, the
+path a browser takes. The node binary's directory is readable
 inside the sandbox for that, even under a strict home. All of this
 disappears once the runtime relays ports itself (requested upstream); the
 `expose` parameter stays as it is.

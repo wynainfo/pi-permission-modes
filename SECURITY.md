@@ -239,7 +239,8 @@ you can rely on it appropriately. The reference for every setting is in
   initiative (host to shell), and ends with the shell; the shell's outbound
   network stays behind the proxy. While a shell exposes a port, the agent's
   own foreground commands reach that port as well (a listener inside each
-  command hands connections to pi, which passes them into the shell):
+  command hands connections to pi, which pipes them into the shell's
+  exposed address on this machine):
   loopback only, between two sandboxes of the same session, bounded by the
   shell's lifetime, with no allowlist entry and nothing to revoke
   ([docs/shells.md](docs/shells.md)).
