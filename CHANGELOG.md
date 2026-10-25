@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.5.0]
+
 ### Added
 - **Windows: the sandboxed modes contain bash on native Windows (alpha).**
   The runtime's Windows backend runs each command as a separate local
