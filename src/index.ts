@@ -767,7 +767,7 @@ export default async function (pi: ExtensionAPI) {
                 `Windows: commands run as srt-sandbox in ${sandbox.windowsStatus()!.bash}; helper ${sandbox.windowsStatus()!.srtWinPath}; self-check passed`,
                 `Last initialize: ${((sandbox.lastInitMs ?? 0) / 1000).toFixed(1)} s` +
                   (sandbox.lastResetMs !== undefined ? `, last reset: ${(sandbox.lastResetMs / 1000).toFixed(1)} s` : "") +
-                  " (a mode switch pays both; the runtime copies permission entries over every granted tree, blocking pi meanwhile)",
+                  " (a mode switch pays both; the write grant on the project is kept between sessions, a deny inside your profile the grant does not exclude costs seconds)",
                 `Session init steps: ${
                   Object.entries(sandbox.initSteps)
                     .map(([k, v]) => `${k} ${(v / 1000).toFixed(1)} s`)
