@@ -165,12 +165,15 @@ over it. What it does differs per platform:
   profile still applied. `false` restores the runtime default: no listening,
   loopback through the proxy and its prompt only
   ([troubleshooting.md, macOS loopback services](troubleshooting.md#macos-loopback-services)).
-- **Windows.** The fence stops the sandbox account's outbound connects, not
-  inbound ones, so a listener is reachable from this machine while the
-  command runs and dies with it. That is the `true` behaviour, and it is
-  all the backend can do: `false` is not enforced (Windows Firewall rules
-  need an administrator and do not filter loopback). `/sandbox` and the
-  awareness section say so when a mode sets it.
+- **Windows.** Loopback is a mode of the installed firewall set, open or
+  closed, chosen at `/sandbox install`: open unless every sandboxed mode
+  sets the key to `false`. Open, a listener is reachable from this machine
+  while the command runs and dies with it; closed, a sandboxed command
+  cannot listen and reaches local services through the proxy only. Every
+  session gets the installed mode whatever its mode's key says; selecting
+  a mode whose value differs says so once per mode and session, and
+  `/sandbox` shows the installed mode
+  ([troubleshooting.md, Loopback mode on Windows](troubleshooting.md#loopback-mode-on-windows)).
 - **Linux.** The sandbox has a network namespace of its own, so a sandboxed
   command may listen but this machine cannot reach it, whatever the key
   says. Managed jobs will relay declared ports to the host; until then the

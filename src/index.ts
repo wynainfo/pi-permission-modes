@@ -52,6 +52,7 @@ import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 import { withGitHubTokenHelper } from "./git-auth.ts";
 import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { localBindingNote, sandboxAwarenessPrompt } from "./awareness.ts";
+import { PROFILE_GRANT_QUESTION, profileGrantText } from "./sandbox-win.ts";
 import { bashExecPlan, bashGate, titleWithCommand } from "./bash-enforce.ts";
 import { analyzeBash, escapeTargetFromReason, escapingPaths } from "./bash-parse.ts";
 import {
@@ -145,6 +146,8 @@ export default async function (pi: ExtensionAPI) {
   // would misdirect it — and the fallback isn't exported to child processes
   // as if it were an explicit choice (children re-derive their own fallback).
   let fallbackMode = false;
+  /** Windows: modes already told that their allowLocalBinding differs from the installed loopback mode (once per session). */
+  const loopbackWarned = new Set<string>();
   const root = process.cwd();
 
   const currentMode = (): ModeDef => (hasMode(config.modes, modeName) ? config.modes[modeName] : config.modes[config.defaultMode]);
@@ -370,6 +373,13 @@ export default async function (pi: ExtensionAPI) {
     // controller drops superseded requests). Bash in the meantime is refused
     // with "run it again" rather than run under the previous profile.
     const applied = sandbox.applyProfile(runtimeProfile(m)).catch(() => {});
+    // Windows: a mode whose allowLocalBinding differs from the installed
+    // loopback mode is told so, once per mode and session, at the switch.
+    const conflict = sandbox.loopbackConflict(m.sandbox, m.label);
+    if (conflict && ctx.hasUI && !loopbackWarned.has(name)) {
+      loopbackWarned.add(name);
+      ctx.ui.notify(conflict, "warning");
+    }
     updateStatus(ctx, m, sandbox, net.open);
     ctx.ui.notify(`Permission mode: ${m.label}`, "info");
     void applied.then(() => {
@@ -679,10 +689,35 @@ export default async function (pi: ExtensionAPI) {
         if (process.platform !== "win32") {
           return ctx.ui.notify(`permission-mode: /sandbox ${sub} is for the native Windows sandbox; see ${docRef("sandboxUnavailable")} for this platform`, "info");
         }
-        ctx.ui.notify(`permission-mode: Windows sandbox ${sub} (one UAC prompt)...`, "info");
         try {
-          const line = await sandbox.windowsSetup(sub);
-          ctx.ui.notify(`permission-mode: ${line}`, sandbox.ready ? "info" : "warning");
+          if (sub === "uninstall") {
+            ctx.ui.notify("permission-mode: Windows sandbox uninstall (one UAC prompt)...", "info");
+            ctx.ui.notify(`permission-mode: ${await sandbox.windowsSetup("uninstall")}`, "info");
+          } else {
+            // Loopback is an install-time mode: open unless every sandboxed
+            // mode turns it off (a mode that differs is told at the switch).
+            const sandboxed = Object.values(config.modes).filter((d) => d.sandbox.enabled);
+            const allowLoopback = !(sandboxed.length > 0 && sandboxed.every((d) => d.sandbox.allowLocalBinding === false));
+            const profileGrant = await ctx.ui.confirm(PROFILE_GRANT_QUESTION, profileGrantText());
+            ctx.ui.notify(
+              `permission-mode: Windows sandbox install (one UAC prompt${profileGrant ? ", then the profile read grant, which takes minutes the first time" : ""})...`,
+              "info",
+            );
+            const choices = { allowLoopback, profileGrant, onProgress: (line: string) => ctx.ui.notify(`permission-mode: ${line}`, "info") };
+            let line: string;
+            try {
+              line = await sandbox.windowsSetup("install", choices);
+            } catch (e) {
+              if ((e as { code?: string }).code !== "install_config_conflict") throw e;
+              const replace = await ctx.ui.confirm(
+                "Replace the existing sandbox install?",
+                `${e instanceof Error ? e.message : String(e)}\n\nYes installs again with loopback ${allowLoopback ? "open" : "closed"} (one more UAC prompt); No leaves the install as it is.`,
+              );
+              if (!replace) return ctx.ui.notify("permission-mode: Windows sandbox install left as it is", "info");
+              line = await sandbox.windowsSetup("install", { ...choices, force: true });
+            }
+            ctx.ui.notify(`permission-mode: ${line}`, sandbox.ready ? "info" : "warning");
+          }
         } catch (e) {
           ctx.ui.notify(`permission-mode: Windows sandbox ${sub} failed: ${e instanceof Error ? e.message : String(e)}`, "error");
         }
@@ -711,7 +746,12 @@ export default async function (pi: ExtensionAPI) {
           `Network: ${net.open ? "OPEN for this session (alt+n)" : "filtered (alt+n)"}`,
           `Network allowed: ${c.network?.allowedDomains?.join(", ") || "(none)"}`,
           `Session grants: ${net.grants().join(", ") || "(none)"}`,
-          `Local binding: ${c.network.allowLocalBinding ? "on" : "off"}${localBindingNote(Boolean(c.network.allowLocalBinding), process.platform)}`,
+          ...(sandbox.windowsStatus()
+            ? [
+                `Local binding: ${sandbox.windowsStatus()!.loopbackInstalled ? "on" : "off"}${localBindingNote(sandbox.windowsStatus()!.loopbackInstalled, process.platform)}` +
+                  (sandbox.loopbackConflict(m.sandbox, m.label) ? `; this mode asks for ${c.network.allowLocalBinding ? "on" : "off"}, no effect until /sandbox install runs again` : ""),
+              ]
+            : [`Local binding: ${c.network.allowLocalBinding ? "on" : "off"}${localBindingNote(Boolean(c.network.allowLocalBinding), process.platform)}`]),
           ...(m.sandbox.macos || process.platform === "darwin"
             ? [`macOS options: enableWeakerNetworkIsolation ${c.enableWeakerNetworkIsolation ? "on" : "off"}${process.platform === "darwin" ? "" : " (macOS only, no effect here)"}`]
             : []),
@@ -1009,6 +1049,7 @@ export default async function (pi: ExtensionAPI) {
       sessionDomains: net.grants(),
       scratchDir,
       platform: process.platform,
+      windowsLoopback: sandbox.windowsStatus()?.loopbackInstalled,
     });
     if (aware) parts.push(aware);
     // Where the reference lives, in every mode: config questions arise in YOLO too.

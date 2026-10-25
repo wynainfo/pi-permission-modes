@@ -677,6 +677,30 @@ interface WindowsBackend {
   sid: string;
   /** The runtime is initialized without project writes (read-only is per session on Windows). */
   readOnly: boolean;
+  /**
+   * The loopback mode the sandbox was installed with (runtime 0.0.81: an
+   * install-time fact; a session asking for the other mode is refused).
+   * The runtime always gets this value; the mode's own `allowLocalBinding`
+   * only decides whether the user is told about the difference.
+   */
+  loopbackInstalled: boolean;
+  /** Whether the installing user's profile is readable to sandboxed commands (the install's profile read grant). */
+  profileRead: "granted" | "absent" | undefined;
+}
+
+/** Footer reason while the install predates this runtime release (setup version changed). */
+export const WINDOWS_REINSTALL_WARN = "Windows sandbox set up by another release (/sandbox install)";
+
+/** What `windowsSetup("install")` passes on; the UI asks the questions. */
+export interface WindowsInstallChoices {
+  /** Open loopback for the sandbox account (`sandbox.allowLocalBinding`); an install-time mode. */
+  allowLoopback: boolean;
+  /** Make the user's profile readable to sandboxed commands, minus the runtime's credential-store exclusions. */
+  profileGrant: boolean;
+  /** Replace an install made with other options (after the user agreed). */
+  force?: boolean;
+  /** Progress of the profile grant (a line per top-level item batch) and its start notice. */
+  onProgress?: (line: string) => void;
 }
 
 /** The command-file directory with read access for the sandbox user, or undefined when that cannot be arranged (files are then inlined). */
@@ -771,8 +795,25 @@ export class SandboxController {
   }
 
   /** What the Windows backend runs with, for `/sandbox`; undefined off Windows or while degraded. */
-  windowsStatus(): { bash: string; srtWinPath: string; readOnly: boolean; grants: string[] } | undefined {
-    return this.win ? { bash: this.win.bash, srtWinPath: this.win.srtWinPath, readOnly: this.win.readOnly, grants: this.win.grants } : undefined;
+  windowsStatus(): { bash: string; srtWinPath: string; readOnly: boolean; grants: string[]; loopbackInstalled: boolean; profileRead: "granted" | "absent" | undefined } | undefined {
+    const w = this.win;
+    return w ? { bash: w.bash, srtWinPath: w.srtWinPath, readOnly: w.readOnly, grants: w.grants, loopbackInstalled: w.loopbackInstalled, profileRead: w.profileRead } : undefined;
+  }
+
+  /**
+   * Windows: the sentence for a mode whose `allowLocalBinding` differs from
+   * the loopback mode the sandbox was installed with, or undefined when they
+   * agree (or off Windows). The caller shows it once per mode and session.
+   */
+  loopbackConflict(profile: SandboxProfile, label: string): string | undefined {
+    const w = this.win;
+    if (!w || !profile.enabled) return undefined;
+    const wanted = profile.allowLocalBinding !== false;
+    if (wanted === w.loopbackInstalled) return undefined;
+    return (
+      `permission-mode: ${label} sets sandbox.allowLocalBinding ${wanted ? "on" : "off"}, but the Windows sandbox is installed with loopback ${w.loopbackInstalled ? "open" : "closed"}: ` +
+      `the install decides until /sandbox install runs again. Use the same value in every mode (see ${docRef("windowsLoopback")}).`
+    );
   }
 
   /** Wall time of the last successful runtime initialize, in milliseconds (the permission-entry walks on Windows show here). */
@@ -1018,11 +1059,23 @@ export class SandboxController {
       );
     }
     const grantee = `*${status.sid}`;
-    let deps: { errors: string[]; warnings: string[] };
+    // The loopback mode is the install's (0.0.81): read it, and check the
+    // dependencies against it so the check never reports a mismatch with
+    // the mode's wish (loopbackConflict tells the user about that instead).
+    const loopbackInstalled = await this.installedLoopback(rt, srtWin, profile.allowLocalBinding !== false);
+    let deps: { errors: string[]; warnings: string[]; reinstallRequired?: string };
     try {
-      deps = await rt.checkWindowsDependenciesAsync({ srtWin });
+      deps = await rt.checkWindowsDependenciesAsync({ srtWin, allowLoopback: loopbackInstalled });
     } catch (err) {
       deps = { errors: [errMsg(err)], warnings: [] };
+    }
+    if (deps.reinstallRequired) {
+      return this.degrade(
+        profile,
+        WINDOWS_REINSTALL_WARN,
+        `permission-mode: ${deps.reinstallRequired.split("\n")[0]} Run /sandbox install (one UAC prompt; it upgrades the install in place). ` +
+          `Until then the sandboxed modes ask before every bash command; see ${docRef("windowsInstall")}`,
+      );
     }
     if (deps.errors.length > 0) return unavailable(`sandbox dependencies: ${deps.errors.join("; ")}`, `See ${docRef("windowsInstall")}`);
     this.dependencyWarnings = deps.warnings;
@@ -1060,8 +1113,29 @@ export class SandboxController {
     } catch {
       gitConfig = undefined; // the identity still travels as environment
     }
-    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, gitConfig, grants: readable, probed: false, sid: grantee, readOnly: !profile.writable };
+    this.win = { bash, srtWinPath: staged, extraEnv, commandDir, gitConfig, grants: readable, probed: false, sid: grantee, readOnly: !profile.writable, loopbackInstalled, profileRead: undefined };
     await this.applyProfile(profile);
+  }
+
+  /**
+   * The loopback mode of the installed firewall set. Read from the WFP
+   * status where it can be read (elevation is not needed for the install's
+   * record); where it cannot, the dependency check compares `wanted` with
+   * the install and names a mismatch, which means the other mode.
+   */
+  private async installedLoopback(rt: SandboxRuntime, srtWin: ReturnType<SandboxRuntime["resolveSrtWin"]>, wanted: boolean): Promise<boolean> {
+    try {
+      const wfp = await rt.getWindowsWfpStatusAsync({ srtWin });
+      if (wfp.state === "installed" || wfp.state === "loopback-mismatch") return wfp.allowLoopback;
+    } catch {
+      // fall through to the comparison
+    }
+    try {
+      const deps = (await rt.checkWindowsDependenciesAsync({ srtWin, allowLoopback: wanted })) as { loopbackMismatch?: string };
+      return deps.loopbackMismatch ? !wanted : wanted;
+    } catch {
+      return wanted;
+    }
   }
 
   /**
@@ -1117,21 +1191,38 @@ export class SandboxController {
    * Install or remove the Windows backend (one UAC prompt each), then re-run
    * the last init so the result takes effect at once. Returns a status line.
    */
-  async windowsSetup(action: "install" | "uninstall"): Promise<string> {
+  async windowsSetup(action: "install" | "uninstall", choices?: WindowsInstallChoices): Promise<string> {
     const rt = this.rt ?? (await (this.lastInit?.loadRuntime ?? (() => import("@anthropic-ai/sandbox-runtime")))());
     const srtWin = rt.resolveSrtWin({ path: rt.VENDORED_SRT_WIN_EXE });
+    let outcome = "";
     if (action === "install") {
-      const r = await rt.installWindowsSandboxAsync({ srtWin });
+      const c = choices ?? { allowLoopback: true, profileGrant: true };
+      // An install replaces this session's runtime state: release it first
+      // (kept write grants stay, by the runtime's design).
+      await this.reset();
+      const r = await rt.installWindowsSandboxAsync({
+        srtWin,
+        allowLoopback: c.allowLoopback,
+        skipProfileGrant: !c.profileGrant,
+        force: c.force,
+        onProfileGrantStart: c.onProgress,
+        onProfileGrantProgress: c.onProgress,
+      });
       if (r.cancelled) return "Windows sandbox install cancelled (the UAC prompt was dismissed).";
+      const grant = r.profileGrant;
+      outcome =
+        ` Loopback ${c.allowLoopback ? "open" : "closed"}; your profile ${
+          grant?.applied ? "readable to sandboxed commands (minus credential stores)" : `not readable (${grant?.reason ?? (c.profileGrant ? "no grant reported" : "skipped")})`
+        }.`;
     } else {
       await this.reset(); // drop this session's permission entries before the account goes away
       const r = rt.uninstallWindowsSandbox({ srtWin });
       if (r.cancelled) return "Windows sandbox uninstall cancelled (the UAC prompt was dismissed).";
     }
     if (this.lastInit) await this.init(this.lastInit);
-    if (this.ready) return "Windows sandbox installed and active.";
+    if (this.ready) return `Windows sandbox installed and active.${outcome}`;
     return action === "install"
-      ? `Windows sandbox installed, but not active: ${this.warn ?? "unknown"}`
+      ? `Windows sandbox installed, but not active: ${this.warn ?? "unknown"}.${outcome}`
       : "Windows sandbox removed; the sandboxed modes ask before every bash command.";
   }
 
@@ -1182,8 +1273,13 @@ export class SandboxController {
       // Linux: unless the mode masks ~/.gitconfig (a strict home).
       if (win.gitConfig && !gitConfigMasked(profile, env)) win.extraEnv.GIT_CONFIG_GLOBAL = win.gitConfig.replace(/\\/g, "/");
       else delete win.extraEnv.GIT_CONFIG_GLOBAL;
+      // Loopback is the install's mode on Windows: the runtime refuses a
+      // session that asks for the other one, so the mode's wish never
+      // reaches it (loopbackConflict tells the user).
+      const { allowLocalBinding: _wish, ...network } = cfg.network;
       cfg = {
         ...cfg,
+        network: win.loopbackInstalled ? { ...network, allowLocalBinding: true } : network,
         filesystem: {
           ...fs,
           denyRead: deniesInsideGrants(fs.denyRead, win.grants, this.cwd, env),

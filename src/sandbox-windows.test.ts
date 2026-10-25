@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SandboxController, type SandboxRuntime, WINDOWS_NOT_INSTALLED_WARN, createWindowsSandboxedBashOps } from "./sandbox.ts";
+import { SandboxController, type SandboxRuntime, WINDOWS_NOT_INSTALLED_WARN, WINDOWS_REINSTALL_WARN, createWindowsSandboxedBashOps } from "./sandbox.ts";
 
 interface Wrap {
   script: string;
@@ -21,10 +21,23 @@ interface Wrap {
   options: unknown;
 }
 
-function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: string) => string[]; failInits?: string[]; parseError?: (stderr: string) => { message: string } | undefined } = {}) {
+function fakeWindowsRuntime(
+  opts: {
+    provisioned?: boolean;
+    argv?: (script: string) => string[];
+    failInits?: string[];
+    parseError?: (stderr: string) => { message: string } | undefined;
+    /** The firewall set's record; "cannot-read" makes the dependency check the only source. Default: installed, loopback open. */
+    wfp?: { state: "installed" | "cannot-read" | "absent"; allowLoopback: boolean };
+    /** The dependency check's reinstall notice (setup version changed). */
+    reinstallRequired?: string;
+  } = {},
+) {
   const calls: string[] = [];
   const wraps: Wrap[] = [];
   const inits: unknown[] = [];
+  const installs: unknown[] = [];
+  const wfp = opts.wfp ?? { state: "installed", allowLoopback: true };
   const manager = {
     async wrapWithSandboxArgv(script: string, shell: unknown, cfg: unknown, _signal: unknown, cwd: string | undefined, options: unknown) {
       calls.push("wrap");
@@ -53,10 +66,25 @@ function fakeWindowsRuntime(opts: { provisioned?: boolean; argv?: (script: strin
     VENDORED_SRT_WIN_EXE: "C:\\ext\\node_modules\\srt\\vendor\\srt-win\\x64\\srt-win.exe",
     resolveSrtWin: (cfg: { path: string }) => ({ exe: cfg.path, prependArgs: [] }),
     getWindowsSandboxUserStatusAsync: async () => ({ provisioned, credPresent: provisioned, sid: provisioned ? "S-1-5-21-1-2-3-1001" : undefined }),
-    checkWindowsDependenciesAsync: async () => ({ errors: [], warnings: [] }),
+    checkWindowsDependenciesAsync: async (o: { allowLoopback?: boolean }) => {
+      calls.push(`deps:${o.allowLoopback}`);
+      const mismatch = o.allowLoopback !== undefined && o.allowLoopback !== wfp.allowLoopback;
+      return {
+        errors: mismatch ? ["loopback mismatch"] : [],
+        warnings: [],
+        loopbackMismatch: mismatch ? "The firewall set was installed with the other loopback mode." : undefined,
+        reinstallRequired: opts.reinstallRequired,
+      };
+    },
+    getWindowsWfpStatusAsync: async () => ({ state: wfp.state, filters: wfp.state === "installed" ? 6 : 0, allowLoopback: wfp.allowLoopback }),
+    installWindowsSandboxAsync: async (o: unknown) => {
+      installs.push(o);
+      const skip = (o as { skipProfileGrant?: boolean }).skipProfileGrant;
+      return { wfp: { state: "installed", filters: 6, allowLoopback: (o as { allowLoopback?: boolean }).allowLoopback }, user: {}, profileGrant: skip ? { applied: false, reason: "skipped" } : { applied: true, userSid: "S-1-5-21-1-2-3-1001", result: {} } };
+    },
     parseWindowsSandboxError: opts.parseError ?? (() => undefined),
   };
-  return { calls, wraps, inits, manager: manager as unknown as Parameters<typeof createWindowsSandboxedBashOps>[0], rt: rt as unknown as SandboxRuntime };
+  return { calls, wraps, inits, installs, manager: manager as unknown as Parameters<typeof createWindowsSandboxedBashOps>[0], rt: rt as unknown as SandboxRuntime };
 }
 
 const exec = (ops: ReturnType<typeof createWindowsSandboxedBashOps>, command: string, env?: NodeJS.ProcessEnv, timeout = 10) => {
@@ -112,7 +140,7 @@ const baseInit = (
   c: SandboxController,
   fake: ReturnType<typeof fakeWindowsRuntime>,
   notes: string[],
-  profile: { enabled: boolean; writable: boolean; allowWrite: string[]; denyRead?: string[]; denyWrite?: string[] } = { enabled: true, writable: true, allowWrite: ["."] },
+  profile: { enabled: boolean; writable: boolean; allowWrite: string[]; denyRead?: string[]; denyWrite?: string[]; allowLocalBinding?: boolean } = { enabled: true, writable: true, allowWrite: ["."] },
   cwd = process.cwd(),
 ) =>
   c.init({
@@ -200,6 +228,72 @@ test("controller (win32): provisioned, probe passes; read-only is applied at ini
   await assert.rejects(c.bashOps({ readOnly: false })!.exec("true", process.cwd(), { onData: () => {} }), /re-initialized/);
   assert.ok(c.bashOps({ readOnly: true }));
   assert.deepEqual(fake.calls.filter((x) => x === "initialize" || x === "reset"), ["initialize", "reset", "initialize"]);
+});
+
+test("controller (win32): the installed loopback mode reaches the runtime, not the mode's key; loopbackConflict names a difference", async () => {
+  const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+  // Installed open, the mode asks for off: the runtime gets true (the install's mode), the user is told.
+  const open = fakeWindowsRuntime({ argv: passing });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  const off = { enabled: true, writable: true, allowWrite: ["."], allowLocalBinding: false };
+  await baseInit(c, open, notes, off);
+  assert.equal(c.ready, true, notes.join("\n"));
+  assert.equal((open.inits[0] as { network: { allowLocalBinding?: boolean } }).network.allowLocalBinding, true);
+  assert.ok(open.calls.includes("deps:true"), "the dependency check is run against the installed mode, so it never reports a mismatch with the mode's wish");
+  assert.equal(c.windowsStatus()?.loopbackInstalled, true);
+  assert.match(c.loopbackConflict(off, "Default")!, /^permission-mode: Default sets sandbox.allowLocalBinding off, but the Windows sandbox is installed with loopback open: the install decides until \/sandbox install runs again\. Use the same value in every mode \(see .*troubleshooting\.md#loopback-mode-on-windows\)/);
+  assert.equal(c.loopbackConflict({ enabled: true, writable: true, allowWrite: ["."] }, "Build"), undefined);
+  assert.equal(c.loopbackConflict({ enabled: false, writable: true, allowWrite: [] }, "YOLO"), undefined);
+  // Installed closed, the stock mode (on): the key is left out of the runtime config, the conflict names the closed install.
+  const closed = fakeWindowsRuntime({ argv: passing, wfp: { state: "installed", allowLoopback: false } });
+  const c2 = new SandboxController();
+  await baseInit(c2, closed, notes);
+  assert.equal(c2.ready, true, notes.join("\n"));
+  assert.equal("allowLocalBinding" in (closed.inits[0] as { network: object }).network, false);
+  assert.match(c2.loopbackConflict({ enabled: true, writable: true, allowWrite: ["."] }, "Build")!, /Build sets sandbox.allowLocalBinding on, but the Windows sandbox is installed with loopback closed/);
+  assert.equal(c2.loopbackConflict(off, "Default"), undefined);
+  // The record cannot be read: the dependency check's mismatch against the mode's wish tells the installed mode.
+  const unread = fakeWindowsRuntime({ argv: passing, wfp: { state: "cannot-read", allowLoopback: false } });
+  const c3 = new SandboxController();
+  await baseInit(c3, unread, notes);
+  assert.equal(c3.ready, true, notes.join("\n"));
+  assert.equal(c3.windowsStatus()?.loopbackInstalled, false);
+  assert.deepEqual(unread.calls.filter((x) => x.startsWith("deps:")), ["deps:true", "deps:false"], "one comparison with the wish, then the real check against the installed mode");
+});
+
+test("controller (win32): an install from another runtime release degrades with the reinstall advice and never initializes", async () => {
+  const fake = fakeWindowsRuntime({ reinstallRequired: "The Windows sandbox on this machine was set up by a different release (setup version 2; this release needs 3).\nRe-run the install." });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  await baseInit(c, fake, notes);
+  assert.equal(c.ready, false);
+  assert.equal(c.warn, WINDOWS_REINSTALL_WARN);
+  assert.match(notes.join("\n"), /set up by a different release \(setup version 2; this release needs 3\)\. Run \/sandbox install \(one UAC prompt; it upgrades the install in place\)\..*troubleshooting\.md#windows-sandbox-install/);
+  assert.deepEqual(fake.inits, []);
+});
+
+test("controller (win32): windowsSetup passes the install choices on and reports the grant and loopback outcome", async () => {
+  const passing = (script: string) => (script.includes("PI-SRT-PROBE") ? ["bash", "-c", "echo PI-SRT-PROBE DONE"] : ["bash", "-c", script]);
+  const fake = fakeWindowsRuntime({ argv: passing });
+  const c = new SandboxController();
+  const notes: string[] = [];
+  await baseInit(c, fake, notes);
+  const progress: string[] = [];
+  const line = await c.windowsSetup("install", { allowLoopback: true, profileGrant: true, onProgress: (l) => progress.push(l) });
+  assert.equal(line, "Windows sandbox installed and active. Loopback open; your profile readable to sandboxed commands (minus credential stores).");
+  const o = fake.installs[0] as Record<string, unknown>;
+  assert.equal(o.allowLoopback, true);
+  assert.equal(o.skipProfileGrant, false);
+  assert.equal(o.force, undefined);
+  assert.equal(typeof o.onProfileGrantProgress, "function");
+  assert.ok(fake.calls.indexOf("reset") < fake.calls.lastIndexOf("initialize"), "this session's runtime is released before the install and re-initialized after");
+  const skipped = await c.windowsSetup("install", { allowLoopback: false, profileGrant: false, force: true });
+  assert.match(skipped, /Loopback closed; your profile not readable \(skipped\)\.$/);
+  const o2 = fake.installs[1] as Record<string, unknown>;
+  assert.equal(o2.allowLoopback, false);
+  assert.equal(o2.skipProfileGrant, true);
+  assert.equal(o2.force, true);
 });
 
 /** A project whose parent folder is writable, as a folder created at a drive root is on Windows. */

@@ -177,14 +177,16 @@ test("sandbox.allowLocalBinding: the server line per platform, the direct-loopba
   assert.match(open, listens);
   assert.doesNotMatch(open, loop);
   assert.doesNotMatch(open, go);
-  // Windows: the server line always (the fence stops outbound connects only); false is named as unenforced.
-  const win = sandboxAwarenessPrompt(mode(), { active: true, platform: "win32" })!;
+  // Windows: the installed loopback mode decides, not the mode's key (windowsLoopback is what the install reports).
+  const win = sandboxAwarenessPrompt(mode({}, { allowLocalBinding: false }), { active: true, platform: "win32", windowsLoopback: true })!;
   assert.match(win, listens);
-  assert.doesNotMatch(win, /cannot enforce/);
   assert.doesNotMatch(win, loop);
-  const winOff = sandboxAwarenessPrompt(mode({}, { allowLocalBinding: false }), { active: true, platform: "win32" })!;
-  assert.match(winOff, listens);
-  assert.match(winOff, /Windows cannot enforce/);
+  const winOff = sandboxAwarenessPrompt(mode(), { active: true, platform: "win32", windowsLoopback: false })!;
+  assert.doesNotMatch(winOff, listens);
+  assert.match(winOff, /Local binding is closed on this machine .* cannot listen on a port/);
+  assert.doesNotMatch(winOff, /macos-loopback-services/);
+  // Without the install's answer (no sandbox yet) the mode's key stands in.
+  assert.match(sandboxAwarenessPrompt(mode(), { active: true, platform: "win32" })!, listens);
 });
 
 test("denyWrite entries are listed when present", () => {

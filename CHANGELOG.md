@@ -62,8 +62,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lets sandboxed bash reach loopback services directly (database drivers,
   `psql`), past the proxy and its prompt: the profile otherwise allows
   direct TCP only to the proxy, so no allowlist entry could help. On
-  Windows the inbound side is open regardless, so `false` is reported as
-  not enforced in `/sandbox` and in the awareness section; on Linux the
+  Windows loopback is an install-time mode of the firewall set:
+  `/sandbox install` opens it unless every sandboxed mode sets the key to
+  `false`, the install's mode is what every session gets, and selecting a
+  mode whose value differs says so once per mode and session (`/sandbox`
+  shows the installed mode); on Linux the
   sandbox's loopback is its own, so nothing is reachable from the host
   until managed jobs relay declared ports. The awareness section tells the
   model what a server it starts can do on the current platform. The costs
@@ -85,9 +88,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   write wherever `Users` holds write access, whatever the allow list said);
   Schannel clients such as System32 `curl.exe`, PowerShell web requests and
   .NET HTTP cannot do TLS under it, Git for Windows `curl` and `git` work.
-  The install can open loopback for `sandbox.allowLocalBinding`, and write
-  grants on project roots are kept between sessions, so only the first
-  session in a project walks its tree. The install has to be run once more
+  `/sandbox install` now asks one question, whether your user profile
+  should be readable to sandboxed commands (default Yes: per-user tools and
+  feed sign-ins work, the credential stores such as `.ssh`, `.aws`, `.gnupg`
+  and `.config\gh` stay unreadable, the grant is per machine and takes
+  minutes once; answer No on a shared machine), opens loopback for
+  `sandbox.allowLocalBinding` unless every sandboxed mode turns it off, and
+  asks before replacing an install made with other options. Write grants
+  on project roots are kept between sessions, so only the first session in
+  a project walks its tree. The install has to be run once more
   (`/sandbox install`, one UAC prompt, in place): until then the sandbox
   reports that an earlier release set it up, and the sandboxed modes ask
   before every bash command.

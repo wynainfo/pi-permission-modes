@@ -68,6 +68,8 @@ export interface AwarenessOptions {
   scratchDir?: string;
   /** `process.platform`; the macOS-only lines render only on "darwin", the Windows ones on "win32". Injected so tests cover each. */
   platform?: NodeJS.Platform;
+  /** Windows: the loopback mode the sandbox was installed with, which is what applies (the mode's `allowLocalBinding` does not). */
+  windowsLoopback?: boolean;
 }
 
 /** The one-sentence scratch-directory instruction, shared by every variant. */
@@ -91,7 +93,7 @@ const renderWritePath = (p: string): string => (p === "." || p === "./" ? "the p
  * on this platform.
  */
 export function localBindingNote(on: boolean, platform: NodeJS.Platform): string {
-  if (platform === "win32") return on ? " (a server a command starts is reachable from this machine while the command runs)" : " (not enforced on Windows: a listener is reachable regardless)";
+  if (platform === "win32") return on ? " (installed with loopback open: a server a command starts is reachable from this machine while the command runs)" : " (installed with loopback closed: no listening, local services through the proxy only)";
   if (platform === "darwin") return on ? " (a server a command starts is reachable from this machine while the command runs; loopback is reached directly, past the proxy)" : " (no listening; loopback through the proxy only)";
   return " (the sandbox's loopback is its own on Linux: a server is reachable from this machine with managed jobs only)";
 }
@@ -105,11 +107,11 @@ export function localBindingLine(on: boolean, platform: NodeJS.Platform): string
   if (platform === "linux") {
     return `- A server you start within a command listens inside the sandbox only: this machine cannot reach it (the sandbox has a loopback of its own), and ${within}.`;
   }
-  if (on || platform === "win32") {
-    return (
-      `- A server you start within a command listens for real: the user can open it in a browser while the command runs, and ${within}; bind it to 127.0.0.1.` +
-      (on ? "" : " (This mode sets sandbox.allowLocalBinding false, which Windows cannot enforce: a listener is reachable regardless.)")
-    );
+  if (on) {
+    return `- A server you start within a command listens for real: the user can open it in a browser while the command runs, and ${within}; bind it to 127.0.0.1.`;
+  }
+  if (platform === "win32") {
+    return "- Local binding is closed on this machine (an install-time choice of the Windows sandbox): a sandboxed command cannot listen on a port, and a raw TCP client (database drivers, psql, redis-cli) cannot reach a service on localhost; proxy-aware clients (curl, package managers) reach localhost after the user's approval.";
   }
   return `- Local binding is off in this mode: a sandboxed command cannot listen on a port, and a raw TCP client (database drivers, psql, redis-cli) cannot reach a service on localhost; proxy-aware clients (curl, package managers) reach localhost after the user's approval (see ${docRef("macosLoopback")}).`;
 }
@@ -223,7 +225,7 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
       );
     }
   }
-  lines.push(localBindingLine(sb.allowLocalBinding !== false, platform));
+  lines.push(localBindingLine(platform === "win32" && opts.windowsLoopback !== undefined ? opts.windowsLoopback : sb.allowLocalBinding !== false, platform));
   if (platform === "linux" && !sb.linux?.allowNestedUserNamespaces) {
     // The runtime refuses nested user namespaces since 0.0.80; the programs
     // that need one fail with EPERM and a message that does not name the cause.

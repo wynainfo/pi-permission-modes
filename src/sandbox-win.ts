@@ -283,6 +283,25 @@ export function windowsEnvFile(exports: readonly string[]): string {
  * the sandbox is the sandbox account's, so git, npm and friends would not
  * read them anyway (the git identity travels as environment instead).
  */
+/** Title of the question `/sandbox install` asks before the runtime's profile read grant. */
+export const PROFILE_GRANT_QUESTION = "Read your user profile inside the sandbox?";
+
+/**
+ * The trade behind the profile read grant, for the install question. The
+ * runtime (0.0.81) grants the sandbox account read access to the user's
+ * profile minus its exclusion list; the grant is per machine and user, not
+ * per project, and takes minutes the first time.
+ */
+export function profileGrantText(): string {
+  return (
+    "Yes makes your user profile readable to sandboxed commands, so per-user tools (nvm, pyenv, cargo, go, .NET, VS Code) and feed sign-ins " +
+    "(.npmrc, pip, NuGet, Maven, Gradle, .gitconfig) work like outside the sandbox. Credential stores stay unreadable: .ssh, .gnupg, .aws, .azure, .kube, .docker, " +
+    ".config\\gh, browser profiles, Windows credential vaults and the local Temp folder.\n\n" +
+    "The grant applies to every sandboxed session on this machine, by any project, until /sandbox uninstall. It takes minutes once (one line of progress per folder).\n\n" +
+    "No keeps the current behaviour: commands read the project and the known tool roots only. Answer No on a shared machine."
+  );
+}
+
 export const WINDOWS_TOOL_ROOTS = [
   "%LOCALAPPDATA%\\Programs",
   "%APPDATA%\\npm",

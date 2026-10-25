@@ -158,6 +158,25 @@ were reinstalled while the entries of the previous load were still held.
 The extension retries the initialize once after releasing them; should the
 message stay, restart pi.
 
+## Loopback mode on Windows
+
+Since sandbox-runtime 0.0.81 the Windows firewall set is installed either
+with loopback open (a sandboxed command may listen on a port, and this
+machine reaches it while the command runs) or closed (no listening, local
+services through the proxy and its prompt only). It is an install-time
+choice: `/sandbox install` opens loopback unless every sandboxed mode sets
+`sandbox.allowLocalBinding` to `false`, and a session cannot ask the
+runtime for the other mode.
+
+So on Windows the key in a mode does not switch anything. When you select
+a mode whose value differs from the installed one, pi says so once per mode
+and session ("... the Windows sandbox is installed with loopback open: the
+install decides until /sandbox install runs again"); `/sandbox` shows the
+installed mode as the `Local binding` line. Use the same value in every
+sandboxed mode, and to change the installed mode set it in the config and
+run `/sandbox install` again (one UAC prompt; an install made with other
+options asks before it is replaced).
+
 ## Windows sandbox self-check
 
 On Windows the sandbox runs each command as the local user `srt-sandbox`
