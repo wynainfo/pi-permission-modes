@@ -6,22 +6,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-- **The mode text is written as pi prompt sections instead of replacing the
-  system prompt.** The sandbox awareness block, the docs pointer and a mode's
-  own `systemPrompt` become the sections `permission_mode`,
-  `permission_mode_docs` and `permission_mode_steering`. pi records them in
-  the session and, on models that accept mid-conversation system messages
-  (pi 0.86 or newer; the catalog entries of Anthropic, OpenAI, OpenRouter and
-  others; custom endpoints with `compat.supportsMidConvoSystemMessages`), a
-  mode switch, a network grant or a blocked path now sends a short patch
-  after the conversation instead of rewriting its head, so the provider's
-  prompt cache keeps the whole context. Other models and older pi versions
-  behave as before. Idea from [#9](https://github.com/wynainfo/pi-permission-modes/pull/9)
-  by [@ammoniak](https://github.com/ammoniak).
-
-## [2.6.0]
-
 ### Added
 - **Background shells: bash with `run_in_background: true`.** A dev server,
   a watcher, a long build or a monitor runs as its own process tree that
@@ -51,6 +35,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   so; `/shells stop all` applies it now). Otherwise shells end with the
   session. Config block `shells` (`enabled`, `maxConcurrent`, `notify`); a
   project may only tighten. Documented in `docs/shells.md`.
+
+### Changed
+- **The mode text is written as pi prompt sections instead of replacing the
+  system prompt.** The sandbox awareness block, the docs pointer and a mode's
+  own `systemPrompt` become the sections `permission_mode`,
+  `permission_mode_docs` and `permission_mode_steering`. pi records them in
+  the session and, on models that accept mid-conversation system messages
+  (pi 0.86 or newer; the catalog entries of Anthropic, OpenAI, OpenRouter and
+  others; custom endpoints with `compat.supportsMidConvoSystemMessages`), a
+  mode switch, a network grant or a blocked path now sends a short patch
+  after the conversation instead of rewriting its head, so the provider's
+  prompt cache keeps the whole context. Other models and older pi versions
+  behave as before. Idea from [#9](https://github.com/wynainfo/pi-permission-modes/pull/9)
+  by [@ammoniak](https://github.com/ammoniak).
+
+## [2.6.0]
+
+### Added
 - **Windows: the sandboxed modes contain bash on native Windows (alpha).**
   The runtime's Windows backend runs each command as a separate local
   account (`srt-sandbox`) in Git Bash, behind a firewall rule keyed on that
