@@ -284,6 +284,30 @@ export function windowsEnvFile(exports: readonly string[]): string {
  * read them anyway (the git identity travels as environment instead).
  */
 /**
+ * How an absolute Windows path stands to one entry of the profile read
+ * grant's exclusion list (runtime 0.0.81): entries are absolute, may carry
+ * the `\\?\` prefix, `*` stands for one name and a trailing `*` for a
+ * prefix. Pure: no path is resolved or listed (the runtime does that at
+ * initialize, and refuses with `profile_exclusion_read_grant`); this is the
+ * cheap answer the session needs for every path of the mode.
+ */
+export function profileExclusionRelation(abs: string, exclusion: string): "equal" | "inside" | "above" | undefined {
+  const parts = (p: string) =>
+    p
+      .replace(/^\\\\\?\\/, "")
+      .toLowerCase()
+      .split(/[\\/]+/)
+      .filter(Boolean);
+  const a = parts(abs);
+  const x = parts(exclusion);
+  const matches = (name: string, pat: string) => pat === "*" || (pat.endsWith("*") ? name.startsWith(pat.slice(0, -1)) : name === pat);
+  const n = Math.min(a.length, x.length);
+  for (let i = 0; i < n; i++) if (!matches(a[i], x[i])) return undefined;
+  if (a.length === x.length) return "equal";
+  return a.length > x.length ? "inside" : "above";
+}
+
+/**
  * The docs section for a runtime error code (`WindowsSandboxError.code`,
  * runtime 0.0.81) when one helps: the install for setup and account
  * states, the loopback and profile sections for theirs. Undefined for codes

@@ -436,7 +436,7 @@ test("controller (win32): a grant the runtime would refuse degrades up front; so
   assert.equal(c.warn, WINDOWS_PROFILE_GRANT_WARN);
   assert.match(notes.join("\n"), /cannot be relied on \(outdated: made with an older exclusion list\).*Run \/sandbox install again.*troubleshooting\.md#reading-your-profile-on-windows/);
   assert.deepEqual(outdated.inits, []);
-  // A write root above an excluded store: named, and the runtime is not asked.
+  // A write root above an excluded store: named, and the runtime is not asked. A root above a wildcard entry only is the runtime's to judge.
   const above = fakeWindowsRuntime({ argv: passingProbe, profile: grantedProfile });
   const c2 = new SandboxController();
   notes.length = 0;
@@ -445,6 +445,14 @@ test("controller (win32): a grant the runtime would refuse degrades up front; so
   assert.equal(c2.warn, WINDOWS_PROFILE_CONFLICT_WARN);
   assert.match(notes.join("\n"), /cannot grant write access to C:\\Users\\me\\AppData\\Local: the profile read grant protects a credential store there/);
   assert.deepEqual(above.inits, []);
+  // The runtime's own comparison (paths resolved) finds a store beneath a write root this one did not: its code maps to the same footer.
+  const resolved = fakeWindowsRuntime({ argv: passingProbe, profile: grantedProfile, failInitCodes: [{ code: "profile_exclusion_read_grant", message: "C:\\proj\\link reaches C:\\Users\\me\\.aws." }] });
+  const c2b = new SandboxController();
+  notes.length = 0;
+  await baseInit(c2b, resolved, notes);
+  assert.equal(c2b.ready, false);
+  assert.equal(c2b.warn, WINDOWS_PROFILE_CONFLICT_WARN);
+  assert.match(notes.join("\n"), /refused this mode's paths: C:\\proj\\link reaches C:\\Users\\me\\.aws\. Choose a narrower project directory/);
   // The runtime rejects with profile_grant_outdated (a record that changed since the status was read).
   const refused = fakeWindowsRuntime({ argv: passingProbe, profile: grantedProfile, failInitCodes: [{ code: "profile_grant_outdated", message: "profile grant outdated" }] });
   const c3 = new SandboxController();

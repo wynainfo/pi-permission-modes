@@ -18,7 +18,7 @@ import { withGitHubTokenHelper } from "./git-auth.ts";
 import { type SandboxConfig, profileToConfig, readOnlyOverride } from "./config-load.ts";
 import { gitDirsOf } from "./paths.ts";
 import { expandHome } from "./resolve.ts";
-import { expandWinEnv, findGitBash, gitConfigMasked, gitIdentityEnv, grantReadExecute, LAUNCH_ERROR_PREFIX, parseProbe, probeAdvice, probeNotice, probeProblem, probeScript, probeTargets, readAcl, readGitIdentity, sandboxAceIn, stageGitConfig, stageSrtWin, windowsEnvExports, windowsEnvFile, windowsErrorRef, windowsGitEnv, windowsScript } from "./sandbox-win.ts";
+import { expandWinEnv, findGitBash, gitConfigMasked, gitIdentityEnv, grantReadExecute, LAUNCH_ERROR_PREFIX, parseProbe, probeAdvice, probeNotice, probeProblem, probeScript, probeTargets, profileExclusionRelation, readAcl, readGitIdentity, sandboxAceIn, stageGitConfig, stageSrtWin, windowsEnvExports, windowsEnvFile, windowsErrorRef, windowsGitEnv, windowsScript } from "./sandbox-win.ts";
 import type { SandboxProfile } from "./schema.ts";
 import { isModuleNotFound } from "./util.ts";
 import { isOutsideWin } from "./win-paths.ts";
@@ -1177,16 +1177,25 @@ export class SandboxController {
    * `protected` when it is, or lies inside, an excluded store (the runtime
    * refuses to grant it, or needs the explicit dangerous option for a read),
    * `ungranted` for the user's temporary directory (grantable), `above` when
-   * an exclusion lies beneath it (never grantable; as a read, redundant with
-   * the grant itself), `none` otherwise.
+   * a literal exclusion lies beneath it (never grantable; as a read,
+   * redundant with the grant itself), `none` otherwise. Pure by design: the
+   * runtime's own comparison resolves and lists paths, which costs seconds
+   * per path on a large profile, and it runs at initialize anyway.
    */
-  private profileRelation(abs: string, grant: WindowsProfileGrant, write: boolean): "protected" | "ungranted" | "above" | "none" {
-    const rt = this.rt;
-    if (!rt) return "none";
-    const conflicts = rt.windowsProfileExclusionConflicts([abs], grant, { write });
-    if (conflicts.some((c) => c.kind === "protected" && c.relation !== "above")) return "protected";
-    if (conflicts.some((c) => c.relation === "above")) return "above";
-    if (conflicts.length > 0) return "ungranted";
+  private profileRelation(abs: string, grant: WindowsProfileGrant): "protected" | "ungranted" | "above" | "none" {
+    let above = false;
+    for (const x of grant.exclusions) {
+      const rel = profileExclusionRelation(abs, x);
+      if (rel === "equal" || rel === "inside") return "protected";
+      // A wildcard entry (a browser store under any folder) may or may not
+      // exist beneath: the runtime looks; here it is not a conflict.
+      if (rel === "above" && !x.includes("*")) above = true;
+    }
+    if (above) return "above";
+    for (const x of grant.ungrantedOnly) {
+      const rel = profileExclusionRelation(abs, x);
+      if (rel === "equal" || rel === "inside") return "ungranted";
+    }
     return "none";
   }
 
@@ -1367,14 +1376,16 @@ export class SandboxController {
             kept.push(p);
             continue;
           }
-          const rel = this.profileRelation(a, grant, false);
+          const rel = this.profileRelation(a, grant);
           if (rel === "protected") exclusionReads.push(a);
           if (rel === "protected" || rel === "ungranted") kept.push(p);
         }
         allowRead = kept;
         // A write root that is, holds or lies inside a protected store cannot
-        // be granted at all: say which, instead of the runtime's refusal.
-        const writeConflicts = fs.allowWrite.map(abs).filter((a) => !isOutsideWin(home, a) && this.profileRelation(a, grant, true) !== "none");
+        // be granted at all: say which, instead of the runtime's refusal (the
+        // runtime still checks, with the paths resolved, and the catch below
+        // reads its answer).
+        const writeConflicts = fs.allowWrite.map(abs).filter((a) => !isOutsideWin(home, a) && this.profileRelation(a, grant) !== "none");
         if (writeConflicts.length > 0) {
           this.ready = false;
           this.warn = WINDOWS_PROFILE_CONFLICT_WARN;
@@ -1397,7 +1408,7 @@ export class SandboxController {
       // store is already in force (the runtime keeps it unreadable).
       const denyScope = home ? [...win.grants, home] : win.grants;
       const effective = (denies: readonly string[]) =>
-        deniesInsideGrants(denies, denyScope, this.cwd, env).filter((d) => !(grant && home && !isOutsideWin(home, abs(d)) && this.profileRelation(abs(d), grant, false) === "protected"));
+        deniesInsideGrants(denies, denyScope, this.cwd, env).filter((d) => !(grant && home && !isOutsideWin(home, abs(d)) && this.profileRelation(abs(d), grant) === "protected"));
       // Loopback is the install's mode on Windows: the runtime refuses a
       // session that asks for the other one, so the mode's wish never
       // reaches it (loopbackConflict tells the user).
@@ -1481,6 +1492,17 @@ export class SandboxController {
         return this.applyProfileNow(profile, true);
       }
       const code = (err as { code?: string }).code;
+      if (win && code === "profile_exclusion_read_grant") {
+        // A path of the mode reaches an excluded store once resolved (a
+        // junction, a browser store beneath a write root): nothing is granted.
+        this.warn = WINDOWS_PROFILE_CONFLICT_WARN;
+        if (this.hasUI) {
+          this.notifyFn(
+            `permission-mode: the runtime refused this mode's paths: ${errMsg(err)} Choose a narrower project directory, or take the path out of allowRead / allowWrite; see ${docRef("windowsProfile")}`,
+          );
+        }
+        return;
+      }
       if (win && code === "profile_grant_outdated") {
         this.warn = WINDOWS_PROFILE_GRANT_WARN;
         if (this.hasUI) {
