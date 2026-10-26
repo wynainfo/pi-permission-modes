@@ -78,7 +78,9 @@ export function normalizeBashToken(raw: string): string {
 export function pathPartOfToken(tok: string): string {
   const eq = tok.match(/^-{0,2}[A-Za-z0-9_.-]+=(.+)$/);
   if (eq) return eq[1];
-  if (tok.startsWith("-") && tok.includes("/")) return tok.slice(tok.indexOf("/"));
+  // `-C/etc`, `-I/usr/include`: a short flag with the value glued on. A token
+  // that merely starts with a dash (`--- which node/npm ---`, an echo label) is no flag.
+  if (/^-{1,2}[A-Za-z0-9]\S*\//.test(tok)) return tok.slice(tok.indexOf("/"));
   return tok;
 }
 

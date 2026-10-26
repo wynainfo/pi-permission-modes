@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A bash argument that starts with a dash but is no flag (an echo label
+  such as `--- which node/npm ---`) was read as a flag with a glued path
+  (`/npm`) and prompted as a path outside the project. Only a flag-shaped
+  token (`-C/etc`, `-I/usr/include`) carries a glued path now.
+
 ## [2.7.2]
 
 ### Changed

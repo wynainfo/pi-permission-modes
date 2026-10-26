@@ -74,6 +74,7 @@ test("normalizeBashToken / pathPartOfToken", () => {
   assert.equal(pathPartOfToken("-I/usr/include"), "/usr/include");
   assert.equal(pathPartOfToken("src/app.ts"), "src/app.ts");
   assert.equal(pathPartOfToken("-n"), "-n");
+  assert.equal(pathPartOfToken("--- which node/npm ---"), "--- which node/npm ---", "an echo label is no flag with a glued path");
 });
 
 test("heuristic: escaped, ANSI-C, $HOME, ~user, glued values, bare cd are escapes", () => {
