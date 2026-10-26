@@ -15,6 +15,8 @@ import {
   profileToConfig,
   readOnlyOverride,
   stockDefaultsFile,
+  effectiveClassifier,
+  tightenClassifier,
 } from "./config-load.ts";
 import { decide, decideDetailed } from "./resolve.ts";
 
@@ -51,13 +53,13 @@ function sandbox(opts: { global?: unknown; project?: unknown } = {}): {
   return { cwd, agentDir, errors, cleanup: () => rmSync(tmp, { recursive: true, force: true }) };
 }
 
-test("loadStockDefaults: reads the shipped JSON → four modes, correct defaults", () => {
+test("loadStockDefaults: reads the shipped JSON → five modes, correct defaults", () => {
   const errors: string[] = [];
   const c = loadStockDefaults((m) => errors.push(m));
   assert.equal(errors.length, 0, errors.join("; ")); // stock file present & valid
   assert.equal(c.defaultMode, "default");
-  assert.deepEqual(c.cycleOrder, ["default", "plan", "build", "yolo"]);
-  assert.deepEqual(Object.keys(c.modes).sort(), ["build", "default", "plan", "yolo"]);
+  assert.deepEqual(c.cycleOrder, ["default", "plan", "build", "auto", "yolo"]);
+  assert.deepEqual(Object.keys(c.modes).sort(), ["auto", "build", "default", "plan", "yolo"]);
   assert.ok(stockDefaultsFile().endsWith("permission-mode.defaults.json"));
 });
 
@@ -70,11 +72,11 @@ test("FALLBACK_CONFIG is a valid, safe single-mode config", () => {
   assert.equal(decide(d, "write", "x.ts"), "ask");
 });
 
-test("loadModeConfig: no files → the four built-in modes", () => {
+test("loadModeConfig: no files → the five built-in modes", () => {
   const s = sandbox();
   const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
   assert.equal(c.defaultMode, "default");
-  assert.deepEqual(Object.keys(c.modes).sort(), ["build", "default", "plan", "yolo"]);
+  assert.deepEqual(Object.keys(c.modes).sort(), ["auto", "build", "default", "plan", "yolo"]);
   assert.equal(s.errors.length, 0);
   s.cleanup();
 });
@@ -227,7 +229,7 @@ test("project: cannot add a mode or change defaults", () => {
 test("malformed JSON keeps prior layer and reports the error", () => {
   const s = sandbox({ global: "{ not valid json " });
   const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
-  assert.deepEqual(Object.keys(c.modes).sort(), ["build", "default", "plan", "yolo"]); // defaults intact
+  assert.deepEqual(Object.keys(c.modes).sort(), ["auto", "build", "default", "plan", "yolo"]); // defaults intact
   assert.ok(s.errors.some((e) => /could not parse/.test(e)));
   s.cleanup();
 });
@@ -304,7 +306,7 @@ test("profileToConfig output validates against the runtime's SandboxRuntimeConfi
     assert.doesNotThrow(() => runtimeSchema!.parse(readOnlyOverride(cfg, ["/tmp/pi/s1"])));
     checked.push(name);
   }
-  assert.deepEqual(checked, ["default", "plan", "build"]);
+  assert.deepEqual(checked, ["default", "plan", "build", "auto"]);
   // The README's strict-home shape (denyRead "~" with allowRead carve-outs) validates as well.
   const strict = profileToConfig({ ...stock.modes.build.sandbox, denyRead: ["~"], allowRead: [".", "/tmp/pi", "~/.cache"] });
   assert.doesNotThrow(() => runtimeSchema!.parse({ network: strict.network, filesystem: strict.filesystem }));
@@ -767,4 +769,76 @@ test("plan config: global strings are kept, wrong types and unknown keys warn, p
   const none = sandbox({});
   assert.equal(loadModeConfig(none.cwd, none.agentDir).plan, undefined);
   none.cleanup();
+});
+
+test("classifier: the stock Auto mode carries the block; global sets and sanitizes it; a project may only tighten", () => {
+  const stock = loadStockDefaults();
+  assert.deepEqual(stock.cycleOrder, ["default", "plan", "build", "auto", "yolo"]);
+  assert.deepEqual(stock.modes.auto.classifier, { model: "current", strictness: 0.5, onRefuse: "refuse" });
+  assert.deepEqual(stock.modes.auto.sandbox, stock.modes.build.sandbox, "Auto is Build plus the classifier");
+  assert.deepEqual(stock.modes.auto.permission, stock.modes.build.permission);
+  assert.equal(stock.modes.build.classifier, undefined);
+
+  const s = sandbox({
+    global: {
+      modes: {
+        auto: { classifier: { model: "local/gemma", strictness: 0.8, onRefuse: "ask", guidance: "trusted: *.wyna.ch", restrict: "r", bogus: 1, extra: true } },
+        build: { classifier: { strictness: 2, onRefuse: "maybe", model: 7, guidance: 3 } },
+        plan: { classifier: false },
+        yolo: { classifier: "yes" },
+      },
+    },
+    project: {
+      modes: {
+        auto: { classifier: { strictness: 0.9, onRefuse: "refuse", model: "x/y", guidance: "loosen me", restrict: "never /srv" } },
+        build: { classifier: { strictness: 0.1, onRefuse: "refuse" } },
+        default: { classifier: { strictness: 0.9 } },
+        plan: { classifier: false },
+      },
+    },
+  });
+  try {
+    const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+    // Global: typed fields kept, the rest warned.
+    assert.deepEqual(c.modes.auto.classifier, { model: "local/gemma", strictness: 0.9, onRefuse: "ask", guidance: "trusted: *.wyna.ch", restrict: "never /srv" });
+    assert.ok(s.errors.some((e) => /unknown key classifier\.bogus/.test(e)));
+    assert.deepEqual(c.modes.build.classifier, {}, "every field of build's block was invalid, and the project's refuse over refuse is a no-op");
+    assert.ok(s.errors.some((e) => /classifier\.strictness must be a number from 0 to 1/.test(e)));
+    assert.ok(s.errors.some((e) => /classifier\.onRefuse must be "refuse" or "ask"/.test(e)));
+    assert.equal(c.modes.plan.classifier, false);
+    assert.equal(c.modes.yolo.classifier, undefined);
+    assert.ok(s.errors.some((e) => /global mode "yolo": classifier must be an object or false/.test(e)));
+    // Project: strictness raised (0.9 over 0.8), onRefuse not back to refuse, model and guidance refused, restrict added.
+    assert.ok(s.errors.some((e) => /project mode "auto": project config cannot set classifier\.model/.test(e)));
+    assert.ok(s.errors.some((e) => /project config cannot set classifier\.guidance/.test(e)));
+    assert.ok(s.errors.some((e) => /classifier\.onRefuse back to refuse/.test(e)));
+    // The project cannot lower strictness below the default and gets the warning.
+    assert.ok(s.errors.some((e) => /project mode "build": project config cannot set classifier\.strictness below the global value/.test(e)));
+    // A mode without a classifier cannot be given one by a project.
+    assert.equal(c.modes.default.classifier, undefined);
+    assert.ok(s.errors.some((e) => /project mode "default": the mode has no classifier to tighten/.test(e)));
+    // false stays false.
+    assert.equal(c.modes.plan.classifier, false);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("classifier: a project may switch a mode's block off, and may switch refuse to ask", () => {
+  const s = sandbox({ project: { modes: { auto: { classifier: { onRefuse: "ask" } }, build: { classifier: false } } } });
+  try {
+    const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+    assert.deepEqual(c.modes.auto.classifier, { model: "current", strictness: 0.5, onRefuse: "ask" });
+    assert.equal(c.modes.build.classifier, undefined, "false over an absent block stays absent");
+    const t = sandbox({ project: { modes: { auto: { classifier: false } } } });
+    try {
+      assert.equal(loadModeConfig(t.cwd, t.agentDir).modes.auto.classifier, false);
+    } finally {
+      t.cleanup();
+    }
+    assert.deepEqual(effectiveClassifier({}), { model: "current", strictness: 0.5, onRefuse: "refuse" });
+    assert.deepEqual(tightenClassifier({ strictness: 0.2 }, { strictness: 0.2 }, "w", () => {}), { strictness: 0.2 }, "repeating the value is a no-op");
+  } finally {
+    s.cleanup();
+  }
 });

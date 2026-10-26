@@ -25,6 +25,9 @@ shape of the code.
 | `src/docs.ts` | Documentation references: the docs directory, the reference table hints point at, the prompt block |
 | `src/scratch.ts` | Per-session scratch directory and the age sweep |
 | `src/show-plan.ts`, `src/plan-render.ts`, `src/plan-approval.ts` | The `show_plan` tool, its renderer, one-step plan approval |
+| `src/auto/verdict.ts` | Auto mode, pure: what the classifier is asked (objective, boundary, trail, action), the answer parser, the strictness table, the cache, the circuit breaker, the messages |
+| `src/auto/precheck.ts` | Auto mode: the deterministic checks before the model (denyRead reads, pipe-to-shell, force push, agent-directory writes refuse; resolution and unseen-code facts) |
+| `src/auto/classifier.ts` | Auto mode: the model call (registry lookup, auth, the `report_verdict` tool, timeout and retry) |
 | `src/status.ts` | Footer indicator |
 | `src/modes.ts` | Persisted session state (`PermState`) |
 | `src/util.ts` | Tiny SDK-free helpers |
@@ -41,6 +44,11 @@ shape of the code.
    command, most restrictive across the chain. `bashGate` composes the action
    with the escape reason and the sandbox state into allow / prompt / block.
    A prompt goes through `promptAllow` (session grants, "Deny and block").
+   In a mode with a `classifier` block, `promptAllow` asks the judge first
+   (`src/auto`): cache, pre-checks, then the model; an allow passes, a
+   refusal blocks with the verdict or, with `onRefuse: "ask"` or a tripped
+   breaker, falls through to the prompt. The network ask callback does the
+   same for a host, with the commands in flight.
    An approved escape is remembered by tool call id and runs unsandboxed.
 3. **file tools**: a session block refuses first; then `decide` with the
    surface, the `path` gate, and `external_directory` when the path is

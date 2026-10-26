@@ -42,6 +42,7 @@ export const DOC_REFS = {
   windowsRevocation: "troubleshooting.md#tls-revocation-on-windows",
   windowsTools: "troubleshooting.md#per-user-tools-on-windows",
   shells: "shells.md#background-shells",
+  autoMode: "modes.md#auto-mode",
 } as const;
 
 export type DocRefKey = keyof typeof DOC_REFS;

@@ -171,6 +171,11 @@ grants with `/perm clear-approvals`.
 Session grants are user authority: they can reach past a project config's
 tightened rules.
 
+In Auto mode a classifier answers the asks instead of a prompt; its verdicts
+are cached per action for the session, a new prompt from you forgets the
+refusals, and `/perm clear-approvals` forgets them all. A session grant you
+gave is honored before any verdict ([modes.md, Auto mode](modes.md#auto-mode)).
+
 ## Deny and block
 
 A prompt for an out-of-project path (bash or a file tool) offers a fourth

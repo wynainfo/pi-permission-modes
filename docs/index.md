@@ -8,7 +8,7 @@ what you read to change the configuration.
 | You want to | Read |
 |---|---|
 | Know which file to edit, what a project config may change, why a warning about outdated defaults appears | [configuration.md](configuration.md) |
-| Understand the four stock modes, define your own, control which mode pi starts in, approve a plan | [modes.md](modes.md) |
+| Understand the five stock modes, define your own, control which mode pi starts in, approve a plan, let a classifier judge the asks (Auto) | [modes.md](modes.md) |
 | Write `allow` / `ask` / `deny` rules, understand why a tool call prompted or was blocked, protected paths, session grants, "Deny and block" | [permissions.md](permissions.md) |
 | Tune the OS sandbox: writable paths, denied reads, `allowRead` carve-outs, scratch directory, violations, platform notes | [sandbox.md](sandbox.md) |
 | Allow a host, understand the live network prompt and `/net`, authenticate git inside the sandbox | [network.md](network.md) |
@@ -28,8 +28,9 @@ model and known limitations), [CHANGELOG.md](../CHANGELOG.md),
 | `alt+n` | Toggle network filtering for the session (`Network: filtered` / `open`) |
 | `/perm <mode>` | Switch to a mode by name |
 | `/perm init` | Write a full copy of the stock defaults to the global config path |
-| `/perm clear-approvals` | Forget this session's "Allow for session" grants and blocks |
+| `/perm clear-approvals` | Forget this session's "Allow for session" grants, blocks and Auto verdicts |
 | `/perm blocks`, `/perm unblock <path>` | List or lift this session's "Deny and block" paths |
+| `/perm verdicts` | List this session's Auto verdicts |
 | `/net status`, `/net allow <domain...>`, `/net open`, `/net restrict`, `/net reset` | Network allowlist, session grants, the open toggle |
 | `/plan approve`, `/plan status` | Approve the pending plan, or name it |
 | `/sandbox` | Print the active sandbox configuration, or why the sandbox is unavailable |

@@ -5,9 +5,9 @@
 
 Switchable, **user-definable** permission modes for the [pi](https://pi.dev)
 coding agent. A mode bundles an **OS-level sandbox profile** with an
-**allow / ask / deny policy** for every tool the agent has. Four modes ship
-by default - **Default -> Plan Mode -> Build -> YOLO** - and you can retune
-them or add your own.
+**allow / ask / deny policy** for every tool the agent has. Five modes ship
+by default - **Default -> Plan Mode -> Build -> Auto -> YOLO** - and you can
+retune them or add your own.
 
 It is the most complete integration of Anthropic's `sandbox-runtime` for pi,
 with the usability work on top: one keystroke switches the mode, network
@@ -93,6 +93,7 @@ retuned, and you can add your own ([docs/modes.md](docs/modes.md)).
 | **Default** | Confirm every `bash`/`edit`/`write`; reads are free. Approved **in-project** `bash` runs **sandboxed** (writes confined to the project). |
 | **Plan Mode** | Reads are free; in-project `bash` runs **sandboxed read-only**, so only read commands work. The one mutation allowed without confirmation is creating or editing **Markdown** inside the project. A system-prompt addition steers the model to write a plan to `plan/<date>_<description>.md`, render it with the **`show_plan`** tool, and hand over: an **Accept / Decline** prompt follows the plan ([approving a plan](docs/modes.md#approving-a-plan)). |
 | **Build** | Reads, writes, and `bash` **inside the project** run with no confirmation; in-project `bash` runs **sandboxed**. |
+| **Auto** | Build, but what Build would ask you about is **judged by a classifier** (a small side model call) against your task: a green check or a red cross in the conversation instead of a prompt. The judge never sees the agent's reasoning or tool output; a refusal is final until you say otherwise ([docs/modes.md](docs/modes.md#auto-mode)). |
 | **YOLO** | Never prompts, never sandboxes, no protected-path backstop. Can do anything the current user can. |
 
 In every mode except YOLO: **out-of-project** access prompts; `bash` that
@@ -114,6 +115,7 @@ the network state: `Build (sandboxed in project dir, alt+m)  Network: filtered (
 | `alt+n`, `/net ...` | Toggle network filtering; allowlist, grants, denies |
 | `/perm init` | Write a full copy of the stock defaults to the global config |
 | `/perm clear-approvals`, `/perm blocks`, `/perm unblock <path>` | Session grants and "Deny and block" paths |
+| `/perm verdicts` | This session's Auto verdicts |
 | `/plan approve`, `/plan status` | Plan approval |
 | `/shells` | List and stop background shells |
 | `/sandbox` | The active sandbox configuration |
@@ -203,7 +205,7 @@ and the outdated-default warnings: [docs/configuration.md](docs/configuration.md
 |---|---|
 | [docs/index.md](docs/index.md) | Topic map, commands and shortcuts |
 | [docs/configuration.md](docs/configuration.md) | Files, layers, what a project config may change, keeping the global config current |
-| [docs/modes.md](docs/modes.md) | The stock modes, mode fields, start mode, plan approval, your own modes, strict home |
+| [docs/modes.md](docs/modes.md) | The stock modes, mode fields, start mode, plan approval, Auto mode and its classifier, your own modes, strict home |
 | [docs/permissions.md](docs/permissions.md) | Rules, pattern syntax, resolution, bash gating, protected paths, session grants, Deny and block |
 | [docs/sandbox.md](docs/sandbox.md) | Every sandbox key, scratch directory, violations, placeholders, platforms |
 | [docs/network.md](docs/network.md) | Allowlist, requesting access, grants, git authentication |

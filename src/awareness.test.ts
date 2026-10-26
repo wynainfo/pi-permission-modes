@@ -301,3 +301,14 @@ test("masksSshKeys: the most specific entry decides (an allow of ~ above a deny 
   const open = sandboxAwarenessPrompt(mode({}, { allowRead: ["~/.ssh"] }), { active: true })!;
   assert.doesNotMatch(open, /SSH keys are unreadable/);
 });
+
+test("classifier: the prompt flow bullet says the mode judges the asks itself and that a refusal is final", () => {
+  const mode = { label: "Auto", color: "warning", sandbox: { enabled: true, writable: true, allowWrite: ["."], network: { allowedDomains: ["a"] } }, permission: {}, classifier: { strictness: 0.5 } } as never;
+  const text = sandboxAwarenessPrompt(mode, { active: true }) ?? "";
+  assert.match(text, /judges each against the user's task automatically \(Auto verdict\)/);
+  assert.match(text, /A refused verdict is final for this session/);
+  assert.match(text, /docs\/modes\.md#auto-mode/);
+  assert.doesNotMatch(text, /the user is asked for permission automatically/);
+  const plain = sandboxAwarenessPrompt({ ...(mode as object), classifier: undefined } as never, { active: true }) ?? "";
+  assert.match(plain, /the user is asked for permission automatically/);
+});

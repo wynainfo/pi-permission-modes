@@ -62,6 +62,23 @@ you can rely on it appropriately. The reference for every setting is in
   escape - executing it is the project's intent and the sandbox still confines
   the run. Symlinks to outside directories or non-executable files remain
   escapes, and the file tools always follow symlinks.
+- **Auto mode is a model, not a boundary.** In Auto the prompts Build would
+  show are answered by a classifier. It can be wrong in both directions; the
+  published misses in other harnesses are consent-scope errors ("clean up the
+  PR" does not name a force push) rather than missed danger, which is why
+  authorization is scored narrowly and a hard floor never passes the judge
+  (`onRefuse: "ask"` hands such a hit to you at a prompt). The judge
+  sees your own messages (the first and the last three), the approved plan,
+  the boundary, the agent's last ten tool calls and the action; never the
+  agent's prose or a tool result, so injected text cannot reach it, but a
+  task that changed mid-conversation must be in those messages. A chain of
+  individually benign steps (the published Claude Code auto mode bypass: a
+  planted module shadowing a standard-library import of a script the agent
+  wrote itself) is invisible to any per-action judge; in Auto that chain
+  still runs inside the Build sandbox and meets the network allowlist. An
+  allowed escape runs unsandboxed, like one you approve. The verdict's
+  reason is model output shown to the model; a project config cannot set
+  the judge's `guidance` or its `model`, only tighten.
 - **File tools aren't OS-sandboxed.** `read`/`edit`/`write`/… are governed by the
   policy engine and path checks (out-of-project prompt, protected-path backstop,
   per-surface allow/ask/deny), not bubblewrap.

@@ -6,7 +6,9 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "$comment": {
       "type": "string",
       "description": "Free-form note, ignored by the loader. /perm init writes the copy's provenance here."
@@ -22,20 +24,30 @@
     "cycleOrder": {
       "type": "array",
       "description": "Order modes are cycled with alt+m; also the display order.",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "modes": {
       "type": "object",
-      "description": "Map of mode name → mode definition.",
-      "additionalProperties": { "$ref": "#/$defs/mode" }
+      "description": "Map of mode name \u2192 mode definition.",
+      "additionalProperties": {
+        "$ref": "#/$defs/mode"
+      }
     },
     "plan": {
       "type": "object",
       "additionalProperties": false,
       "description": "One-step plan approval (the Accept / Decline prompt after show_plan, the confirm on switching to the approve mode, /plan approve). Global config only.",
       "properties": {
-        "approveMode": { "type": "string", "description": "Mode to switch to when a plan is accepted. Default: build." },
-        "approveMessage": { "type": "string", "description": "User message that starts the implementing turn; {path} is replaced by the plan path. Default: The plan in `{path}` is approved. Implement it now." }
+        "approveMode": {
+          "type": "string",
+          "description": "Mode to switch to when a plan is accepted. Default: build."
+        },
+        "approveMessage": {
+          "type": "string",
+          "description": "User message that starts the implementing turn; {path} is replaced by the plan path. Default: The plan in `{path}` is approved. Implement it now."
+        }
       }
     },
     "shells": {
@@ -43,39 +55,72 @@
       "additionalProperties": false,
       "description": "Background shells (bash with run_in_background: true). Global config; a project may only tighten (enabled false, a lower maxConcurrent, a quieter notify).",
       "properties": {
-        "enabled": { "type": "boolean", "description": "false refuses run_in_background with a sentence (never a silent foreground run). Default true." },
-        "maxConcurrent": { "type": "integer", "minimum": 0, "description": "Running background shells at most; a further start is refused. Default 4." },
-        "notify": { "type": "string", "enum": ["wake", "note", "none"], "description": "How the model learns that a shell ended: wake = a turn of its own (default), note = a note in the next turn, none = it polls with bash_output." }
+        "enabled": {
+          "type": "boolean",
+          "description": "false refuses run_in_background with a sentence (never a silent foreground run). Default true."
+        },
+        "maxConcurrent": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Running background shells at most; a further start is refused. Default 4."
+        },
+        "notify": {
+          "type": "string",
+          "enum": [
+            "wake",
+            "note",
+            "none"
+          ],
+          "description": "How the model learns that a shell ended: wake = a turn of its own (default), note = a note in the next turn, none = it polls with bash_output."
+        }
       }
     }
   },
   "$defs": {
     "action": {
-      "enum": ["allow", "ask", "deny"],
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ],
       "description": "allow = pass through; ask = prompt; deny = block."
     },
     "rule": {
       "description": "A bare action, or an action plus an optional human-readable reason shown to the agent when the rule blocks (deny) or when an ask is refused. Global config only: a project config's reasons are ignored.",
       "oneOf": [
-        { "$ref": "#/$defs/action" },
+        {
+          "$ref": "#/$defs/action"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["action"],
+          "required": [
+            "action"
+          ],
           "properties": {
-            "action": { "$ref": "#/$defs/action" },
-            "reason": { "type": "string", "maxLength": 500, "description": "Why this is blocked and what to do instead." }
+            "action": {
+              "$ref": "#/$defs/action"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 500,
+              "description": "Why this is blocked and what to do instead."
+            }
           }
         }
       ]
     },
     "surfaceValue": {
-      "description": "An action, or a glob pattern→rule map (last match wins; '*' is the catch-all).",
+      "description": "An action, or a glob pattern\u2192rule map (last match wins; '*' is the catch-all).",
       "oneOf": [
-        { "$ref": "#/$defs/action" },
+        {
+          "$ref": "#/$defs/action"
+        },
         {
           "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/rule" }
+          "additionalProperties": {
+            "$ref": "#/$defs/rule"
+          }
         }
       ]
     },
@@ -84,30 +129,85 @@
       "additionalProperties": false,
       "description": "OS sandbox profile for the mode.",
       "properties": {
-        "enabled": { "type": "boolean", "description": "false = run bash unsandboxed (YOLO-style)." },
-        "writable": { "type": "boolean", "description": "false = bash runs read-only (Plan-style)." },
-        "askOnBlockedHost": { "type": "boolean", "description": "Ask the user live when bash tries a host outside the allowlist (default true). false = silent deny. Projects may set false, never true." },
-        "allowLocalBinding": { "type": "boolean", "description": "A sandboxed command may listen on local ports and this machine may connect to them while the command runs (default true). macOS: also direct loopback TCP from sandboxed bash, past the proxy (database drivers). Linux: no effect until managed jobs. Windows: false is not enforced. Projects may set false, never true." },
-        "allowWrite": { "type": "array", "items": { "type": "string" } },
-        "denyWrite": { "type": "array", "items": { "type": "string" } },
-        "denyRead": { "type": "array", "items": { "type": "string" } },
-        "allowRead": { "type": "array", "items": { "type": "string" }, "description": "Paths readable again inside a denyRead region (deny-then-allow). Projects may only remove entries." },
+        "enabled": {
+          "type": "boolean",
+          "description": "false = run bash unsandboxed (YOLO-style)."
+        },
+        "writable": {
+          "type": "boolean",
+          "description": "false = bash runs read-only (Plan-style)."
+        },
+        "askOnBlockedHost": {
+          "type": "boolean",
+          "description": "Ask the user live when bash tries a host outside the allowlist (default true). false = silent deny. Projects may set false, never true."
+        },
+        "allowLocalBinding": {
+          "type": "boolean",
+          "description": "A sandboxed command may listen on local ports and this machine may connect to them while the command runs (default true). macOS: also direct loopback TCP from sandboxed bash, past the proxy (database drivers). Linux: no effect until managed jobs. Windows: false is not enforced. Projects may set false, never true."
+        },
+        "allowWrite": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denyWrite": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denyRead": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowRead": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths readable again inside a denyRead region (deny-then-allow). Projects may only remove entries."
+        },
         "network": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "allowedDomains": { "type": "array", "items": { "type": "string" } },
-            "deniedDomains": { "type": "array", "items": { "type": "string" } }
+            "allowedDomains": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "deniedDomains": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
-        "insideRoots": { "type": "array", "items": { "type": "string" }, "description": "Roots the bash escape heuristic treats as inside (remote paths in ssh commands, say): a path under one does not prompt as outside the project, and the command runs sandboxed as usual. Bash only; grants no file-tool or sandbox access. Projects may remove entries, never add." },
+        "insideRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Roots the bash escape heuristic treats as inside (remote paths in ssh commands, say): a path under one does not prompt as outside the project, and the command runs sandboxed as usual. Bash only; grants no file-tool or sandbox access. Projects may remove entries, never add."
+        },
         "macos": {
           "type": "object",
           "additionalProperties": false,
           "description": "macOS-only runtime options, off unless set and without effect elsewhere. Projects may set a key to false, never true.",
           "properties": {
-            "enableWeakerNetworkIsolation": { "type": "boolean", "description": "Let Go programs (gh, kubectl, terraform, gcloud) verify TLS by allowing the trustd lookup. trustd fetches revocation and issuer URLs outside the proxy, so this is an exfiltration channel." },
-            "allowLocalBinding": { "type": "boolean", "description": "The 2.5.0 spelling of the top-level sandbox.allowLocalBinding; still read, and the top-level value wins when both are set." }
+            "enableWeakerNetworkIsolation": {
+              "type": "boolean",
+              "description": "Let Go programs (gh, kubectl, terraform, gcloud) verify TLS by allowing the trustd lookup. trustd fetches revocation and issuer URLs outside the proxy, so this is an exfiltration channel."
+            },
+            "allowLocalBinding": {
+              "type": "boolean",
+              "description": "The 2.5.0 spelling of the top-level sandbox.allowLocalBinding; still read, and the top-level value wins when both are set."
+            }
           }
         },
         "linux": {
@@ -115,7 +215,10 @@
           "additionalProperties": false,
           "description": "Linux-only runtime options, off unless set and without effect elsewhere. Projects may set a key to false, never true.",
           "properties": {
-            "allowNestedUserNamespaces": { "type": "boolean", "description": "Let a sandboxed command create user and mount namespaces of its own, which Chromium and Electron (Playwright, Puppeteer), rootless podman and buildah, and unshare -r need. Widens the kernel attack surface available to a sandboxed process." }
+            "allowNestedUserNamespaces": {
+              "type": "boolean",
+              "description": "Let a sandboxed command create user and mount namespaces of its own, which Chromium and Electron (Playwright, Puppeteer), rootless podman and buildah, and unshare -r need. Widens the kernel attack surface available to a sandboxed process."
+            }
           }
         }
       }
@@ -125,32 +228,135 @@
       "additionalProperties": false,
       "description": "Per-surface allow/ask/deny policy.",
       "properties": {
-        "path": { "$ref": "#/$defs/surfaceValue", "description": "Cross-cutting gate over ALL file access; a deny here overrides per-tool allows." },
-        "external_directory": { "$ref": "#/$defs/surfaceValue", "description": "Access to paths outside the project." },
-        "read": { "$ref": "#/$defs/surfaceValue" },
-        "write": { "$ref": "#/$defs/surfaceValue" },
-        "edit": { "$ref": "#/$defs/surfaceValue" },
-        "grep": { "$ref": "#/$defs/surfaceValue" },
-        "find": { "$ref": "#/$defs/surfaceValue" },
-        "ls": { "$ref": "#/$defs/surfaceValue" },
-        "bash": { "$ref": "#/$defs/surfaceValue", "description": "Matched per extracted command (name + args)." },
-        "web_search": { "$ref": "#/$defs/surfaceValue" },
-        "tool": { "$ref": "#/$defs/surfaceValue", "description": "Any non-builtin (extension) tool, by name." },
-        "skill": { "$ref": "#/$defs/surfaceValue", "description": "Skills, by name (gated at /skill:<name>)." }
+        "path": {
+          "$ref": "#/$defs/surfaceValue",
+          "description": "Cross-cutting gate over ALL file access; a deny here overrides per-tool allows."
+        },
+        "external_directory": {
+          "$ref": "#/$defs/surfaceValue",
+          "description": "Access to paths outside the project."
+        },
+        "read": {
+          "$ref": "#/$defs/surfaceValue"
+        },
+        "write": {
+          "$ref": "#/$defs/surfaceValue"
+        },
+        "edit": {
+          "$ref": "#/$defs/surfaceValue"
+        },
+        "grep": {
+          "$ref": "#/$defs/surfaceValue"
+        },
+        "find": {
+          "$ref": "#/$defs/surfaceValue"
+        },
+        "ls": {
+          "$ref": "#/$defs/surfaceValue"
+        },
+        "bash": {
+          "$ref": "#/$defs/surfaceValue",
+          "description": "Matched per extracted command (name + args)."
+        },
+        "web_search": {
+          "$ref": "#/$defs/surfaceValue"
+        },
+        "tool": {
+          "$ref": "#/$defs/surfaceValue",
+          "description": "Any non-builtin (extension) tool, by name."
+        },
+        "skill": {
+          "$ref": "#/$defs/surfaceValue",
+          "description": "Skills, by name (gated at /skill:<name>)."
+        }
       }
     },
     "mode": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "label": { "type": "string", "description": "Footer label." },
-        "color": { "enum": ["muted", "mdLink", "accent", "error"], "description": "Footer label color." },
-        "systemPrompt": { "type": "string", "description": "System prompt to inject; '@plan' resolves to the dated Plan-mode prompt." },
-        "injectSandboxInfo": { "type": "boolean", "description": "Inject the mode's sandbox boundaries (writable paths, denied reads, network allowlist) into the system prompt each turn (default true). Modes with sandbox.enabled:false never inject." },
-        "sandbox": { "$ref": "#/$defs/sandbox" },
-        "permission": { "$ref": "#/$defs/permission" },
-        "hideTools": { "type": "array", "items": { "type": "string" }, "description": "Tools hidden from the model in this mode." },
-        "bypassProtectedPaths": { "type": "boolean", "description": "Skip the .git/.env/dotfile write backstop (only trusted modes)." }
+        "label": {
+          "type": "string",
+          "description": "Footer label."
+        },
+        "color": {
+          "enum": [
+            "muted",
+            "mdLink",
+            "accent",
+            "warning",
+            "success",
+            "error"
+          ],
+          "description": "Footer label color."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System prompt to inject; '@plan' resolves to the dated Plan-mode prompt."
+        },
+        "injectSandboxInfo": {
+          "type": "boolean",
+          "description": "Inject the mode's sandbox boundaries (writable paths, denied reads, network allowlist) into the system prompt each turn (default true). Modes with sandbox.enabled:false never inject."
+        },
+        "sandbox": {
+          "$ref": "#/$defs/sandbox"
+        },
+        "permission": {
+          "$ref": "#/$defs/permission"
+        },
+        "hideTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tools hidden from the model in this mode."
+        },
+        "bypassProtectedPaths": {
+          "type": "boolean",
+          "description": "Skip the .git/.env/dotfile write backstop (only trusted modes)."
+        },
+        "classifier": {
+          "description": "The Auto classifier: a model judges this mode's asks (bash escapes, out-of-project file access, network hosts, web search, first-use tools and skills) against the user's task instead of prompting. Absent: the mode prompts. false: the mode prompts as if the block were absent (a project may set it). A project may only raise strictness, switch onRefuse to ask, or add restrict.",
+          "oneOf": [
+            {
+              "const": false
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "description": "\"current\" (the session's model, default) or \"<provider>/<model-id>\" from pi's model registry. A small fast model with reasoning off is recommended. Global only."
+                },
+                "strictness": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "0 lenient to 1 strict; the threshold the verdict scores are held against. Default 0.5. A project may only raise it."
+                },
+                "onRefuse": {
+                  "type": "string",
+                  "enum": [
+                    "refuse",
+                    "ask"
+                  ],
+                  "description": "refuse (default): a refusal blocks the action with the verdict. ask: the usual prompt appears with the verdict as a second line. A project may switch refuse to ask."
+                },
+                "guidance": {
+                  "type": "string",
+                  "maxLength": 2000,
+                  "description": "Free text the judge reads as what is normal here (trusted hosts and orgs, sibling repos, a staging target). Global only."
+                },
+                "restrict": {
+                  "type": "string",
+                  "maxLength": 2000,
+                  "description": "Free text that may only move verdicts toward refuse. The one classifier text a project config may set."
+                }
+              }
+            }
+          ]
+        }
       }
     }
   }

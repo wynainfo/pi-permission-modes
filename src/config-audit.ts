@@ -153,9 +153,23 @@ export function defaultsChangedSince(
   if (old === undefined) return [];
   const a = configLeaves(old);
   const b = configLeaves(current.defaults);
+  // A mode that one side lacks altogether is one entry, not every leaf of it.
+  const modesOf = (v: unknown): Set<string> => new Set(Object.keys(((v as { modes?: Record<string, unknown> } | undefined)?.modes ?? {}) as object));
+  const oldModes = modesOf(old);
+  const newModes = modesOf(current.defaults);
   const changed: string[] = [];
+  const whole = new Set<string>();
   for (const p of new Set([...a.keys(), ...b.keys()])) {
-    if (!sameValue(a.get(p), b.get(p))) changed.push(p);
+    if (sameValue(a.get(p), b.get(p))) continue;
+    const m = /^modes\.([^.]+)\./.exec(p)?.[1];
+    if (m !== undefined && oldModes.has(m) !== newModes.has(m)) {
+      if (!whole.has(m)) {
+        whole.add(m);
+        changed.push(`modes.${m} (${newModes.has(m) ? "new" : "removed"} mode)`);
+      }
+      continue;
+    }
+    changed.push(p);
   }
   return changed;
 }

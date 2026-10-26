@@ -86,7 +86,10 @@ export const SURFACES: Surface[] = [
 export const FILE_SURFACES: Surface[] = ["read", "write", "edit", "grep", "find", "ls", "bash"];
 
 /** Footer label colors (semantic theme tokens, no icons). */
-export type ModeColor = "muted" | "mdLink" | "accent" | "error";
+export type ModeColor = "muted" | "mdLink" | "accent" | "warning" | "success" | "error";
+
+/** The valid `color` values, for the loader. */
+export const MODE_COLORS: readonly ModeColor[] = ["muted", "mdLink", "accent", "warning", "success", "error"];
 
 /**
  * The OS-sandbox profile for a mode. `enabled:false` runs bash unsandboxed
@@ -192,6 +195,14 @@ export interface ModeDef {
    */
   bypassProtectedPaths?: boolean;
   /**
+   * The Auto classifier (src/auto): a model judges the asks of this mode
+   * (bash escapes, out-of-project file access, network hosts, web search,
+   * first-use tools and skills) against the user's task instead of
+   * prompting. Absent: the mode prompts as usual. `false` (a project config
+   * may set it): the mode prompts as if the block were absent.
+   */
+  classifier?: ClassifierConfig | false;
+  /**
    * Internal (NOT part of the JSON schema): a project config's tighten-only
    * permission overlay, set by the loader. The resolver folds it in as an extra
    * most-restrictive layer, so it can only tighten the base policy, never loosen
@@ -199,6 +210,30 @@ export interface ModeDef {
    */
   projectOverlay?: Partial<Record<Surface, SurfaceValue>>;
 }
+
+/** What happens when the classifier refuses: the action is blocked with the verdict, or the user is asked with the verdict shown. */
+export const ON_REFUSE = ["refuse", "ask"] as const;
+export type OnRefuse = (typeof ON_REFUSE)[number];
+
+/**
+ * The classifier block of a mode (`classifier`). Global config sets it; a
+ * project config may only tighten it: raise `strictness`, switch `onRefuse`
+ * to `ask`, add a `restrict` text, or set the block to `false`.
+ */
+export interface ClassifierConfig {
+  /** `"current"` (the session's model) or `"<provider>/<model-id>"` from pi's model registry. Default `"current"`. Global only. */
+  model?: string;
+  /** 0 (lenient) to 1 (strict), the threshold the verdict scores are held against. Default 0.5. A project may only raise it. */
+  strictness?: number;
+  /** `"refuse"` (default): a refusal blocks the action with the verdict. `"ask"`: the usual prompt appears with the verdict as a second line. A project may switch refuse to ask. */
+  onRefuse?: OnRefuse;
+  /** Free text the judge reads as "what is normal here" (trusted hosts and orgs, sibling repos). Global only. */
+  guidance?: string;
+  /** Free text that may only move verdicts toward refuse. The one text a project config may set. */
+  restrict?: string;
+}
+
+export const CLASSIFIER_DEFAULTS: Required<Pick<ClassifierConfig, "model" | "strictness" | "onRefuse">> = { model: "current", strictness: 0.5, onRefuse: "refuse" };
 
 /** How the model learns that a background shell ended: a turn of its own, a note in the next turn, or not at all (it polls). */
 export const SHELL_NOTIFY = ["wake", "note", "none"] as const;

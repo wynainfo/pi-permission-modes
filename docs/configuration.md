@@ -7,7 +7,7 @@ layer on top of each other.
 
 | Layer | Path | Authority |
 |---|---|---|
-| Stock defaults | `permission-mode.defaults.json`, shipped with the extension | The baseline: the four built-in modes |
+| Stock defaults | `permission-mode.defaults.json`, shipped with the extension | The baseline: the five built-in modes |
 | Global config | `~/.pi/agent/permission-mode/permission-mode.json` | Full authority: redefine built-in modes, add modes, set `defaultMode` and `cycleOrder`, tune plan approval |
 | Project config | `<project>/.pi/permission-mode.json` | Tighten-only: may only make an existing mode stricter |
 
@@ -65,9 +65,12 @@ as the loader enforces them (`src/config-load.ts`, `tightenSandbox` and
   `notify` (`wake` to `note` to `none`); anything looser is ignored with a
   warning.
   Each is ignored with a warning.
-- Per mode, only `sandbox` and `permission` are read. `label`, `color`,
-  `systemPrompt`, `hideTools`, `injectSandboxInfo`, and `bypassProtectedPaths`
-  from a project are ignored.
+- Per mode, only `sandbox`, `permission` and `classifier` are read. `label`,
+  `color`, `systemPrompt`, `hideTools`, `injectSandboxInfo`, and
+  `bypassProtectedPaths` from a project are ignored.
+- In `classifier` it may raise `strictness`, switch `onRefuse` to `ask`, add
+  a `restrict` text, or set the block to `false`; `model` and `guidance` are
+  ignored with a warning ([modes.md, Auto mode](modes.md#auto-mode)).
 - `sandbox.enabled` cannot change (neither off nor on). `writable` may be set
   to `false`, never back to `true`. `askOnBlockedHost` may be set to `false`,
   never to `true`.
@@ -126,7 +129,7 @@ until the shipped defaults change again.
 {
   "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
   "defaultMode": "default",
-  "cycleOrder": ["default", "plan", "build", "yolo"],
+  "cycleOrder": ["default", "plan", "build", "auto", "yolo"],
   "plan": { "approveMode": "build" },
   "modes": {
     "default": {                        // values here are illustrative - run /perm init for the real defaults

@@ -6,6 +6,36 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Auto mode.** A fifth stock mode between Build and YOLO: Build, but what
+  Build would ask you about (a bash escape, a file tool outside the project,
+  a host outside the allowlist, a web search, a first-use tool or skill) is
+  judged by a classifier, a small side call to a model, against what you
+  asked for in this session. The judge sees your own messages, the approved
+  plan, the boundary, the agent's recent tool calls and the action as data;
+  never the agent's reasoning or a tool result. It answers two scores,
+  `risk` and `authorization`, and the mode's `strictness` decides what
+  passes; a hard floor (credentials, exfiltration, pipe-to-shell, force
+  push, this extension's own configuration) never passes, and deterministic
+  pre-checks refuse the obvious cases without a call (with `onRefuse:
+  "ask"` they reach you as a prompt). Every verdict is shown in the
+  conversation right after the tool call, a green check mark or a red
+  cross, folded like tool output (click or ctrl+o expands it; verdicts
+  with one outcome in a turn share a line), visible to you and not to the
+  model; `/perm verdicts` lists them, `<scratch>/verdicts.log` keeps
+  them. A refusal is final for the
+  session until you say otherwise in chat; a classifier failure refuses with
+  its own message; three refusals in a row or twenty in a session hand the
+  asks back to you. Network verdicts are per command. The `classifier` block
+  (`model`, `strictness`, `onRefuse`, `guidance`, `restrict`) works on any
+  mode; a project config may only tighten it. `docs/modes.md`, "Auto mode".
+- Mode colors `warning` and `success` for `color`.
+
+### Changed
+- The stock `cycleOrder` is `default, plan, build, auto, yolo`. A global
+  config that pins its own order keeps it; the defaults audit names the
+  change once.
+
 ### Fixed
 
 - A bash argument that starts with a dash but is no flag (an echo label

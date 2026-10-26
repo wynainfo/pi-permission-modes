@@ -55,3 +55,12 @@ test("updateStatus: the warn is suppressed under --no-sandbox, and a mode withou
   updateStatus(c as never, mode({ enabled: true, writable: true, network: { allowedDomains: ["a.com"] } }), { ready: false, warn: undefined, disabled: false }, true);
   assert.equal(c.status, "Build (alt+m)  Network: open", "not ready and no reason yet: plain, and the open toggle is not shown as a chip");
 });
+
+test("updateStatus: a pending verdict shows (judging...) in place of the sandbox text", () => {
+  const c = ctx();
+  const mode = { label: "Auto", color: "warning", sandbox: { enabled: true, writable: true, network: { allowedDomains: ["a"] } }, permission: {} } as never;
+  updateStatus(c as never, mode, { ready: true, warn: undefined, disabled: false }, false, { judging: true });
+  assert.match(c.status, /^Auto \(judging\.\.\.\)  Network: filtered/);
+  updateStatus(c as never, mode, { ready: true, warn: undefined, disabled: false }, false, { judging: false });
+  assert.match(c.status, /^Auto \(sandboxed in project dir, alt\+m\)/);
+});

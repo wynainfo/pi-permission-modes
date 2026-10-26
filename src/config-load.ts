@@ -27,7 +27,12 @@ import { fileURLToPath } from "node:url";
 import { docRef } from "./docs.ts";
 import type { PlanApprovalConfig } from "./plan-approval.ts";
 import {
+  CLASSIFIER_DEFAULTS,
+  type ClassifierConfig,
   MAX_RULE_REASON,
+  MODE_COLORS as COLORS,
+  ON_REFUSE,
+  type OnRefuse,
   type Action,
   LINUX_KEYS,
   type LinuxOptions,
@@ -83,7 +88,7 @@ export function hasMode(modes: Record<string, unknown>, name: unknown): name is 
 }
 
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
-const MODE_COLORS = new Set(["muted", "mdLink", "accent", "error"]);
+const MODE_COLORS = new Set<string>(COLORS);
 
 /**
  * Keep only well-typed sandbox fields from a raw override, warning about the
@@ -451,6 +456,11 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
       onError(`permission-mode: ignoring hideTools in ${where}: must be a string array`);
       delete m.hideTools;
     }
+    if (raw.classifier !== undefined) {
+      const c = sanitizeClassifier(raw.classifier, where, onError);
+      if (c === undefined) delete m.classifier;
+      else m.classifier = c;
+    }
     if (hasMode(modes, name)) {
       modes[name] = mergeMode(modes[name], m);
     } else {
@@ -484,6 +494,83 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
   const plan = sanitizePlan(over.plan, onError) ?? base.plan;
   const shells = sanitizeShells(over.shells, "global config", onError) ?? base.shells;
   return { defaultMode, cycleOrder, modes, ...(plan ? { plan } : {}), ...(shells ? { shells } : {}) };
+}
+
+/** The longest `classifier.guidance` and `classifier.restrict` texts kept (the prompt is on every verdict). */
+export const MAX_CLASSIFIER_TEXT = 2000;
+
+/**
+ * A mode's `classifier` block: `false`, or typed fields only, anything else
+ * dropped with a warning. Used for both layers; the project rules are
+ * applied afterwards by `tightenClassifier`.
+ */
+export function sanitizeClassifier(raw: unknown, where: string, onError: OnError): ClassifierConfig | false | undefined {
+  if (raw === false) return false;
+  if (!isPlainObject(raw)) {
+    onError(`permission-mode: ${where}: classifier must be an object or false; ignoring`);
+    return undefined;
+  }
+  const out: ClassifierConfig = {};
+  const bad = (k: string, what: string) => onError(`permission-mode: ${where}: classifier.${k} ${what}; ignoring`);
+  for (const [k, v] of safeEntries(raw)) {
+    switch (k) {
+      case "model":
+        if (typeof v === "string" && v.trim()) out.model = v.trim();
+        else bad(k, 'must be "current" or "provider/model-id"');
+        break;
+      case "strictness":
+        if (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1) out.strictness = v;
+        else bad(k, "must be a number from 0 to 1");
+        break;
+      case "onRefuse":
+        if (typeof v === "string" && (ON_REFUSE as readonly string[]).includes(v)) out.onRefuse = v as OnRefuse;
+        else bad(k, 'must be "refuse" or "ask"');
+        break;
+      case "guidance":
+      case "restrict":
+        if (typeof v === "string") out[k] = v.length > MAX_CLASSIFIER_TEXT ? v.slice(0, MAX_CLASSIFIER_TEXT) : v;
+        else bad(k, "must be a string");
+        break;
+      default:
+        onError(`permission-mode: ${where}: unknown key classifier.${k}; ignoring`);
+    }
+  }
+  return out;
+}
+
+/** The classifier block with the defaults filled in. */
+export function effectiveClassifier(cfg: ClassifierConfig): Required<Pick<ClassifierConfig, "model" | "strictness" | "onRefuse">> & ClassifierConfig {
+  return { ...CLASSIFIER_DEFAULTS, ...cfg };
+}
+
+/**
+ * A project's `classifier` may only tighten: raise `strictness`, switch
+ * `onRefuse` from refuse to ask (a human in the loop is the stricter setting
+ * for the agent), add a `restrict` text, or set the block to `false` (the
+ * mode then prompts as if it had none). It may not pick the model (that
+ * would route the user's prompts to a provider of the repository's
+ * choosing) or set `guidance`. A project block on a mode without one adds
+ * nothing: there is no classifier to tighten.
+ */
+export function tightenClassifier(base: ClassifierConfig | false | undefined, over: ClassifierConfig | false, where: string, onError: OnError): ClassifierConfig | false | undefined {
+  const loosen = (k: string) => onError(`permission-mode: ${where}: project config cannot set classifier.${k}; ignoring (see ${docRef("projectConfig")})`);
+  if (over === false) return base === undefined ? undefined : false;
+  if (base === undefined || base === false) {
+    if (Object.keys(over).length > 0) onError(`permission-mode: ${where}: the mode has no classifier to tighten; ignoring (see ${docRef("projectConfig")})`);
+    return base;
+  }
+  const eff = effectiveClassifier(base);
+  const out: ClassifierConfig = { ...base };
+  if (over.model !== undefined) loosen("model");
+  if (over.guidance !== undefined) loosen("guidance");
+  if (over.strictness !== undefined) {
+    if (over.strictness >= eff.strictness) out.strictness = over.strictness;
+    else loosen("strictness below the global value");
+  }
+  if (over.onRefuse === "ask") out.onRefuse = "ask";
+  else if (over.onRefuse === "refuse" && eff.onRefuse === "ask") loosen("onRefuse back to refuse");
+  if (over.restrict !== undefined) out.restrict = over.restrict;
+  return out;
 }
 
 /** The top-level `shells` block: typed fields only, anything else dropped with a warning. */
@@ -651,12 +738,21 @@ function applyProject(config: PermissionModeConfig, project: unknown, onError: O
         continue;
       }
       if (raw.sandbox !== undefined) base.sandbox = tightenSandbox(base.sandbox, raw.sandbox, where, onError);
+      if (raw.classifier !== undefined) {
+        const over = sanitizeClassifier(raw.classifier, where, onError);
+        if (over !== undefined) {
+          const tightened = tightenClassifier(base.classifier, over, where, onError);
+          if (tightened === undefined) delete base.classifier;
+          else base.classifier = tightened;
+        }
+      }
       if (raw.permission !== undefined) {
         // Attach as a most-restrictive overlay - provably tighten-only.
         base.projectOverlay = cleanPermission(raw.permission, where, onError, false) as ModeDef["permission"];
       }
       // label/color/systemPrompt/hideTools/bypassProtectedPaths from a project are
       // ignored: they're cosmetic or could loosen, neither of which a project may do.
+      // classifier is tighten-only (tightenClassifier).
     } catch (e) {
       // Defense in depth: a project file must never take the loader down.
       onError(`permission-mode: ignoring ${where}: ${e instanceof Error ? e.message : String(e)}`);

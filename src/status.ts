@@ -28,16 +28,19 @@ export function updateStatus(
     busy?: string;
     /** Background shells running (named while a profile is pending on them). */
     shellsRunning?: number;
+    /** Auto: a verdict is pending (the tool call waits for the classifier). */
+    judging?: boolean;
   } = {},
 ): void {
-  const { busy, shellsRunning = 0 } = extra;
+  const { busy, shellsRunning = 0, judging = false } = extra;
   const t = ctx.ui.theme;
   const enforcing = mode.sandbox.enabled && sandbox.ready;
   let status = t.fg(mode.color, mode.label);
   // A profile switch in flight (the runtime re-initializes; on Windows it
   // re-stamps permission entries over the project) is marked: the mode has
   // changed, the sandbox follows in a moment.
-  if (busy) status += " " + t.fg("warning", `(sandbox: ${busy})`);
+  if (judging) status += " " + t.fg("warning", "(judging...)");
+  else if (busy) status += " " + t.fg("warning", `(sandbox: ${busy})`);
   else if (enforcing && sandbox.pendingProfile) status += " " + t.fg("warning", `(sandbox profile pending: ${shellsRunning} shell(s))`);
   else if (enforcing && sandbox.switching) status += " " + t.fg("warning", "(applying sandbox profile...)");
   else status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");

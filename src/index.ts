@@ -4,7 +4,7 @@
  * Switchable, data-driven permission modes (cycle with alt+m or /perm). A MODE
  * is a JSON bundle of a sandbox profile + an allow/ask/deny permission policy +
  * UI metadata, defined in `schema.ts` (built-in defaults) and overridable in
- * `permission-mode.json`. The four shipped modes:
+ * `permission-mode.json`. The five shipped modes:
  *
  *   Default - confirm bash/edit/write; approved in-project bash runs sandboxed
  *             (writable), approved out-of-project runs UNSANDBOXED.
@@ -14,6 +14,8 @@
  *   Build   - in-project reads/writes/bash run without confirmation; bash runs
  *             sandboxed. Prompts on out-of-project access or privilege escalation;
  *             approved out-of-project commands run UNSANDBOXED.
+ *   Auto    - Build, but a classifier (a side model call, src/auto) judges the
+ *             asks against the user's task instead of prompting.
  *   YOLO    - never prompts, never sandboxes; full user permissions.
  *
  * The OS sandbox (@anthropic-ai/sandbox-runtime) is the real enforcement for
@@ -36,6 +38,7 @@
  *   sandbox.ts      SandboxController (runtime lifecycle, per-mode profile)
  *   status.ts       footer indicator
  *   show-plan.ts    show_plan tool   plan-render.ts  its renderer
+ *   auto/           the Auto classifier: verdict.ts (pure), precheck.ts, classifier.ts (the model call)
  *
  * Install (see README.md):
  *   pi install git:github.com/wynainfo/pi-permission-modes
@@ -47,12 +50,35 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import * as piSdk from "@earendil-works/pi-coding-agent";
 import { createBashTool, getAgentDir, getShellConfig } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { effectiveShells } from "./config-load.ts";
+import { effectiveClassifier, effectiveShells } from "./config-load.ts";
 import { type AdoptedRuntime, killWindowsTree, processViolations } from "./sandbox.ts";
 import { type ExposeEntry, formatEntry, INBOUND_FILE, INBOUND_SOURCE, InboundRouter, inboundPrelude, parseExpose, RELAY_FILE, RELAY_SOURCE, startRelays, withRelay } from "./shells/relay.ts";
 import { describeShell, PROFILE_CHANGED_REASON, readLog, type ShellLaunchArgs, ShellManager, type ShellRecord, STOP_SIGNALS, type StopSignal, tailLines } from "./shells/shells.ts";
 import { createShellTools } from "./shells/tools.ts";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { Text } from "@earendil-works/pi-tui";
+import { type Classifier, type CompleteFn, createClassifier } from "./auto/classifier.ts";
+import { precheck } from "./auto/precheck.ts";
+import {
+  type BranchEntryLike,
+  Breaker,
+  buildPrompt,
+  decideVerdict,
+  describeAction,
+  formatVerdictLine,
+  type JudgedAction,
+  objectiveFromEntries,
+  planExcerpt,
+  refusalMessage,
+  trailFromEntries,
+  unavailableMessage,
+  VerdictCache,
+  type VerdictKind,
+  type VerdictRecord,
+  verdictKey,
+  verdictKind,
+  verdictText,
+} from "./auto/verdict.ts";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
@@ -284,17 +310,246 @@ export default async function (pi: ExtensionAPI) {
   // (the network ask callback runs mid-bash, driven by the proxy).
   let uiCtx: ExtensionContext | undefined;
 
+  // Auto (src/auto): a mode with a `classifier` block sends its asks to a
+  // model call instead of the user. Per session: the verdict cache (survives
+  // a mode switch; a new user prompt clears the refusals; a config change,
+  // /perm clear-approvals and the session end clear it), the circuit breaker
+  // (three refusals in a row or twenty in all hand the asks back to the
+  // user), the verdict list (/perm verdicts, <scratch>/verdicts.log), the
+  // foreground sandboxed commands in flight (what a network verdict is
+  // about), and the plan approved this session (part of the objective).
+  // Verdicts are session entries, not messages: the transcript shows them
+  // (entry renderer below) and a resumed session renders them again, but
+  // the model never receives them (a custom message would be handed to the
+  // model as a user-role line, which it then answers; the tool result
+  // already carries a refusal).
+  const VERDICT_ENTRY = "perm-verdict";
+  // `id` marks the head of a group, `group` a member folded into that head's
+  // line while it is on screen (a resumed session shows members on their own).
+  type VerdictEntry = { content: string; details: Partial<VerdictRecord> & { breaker?: boolean }; id?: string; group?: string };
+  // Consecutive verdicts with one outcome within a turn fold into one line
+  // (the model often issues two tool calls at once): the open group, the
+  // records behind each head (live session only) and the head lines on
+  // screen, refreshed when a member joins.
+  let verdictSeq = 0;
+  let verdictGroup: { id: string; kind: VerdictKind; records: VerdictRecord[] } | undefined;
+  const groupRecords = new Map<string, VerdictRecord[]>();
+  const liveLines = new Map<string, { refresh(): void }>();
+  const closeVerdictGroup = (): void => {
+    verdictGroup = undefined;
+  };
+  const verdictCache = new VerdictCache();
+  const breaker = new Breaker();
+  let breakerAsk = false;
+  const verdicts: VerdictRecord[] = [];
+  let classifier: Classifier | undefined;
+  let classifierKey = "";
+  const inflightBash = new Map<string, string>();
+  let judging = 0;
+  let approvedPlan: string | undefined;
+  /** The mode's classifier settings with the defaults filled in, or undefined when the mode prompts. */
+  const autoConfig = (m: ModeDef) => (m.classifier ? effectiveClassifier(m.classifier) : undefined);
+  const refreshStatus = (ctx: ExtensionContext) => updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning(), judging: judging > 0 });
+  /** The classifier for the current mode and model; rebuilt (and the cache cleared) when either changes. */
+  const getClassifier = (ctx: ExtensionContext): Classifier => {
+    const cfg = autoConfig(currentMode());
+    const key = JSON.stringify([cfg?.model, cfg?.strictness, cfg?.guidance, cfg?.restrict, ctx.model?.provider, ctx.model?.id]);
+    if (classifier && key === classifierKey) return classifier;
+    if (classifierKey) verdictCache.clear(); // a strictness, model or guidance change: the old verdicts no longer apply
+    classifierKey = key;
+    // The completion function can be replaced for tests (never a provider there).
+    const complete = (globalThis as { __piPermissionModeComplete?: CompleteFn }).__piPermissionModeComplete;
+    classifier = createClassifier(cfg, {
+      current: ctx.model,
+      find: (provider, id) => ctx.modelRegistry?.find(provider, id),
+      auth: (m) => ctx.modelRegistry.getApiKeyAndHeaders(m),
+    }, complete);
+    const warning = classifier.warning();
+    if (warning) {
+      if (ctx.hasUI) ctx.ui.notify(warning, "warning");
+      else console.error(warning);
+    }
+    return classifier;
+  };
+  /** The plan approved on this branch, if any: a perm-plan entry with a path followed by an approval entry. */
+  const approvedPlanOf = (entries: ReadonlyArray<{ type: string; customType?: string; data?: unknown }>): string | undefined => {
+    let candidate: string | undefined;
+    let approved: string | undefined;
+    for (const e of entries) {
+      if (e.type !== "custom" || e.customType !== PLAN_ENTRY) continue;
+      const data = e.data as PlanEntry | undefined;
+      if (data?.path) candidate = data.path;
+      else if (candidate) approved = candidate;
+    }
+    return approved;
+  };
+  /** Show, log, cache and count one verdict; returns true when the breaker tripped on it. */
+  const recordVerdict = (ctx: ExtensionContext, key: string, rec: VerdictRecord, message: string | undefined): boolean => {
+    verdicts.push(rec);
+    if (verdicts.length > 500) verdicts.shift();
+    if (scratchDir) {
+      try {
+        appendFileSync(path.join(scratchDir, "verdicts.log"), `${JSON.stringify(rec)}\n`);
+      } catch {
+        // the log is a convenience
+      }
+    }
+    if (rec.source !== "cache") {
+      // Visible in the conversation, right after the tool call it judged;
+      // folded into the open group's line when the outcome matches.
+      const content = `Auto verdict: ${formatVerdictLine(rec)}`;
+      const kind = verdictKind(rec);
+      let data: VerdictEntry;
+      if (verdictGroup && verdictGroup.kind === kind) {
+        verdictGroup.records.push(rec);
+        data = { content, details: rec, group: verdictGroup.id };
+        liveLines.get(verdictGroup.id)?.refresh();
+      } else {
+        const id = `v${++verdictSeq}-${Date.now().toString(36)}`;
+        verdictGroup = { id, kind, records: [rec] };
+        groupRecords.set(id, verdictGroup.records);
+        data = { content, details: rec, id };
+      }
+      try {
+        pi.appendEntry<VerdictEntry>(VERDICT_ENTRY, data);
+      } catch {
+        // a stale pi after /reload
+      }
+      if (rec.source !== "unavailable") verdictCache.set(key, { allow: rec.allow, verdict: rec.verdict, message });
+    }
+    if (rec.source === "cache") return false;
+    const tripped = breaker.record(rec.allow);
+    if (tripped) {
+      breakerAsk = true;
+      const text = `Auto circuit breaker: ${breaker.describe()}; ${currentMode().label} asks you for the rest of the session (/perm verdicts lists them, /perm clear-approvals resets)`;
+      if (ctx.hasUI) ctx.ui.notify(`permission-mode: ${text}`, "warning");
+      closeVerdictGroup(); // the breaker line stands alone
+      try {
+        pi.appendEntry<VerdictEntry>(VERDICT_ENTRY, { content: text, details: { breaker: true } });
+      } catch {
+        // a stale pi after /reload
+      }
+    }
+    return tripped;
+  };
+  type Judgment = { allow: true } | { allow: false; reason: string; askInstead: boolean; line: string };
+  /**
+   * Judge one ask in a classifier mode: the cache, the deterministic
+   * pre-checks, then the model. Never throws; a failure is "unavailable",
+   * which is refused with its own message (never allowed).
+   */
+  const judge = async (ctx: ExtensionContext, action: JudgedAction, commands?: Parameters<typeof precheck>[1]): Promise<Judgment> => {
+    const m = currentMode();
+    const cfg = autoConfig(m)!;
+    const key = verdictKey(action);
+    const described = describeAction(action);
+    const asking = cfg.onRefuse === "ask" || breakerAsk;
+    const refusal = (rec: VerdictRecord, message: string): Judgment => {
+      const tripped = recordVerdict(ctx, key, rec, message);
+      // Headless, a tripped breaker ends the turn: nobody can be asked, and a
+      // worker must not loop on refusals.
+      if (tripped && !ctx.hasUI) {
+        console.error(`permission-mode: ${message}`);
+        ctx.abort();
+      }
+      return { allow: false, reason: message, askInstead: asking && ctx.hasUI, line: formatVerdictLine(rec) };
+    };
+    const cached = verdictCache.get(key);
+    if (cached) {
+      const rec: VerdictRecord = { at: new Date().toISOString(), action: described, allow: cached.allow, source: "cache", verdict: cached.verdict };
+      recordVerdict(ctx, key, rec, cached.message);
+      if (cached.allow) return { allow: true };
+      return { allow: false, reason: cached.message ?? refusalMessage(cached.verdict?.reason ?? "refused earlier this session."), askInstead: asking && ctx.hasUI, line: formatVerdictLine(rec) };
+    }
+    const eff = effectiveSandbox(m);
+    const pre = precheck(action, commands, { root, denyRead: eff.denyRead ?? [], agentDir: getAgentDir() });
+    if (pre.refuse) {
+      // The hard floor: refused like a model refusal (onRefuse decides whether
+      // the user is asked instead), but a chat approval does not lift it.
+      const verdict = { risk: "critical" as const, authorization: "none" as const, reason: pre.refuse };
+      return refusal({ at: new Date().toISOString(), action: described, allow: false, source: "precheck", verdict }, refusalMessage(pre.refuse, { floor: true }));
+    }
+    const entries = sessionBranch(ctx) as unknown as BranchEntryLike[];
+    let plan: { path: string; excerpt: string } | undefined;
+    if (approvedPlan) {
+      try {
+        plan = { path: approvedPlan, excerpt: planExcerpt(readFileSync(path.join(root, approvedPlan), "utf-8")) };
+      } catch {
+        plan = undefined;
+      }
+    }
+    const prompt = buildPrompt({
+      objective: objectiveFromEntries(entries),
+      plan,
+      guidance: cfg.guidance,
+      restrict: cfg.restrict,
+      boundary: {
+        root,
+        allowWrite: (eff.allowWrite ?? []).map((w) => (w === "." ? root : w)),
+        denyRead: eff.denyRead ?? [],
+        allowedDomains: eff.network?.allowedDomains,
+        sandboxActive: sandbox.ready && !sandbox.disabled,
+      },
+      trail: trailFromEntries(entries),
+      action,
+      facts: pre.facts,
+      strictness: cfg.strictness,
+    });
+    const c = getClassifier(ctx);
+    judging++;
+    refreshStatus(ctx);
+    let result: Awaited<ReturnType<Classifier["judge"]>>;
+    try {
+      result = await c.judge(prompt, ctx.signal);
+    } finally {
+      judging--;
+      refreshStatus(ctx);
+    }
+    const at = new Date().toISOString();
+    if (!result.ok) {
+      return refusal({ at, action: described, allow: false, source: "unavailable", why: result.why, ms: result.ms, model: result.model }, unavailableMessage(result.why));
+    }
+    const allow = decideVerdict(result.verdict, cfg.strictness);
+    const rec: VerdictRecord = { at, action: described, allow, source: "model", verdict: result.verdict, ms: result.ms, model: result.model };
+    if (allow) {
+      recordVerdict(ctx, key, rec, undefined);
+      return { allow: true };
+    }
+    return refusal(rec, refusalMessage(result.verdict.reason));
+  };
+
   /** Prompt the user about a blocked host (the connection waits meanwhile). */
   const askNetHost = async (host: string, port: number | undefined): Promise<NetAskResult> => {
     const ctx = uiCtx;
-    if (!ctx?.hasUI || currentMode().sandbox.askOnBlockedHost === false) return "dismiss";
+    if (!ctx || currentMode().sandbox.askOnBlockedHost === false) return "dismiss";
     const target = port !== undefined ? `${host}:${port}` : host;
+    let verdictLine = "";
+    if (autoConfig(currentMode())) {
+      // Auto: the classifier judges the host together with the command that
+      // opened the connection; an allow lasts while that command (or one of
+      // the commands in flight) runs, never for the session.
+      const callIds = [...inflightBash.keys()];
+      const shellIds = shells?.running().map((r) => r.id) ?? [];
+      const commands = [...inflightBash.values(), ...(shells?.running().map((r) => r.command) ?? [])];
+      const j = await judge(ctx, { kind: "network", host, port, commands });
+      if (j.allow) {
+        net.allowWhile(host, () => callIds.some((id) => inflightBash.has(id)) || shellIds.some((id) => shells?.get(id)?.status === "running"));
+        net.lastReason = verdicts.at(-1)?.verdict?.reason;
+        return "allow-command";
+      }
+      if (!j.askInstead) {
+        net.lastReason = verdicts.at(-1)?.verdict?.reason ?? verdicts.at(-1)?.why;
+        return "refuse";
+      }
+      verdictLine = ` | Auto verdict: ${j.line}`;
+    }
+    if (!ctx.hasUI) return "dismiss";
     // The prompt lives as long as a sandboxed command does: when the command
     // that opened the connection has ended (or timed out), the answer has
     // nothing to apply to, so the prompt is dismissed (denied, not remembered).
     const gone = new AbortController();
     void sandbox.idle().then(() => gone.abort());
-    const choice = await ctx.ui.select(`Network: bash wants to reach ${target} (not in the allowlist) - allow?`, [
+    const choice = await ctx.ui.select(`Network: bash wants to reach ${target} (not in the allowlist) - allow?${verdictLine}`, [
       "Allow for session",
       "Allow forever",
       "Deny",
@@ -314,18 +569,36 @@ export default async function (pi: ExtensionAPI) {
     return "dismiss"; // dismissed prompt: deny this request, but don't remember
   };
 
-  /** Prompt to allow an `ask`, honoring session grants (a target list requires
-   * every entry to be granted; granting remembers all). Returns true to allow.
-   * When `onForever` is given, a fourth "Allow forever" option persists the rule. */
-  const promptAllow = (
+  /** The answer to an ask: allowed, or refused with the reason the tool call reports (the caller's default when absent). */
+  type PromptResult = { allow: boolean; reason?: string };
+
+  /**
+   * Prompt to allow an `ask`, honoring session grants (a target list requires
+   * every entry to be granted; granting remembers all). When `onForever` is
+   * given, a fourth "Allow forever" option persists the rule. In a classifier
+   * mode (`judged` set) the Auto verdict answers first: an allow passes without
+   * a prompt, a refusal blocks with the verdict, or, with `onRefuse: "ask"` or
+   * a tripped breaker, falls through to the prompt with the verdict shown.
+   * A session grant is user authority and is honored before any verdict.
+   */
+  const promptAllow = async (
     ctx: ExtensionContext,
     surface: Surface,
     target: string | string[],
     title: string,
     onForever?: () => void | Promise<void>,
     denyAnd?: DenyOption,
-  ): Promise<boolean> =>
-    askWithSession(
+    judged?: { action: JudgedAction; commands?: Parameters<typeof precheck>[1] },
+  ): Promise<PromptResult> => {
+    if (judged && autoConfig(currentMode())) {
+      const targets = Array.isArray(target) ? target : [target];
+      if (targets.length > 0 && targets.every((t) => approvals.has(modeName, surface, t))) return { allow: true };
+      const j = await judge(ctx, judged.action, judged.commands);
+      if (j.allow) return { allow: true };
+      if (!j.askInstead) return { allow: false, reason: j.reason };
+      title = `${title} | Auto verdict: ${j.line}`;
+    }
+    const allow = await askWithSession(
       { hasUI: ctx.hasUI, select: (t, o) => ctx.ui.select(t, o) },
       approvals,
       modeName,
@@ -335,6 +608,8 @@ export default async function (pi: ExtensionAPI) {
       onForever,
       denyAnd,
     );
+    return { allow };
+  };
 
   /**
    * The "Deny and block … for this session" option for an escape prompt, or
@@ -411,6 +686,55 @@ export default async function (pi: ExtensionAPI) {
     type: "boolean",
     default: false,
   });
+
+  // Auto verdicts in the conversation (text: verdictText): a green check for
+  // an allow, a red cross for a refusal, an orange mark when the classifier
+  // could not judge; consecutive verdicts with one outcome in a turn share
+  // one line. The line unfolds like a tool call: ctrl+o (pi rebuilds it
+  // through the renderer with `expanded`) or a left click on it (pi routes
+  // the click to the component the renderer returned, which toggles
+  // itself). A member entry renders nothing while its head is on screen. The
+  // entry renderer API arrived after the typings this package builds against.
+  type EntryRenderer = (entry: { data?: unknown }, options: { expanded: boolean }, theme: { fg(color: string, text: string): string }) => unknown;
+  class VerdictLine {
+    private readonly build: (expanded: boolean) => string;
+    private expanded: boolean;
+    private text: Text;
+    constructor(build: (expanded: boolean) => string, expanded: boolean) {
+      this.build = build;
+      this.expanded = expanded;
+      this.text = new Text(build(expanded), 0, 0);
+    }
+    render(width: number): string[] {
+      return this.text.render(width);
+    }
+    invalidate(): void {
+      this.text.invalidate();
+    }
+    /** Rebuild the text (a member joined the group). */
+    refresh(): void {
+      this.text = new Text(this.build(this.expanded), 0, 0);
+    }
+    handleMouse(event: { type: string; button?: string }): { handled: true } | undefined {
+      if (event.type !== "click" || event.button !== "left") return undefined;
+      this.expanded = !this.expanded;
+      this.refresh();
+      return { handled: true };
+    }
+  }
+  const register = (pi as { registerEntryRenderer?: (customType: string, renderer: EntryRenderer) => void }).registerEntryRenderer;
+  if (typeof register === "function") {
+    register.call(pi, VERDICT_ENTRY, (entry, options, theme) => {
+      const data = (entry.data ?? {}) as Partial<VerdictEntry>;
+      if (data.group && liveLines.has(data.group)) return undefined;
+      const d = data.details ?? {};
+      const records = (data.id && groupRecords.get(data.id)) || (d.action ? [d as VerdictRecord] : []);
+      const build = (expanded: boolean): string => (d.breaker ? theme.fg("warning", `\u26a0 ${data.content ?? ""}`) : verdictText(records, expanded, (c, t) => theme.fg(c, t)));
+      const line = new VerdictLine(build, options.expanded);
+      if (data.id) liveLines.set(data.id, line);
+      return line;
+    });
+  }
 
   // Hide a mode's `hideTools` from the model (pre-exposure), restoring the rest.
   //
@@ -562,6 +886,7 @@ export default async function (pi: ExtensionAPI) {
       approvingPlan = false;
     }
     pendingPlan = undefined;
+    approvedPlan = plan.path; // part of the objective the Auto classifier judges against
     pi.appendEntry<PlanEntry>(PLAN_ENTRY, {});
     // agent_end fires while the run still counts as streaming (it settles
     // after its listeners), and a plain send throws then. A follow-up is
@@ -656,14 +981,26 @@ export default async function (pi: ExtensionAPI) {
     handler: async (ctx) => cycle(ctx),
   });
   pi.registerCommand("perm", {
-    description: `Set or cycle permission mode: /perm [${config.cycleOrder.join("|")}|init|clear-approvals|blocks|unblock <path>]`,
+    description: `Set or cycle permission mode: /perm [${config.cycleOrder.join("|")}|init|clear-approvals|blocks|unblock <path>|verdicts]`,
     handler: async (args, ctx) => {
       const arg = args.trim().toLowerCase();
       if (arg === "clear-approvals") {
         approvals.clearAll();
         const hadBlocks = blocked.list().length > 0;
         blocked.clear();
-        return ctx.ui.notify(`permission-mode: cleared session approvals${hadBlocks ? " and blocked paths" : ""}`, "info");
+        const hadVerdicts = verdictCache.size > 0 || breaker.total > 0;
+        verdictCache.clear();
+        breaker.reset();
+        breakerAsk = false;
+        return ctx.ui.notify(`permission-mode: cleared session approvals${hadBlocks ? " and blocked paths" : ""}${hadVerdicts ? " and Auto verdicts" : ""}`, "info");
+      }
+      if (arg === "verdicts") {
+        if (verdicts.length === 0) return ctx.ui.notify("permission-mode: no Auto verdicts this session", "info");
+        const rows = verdicts.slice(-40).map((v) => `  ${v.at.slice(11, 19)} ${v.allow ? "allowed" : v.source === "unavailable" ? "unavailable" : "refused"}  ${formatVerdictLine(v)}${v.ms !== undefined ? ` [${v.ms} ms]` : ""}`);
+        return ctx.ui.notify(
+          [`Auto verdicts (${verdicts.length} this session${verdicts.length > 40 ? ", last 40 shown" : ""}; ${scratchDir ? `log: ${path.join(scratchDir, "verdicts.log")}` : "no log"}${breakerAsk ? "; the circuit breaker tripped, the mode asks" : ""}):`, ...rows].join("\n"),
+          "info",
+        );
       }
       if (arg === "blocks") {
         const list = blocked.list();
@@ -710,7 +1047,7 @@ export default async function (pi: ExtensionAPI) {
       }
       if (hasMode(config.modes, arg)) await setMode(arg, ctx);
       else if (arg === "") await cycle(ctx);
-      else ctx.ui.notify(`permission-mode: unknown mode or subcommand "${arg}"; usage: /perm [${config.cycleOrder.join("|")}|init|clear-approvals|blocks|unblock <path>]`, "warning");
+      else ctx.ui.notify(`permission-mode: unknown mode or subcommand "${arg}"; usage: /perm [${config.cycleOrder.join("|")}|init|clear-approvals|blocks|unblock <path>|verdicts]`, "warning");
     },
   });
   const networkEnforcing = () => sandbox.ready && networkFiltered(currentMode().sandbox);
@@ -986,7 +1323,13 @@ export default async function (pi: ExtensionAPI) {
       if (!ops) return localBash.execute(id, params, signal, onUpdate);
       const sandboxed = createBashTool(root, { operations: ops });
       net.takePrompted(); // answers to an earlier command's prompts are not this one's
-      const result = await sandboxed.execute(id, params, signal, onUpdate);
+      inflightBash.set(id, p.command); // what a network verdict during this run is about
+      let result: Awaited<ReturnType<typeof sandboxed.execute>>;
+      try {
+        result = await sandboxed.execute(id, params, signal, onUpdate);
+      } finally {
+        inflightBash.delete(id);
+      }
       // A prompt answered during the run is told to the model: it saw only a
       // connection that worked (or did not), never that a person decided it.
       const note = promptNote(net.takePrompted());
@@ -1289,6 +1632,7 @@ export default async function (pi: ExtensionAPI) {
     const picked = pickMode(ctx, !carry, carry);
     modeName = picked.name;
     pendingPlan = restorePendingPlan(sessionBranch(ctx));
+    approvedPlan = approvedPlanOf(sessionBranch(ctx));
     planShownThisRun = false;
     planCalls.clear();
     // Per-session scratch directory, created up front so the sandbox profile,
@@ -1367,6 +1711,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_tree", async (_event, ctx) => {
     uiCtx = ctx;
     pendingPlan = restorePendingPlan(sessionBranch(ctx)); // the branch's own plan state
+    approvedPlan = approvedPlanOf(sessionBranch(ctx));
     planShownThisRun = false;
     planCalls.clear();
     const picked = pickMode(ctx, false);
@@ -1376,6 +1721,14 @@ export default async function (pi: ExtensionAPI) {
     approvals.clearAll(); // session-scoped grants don't outlive the session
     blocked.clear(); // nor do "Deny and block" paths
     net.clear(); // network grants/denies and the open toggle are session-scoped too
+    verdictCache.clear(); // Auto verdicts, the breaker and the list are session-scoped
+    breaker.reset();
+    breakerAsk = false;
+    verdicts.length = 0;
+    closeVerdictGroup();
+    groupRecords.clear();
+    liveLines.clear();
+    inflightBash.clear();
     pendingPlan = undefined; // restored from the session entries on the next start
     planCalls.clear();
     if (event.reason === "reload" && shells && shellsRunning() > 0) {
@@ -1398,6 +1751,8 @@ export default async function (pi: ExtensionAPI) {
   pi.on("agent_start", async () => {
     planShownThisRun = false;
   });
+  // A verdict group spans one turn (the tool calls of one assistant message).
+  pi.on("turn_start", async () => closeVerdictGroup());
   pi.on("agent_end", async (_event, ctx) => {
     if (!planShownThisRun) return;
     planShownThisRun = false;
@@ -1465,6 +1820,10 @@ export default async function (pi: ExtensionAPI) {
   // Skill gating: skills aren't tools — they're invoked via `/skill:<name>` text,
   // so intercept the input before expansion and resolve the `skill` surface.
   pi.on("input", async (event, ctx) => {
+    // A new instruction from the user may justify what the Auto classifier
+    // refused: the refusals are forgotten, the allows kept.
+    verdictCache.clearRefusals();
+    closeVerdictGroup();
     const match = /^\/skill:([\w-]+)/.exec(event.text.trim());
     if (!match) return undefined;
     const name = match[1];
@@ -1473,12 +1832,12 @@ export default async function (pi: ExtensionAPI) {
       if (ctx.hasUI) ctx.ui.notify(`Skill "${name}" blocked in ${currentMode().label}${decision.reason ? `: ${decision.reason}` : ""}`, "warning");
       return { action: "handled" as const };
     }
-    if (
-      decision.action === "ask" &&
-      !(await promptAllow(ctx, "skill", name, `Skill "${name}" — first use in ${currentMode().label}; allow?`, learnForever(ctx, "skill", name)))
-    ) {
-      if (ctx.hasUI && decision.reason) ctx.ui.notify(`Skill "${name}" blocked: ${decision.reason}`, "warning");
-      return { action: "handled" as const };
+    if (decision.action === "ask") {
+      const r = await promptAllow(ctx, "skill", name, `Skill "${name}" - first use in ${currentMode().label}; allow?`, learnForever(ctx, "skill", name), undefined, { action: { kind: "skill", name } });
+      if (!r.allow) {
+        if (ctx.hasUI && (r.reason ?? decision.reason)) ctx.ui.notify(`Skill "${name}" blocked: ${r.reason ?? decision.reason}`, "warning");
+        return { action: "handled" as const };
+      }
     }
     return undefined; // allow → continue to expansion
   });
@@ -1543,9 +1902,11 @@ export default async function (pi: ExtensionAPI) {
         if (gate.kind === "prompt") {
           // Every approval here runs with full user rights, so a session grant
           // stays scoped to the exact command string, never to command names.
-          if (!(await promptAllow(ctx, "bash", command, askTitle(gate.title)))) {
-            return { block: true, reason: gate.reason };
-          }
+          const r = await promptAllow(ctx, "bash", command, askTitle(gate.title), undefined, undefined, {
+            action: { kind: "bash", command, outside: [], why: "the policy asks; bash runs unsandboxed in this mode" },
+            commands: analysis.commands,
+          });
+          if (!r.allow) return { block: true, reason: r.reason ?? gate.reason };
           if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
         }
         return undefined;
@@ -1584,7 +1945,12 @@ export default async function (pi: ExtensionAPI) {
           : [];
         const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
         if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
-        if (!(await promptAllow(ctx, "bash", keys, askTitle(gate.title), undefined, denyAndBlock(ctx, targets)))) return { block: true, reason: gate.reason };
+        const why = analysis.outsideReason ?? (sandbox.ready ? "the policy asks" : "sandbox unavailable");
+        const r = await promptAllow(ctx, "bash", keys, askTitle(gate.title), undefined, denyAndBlock(ctx, targets), {
+          action: { kind: "bash", command, outside: targets.map((t) => canonicalPath(root, t)), why },
+          commands: analysis.commands,
+        });
+        if (!r.allow) return { block: true, reason: r.reason ?? gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }
       return undefined;
@@ -1617,7 +1983,8 @@ export default async function (pi: ExtensionAPI) {
         const title = outside ? `Outside project - allow ${toolName}? (${path})` : `Allow ${toolName}? (${path})`;
         const reason = decision.reason ?? deniedByUser(outside ? `${toolName} of "${path}" outside the project` : `${toolName} of "${path}"`);
         const denyAnd = outside ? denyAndBlock(ctx, [path]) : undefined;
-        if (!(await promptAllow(ctx, surface, path, title, undefined, denyAnd))) return { block: true, reason };
+        const r = await promptAllow(ctx, surface, path, title, undefined, denyAnd, { action: { kind: "file", tool: toolName, path, resolved: canonicalPath(root, path) } });
+        if (!r.allow) return { block: true, reason: r.reason ?? reason };
       }
       return undefined; // allow
     }
@@ -1627,8 +1994,9 @@ export default async function (pi: ExtensionAPI) {
       const decision = decideDetailed(m, "web_search", String(input.query ?? "(empty)"));
       if (decision.action === "deny") return { block: true, reason: decision.reason ?? `web search blocked by ${m.label} (see ${docRef("blockedByPolicy")})` };
       // Session approval is surface-wide ("allow web search this session").
-      if (decision.action === "ask" && !(await promptAllow(ctx, "web_search", "*", "Allow web search?"))) {
-        return { block: true, reason: decision.reason ?? deniedByUser("web search") };
+      if (decision.action === "ask") {
+        const r = await promptAllow(ctx, "web_search", "*", "Allow web search?", undefined, undefined, { action: { kind: "web_search", query: String(input.query ?? "") } });
+        if (!r.allow) return { block: true, reason: r.reason ?? decision.reason ?? deniedByUser("web search") };
       }
       return undefined;
     }
@@ -1638,11 +2006,9 @@ export default async function (pi: ExtensionAPI) {
     if (!BUILTIN_HANDLED.has(toolName)) {
       const decision = decideDetailed(m, "tool", toolName);
       if (decision.action === "deny") return { block: true, reason: decision.reason ?? `Tool "${toolName}" blocked by ${m.label} (see ${docRef("toolsAndSkills")})` };
-      if (
-        decision.action === "ask" &&
-        !(await promptAllow(ctx, "tool", toolName, `Tool "${toolName}" — first use in ${m.label}; allow?`, learnForever(ctx, "tool", toolName)))
-      ) {
-        return { block: true, reason: decision.reason ?? deniedByUser(`tool "${toolName}" call`) };
+      if (decision.action === "ask") {
+        const r = await promptAllow(ctx, "tool", toolName, `Tool "${toolName}" - first use in ${m.label}; allow?`, learnForever(ctx, "tool", toolName), undefined, { action: { kind: "tool", name: toolName } });
+        if (!r.allow) return { block: true, reason: r.reason ?? decision.reason ?? deniedByUser(`tool "${toolName}" call`) };
       }
     }
 

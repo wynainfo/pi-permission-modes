@@ -22,8 +22,14 @@
  * Pure and SDK-free; the prompting itself is injected as a function.
  */
 
-/** Outcome of asking the user about one host. */
-export type NetAskResult = "allow-session" | "allow-forever" | "deny" | "dismiss";
+/**
+ * Outcome of asking about one host: the user's answers, plus the Auto
+ * classifier's two (src/auto): "allow-command" lets the connection through
+ * without a session grant (the asker registered a temporary allow bound to
+ * the running command, see `allowWhile`), "refuse" denies it without
+ * remembering the host (the verdict cache remembers the command).
+ */
+export type NetAskResult = "allow-session" | "allow-forever" | "deny" | "dismiss" | "allow-command" | "refuse";
 
 /** Ask the user about a blocked host. Undefined = nobody to ask (headless / asks disabled). */
 export type NetAsk = (host: string, port: number | undefined) => Promise<NetAskResult>;
@@ -64,6 +70,8 @@ export function normalizeDomain(raw: string): string | undefined {
 export interface PromptedHost {
   host: string;
   result: NetAskResult;
+  /** The verdict's reason, for the classifier's answers. */
+  reason?: string;
 }
 
 /**
@@ -81,6 +89,10 @@ export function promptNote(prompted: readonly PromptedHost[]): string {
         return `the user was asked and allowed ${p.host} for this mode permanently`;
       case "deny":
         return `the user was asked and denied ${p.host} for this session: do not retry it, ask the user if it is needed`;
+      case "allow-command":
+        return `the Auto verdict allowed ${p.host} for this command${p.reason ? `: ${p.reason}` : ""}`;
+      case "refuse":
+        return `the Auto verdict refused ${p.host} for this command${p.reason ? `: ${p.reason}` : ""}. Do not retry it through another command; ask the user if it is needed`;
       default:
         return `the user dismissed the prompt for ${p.host}: this connection was denied, a retry asks again`;
     }
@@ -100,9 +112,29 @@ export class NetworkSession {
 
   /** `/net open`: filtering suspended for the session — every host allowed. */
   open = false;
+  /** Set by an asker before it answers "allow-command" or "refuse": the verdict's reason for the command's note. */
+  lastReason: string | undefined;
   private allow = new Set<string>(); // session-granted patterns
   private deny = new Set<string>(); // session-denied hosts (explicit user denies)
   private pending = new Map<string, Promise<boolean>>(); // per-host ask coalescing
+  /** Temporary allows: a host reachable while `active()` holds (the command the Auto classifier allowed it for). */
+  private temporary: Array<{ host: string; active: () => boolean }> = [];
+
+  /**
+   * Allow `host` while `active()` returns true: the Auto classifier's
+   * per-command allow, gone when the command ends. Never a session grant,
+   * never persisted; `decide` prunes entries whose command has ended.
+   */
+  allowWhile(host: string, active: () => boolean): void {
+    this.temporary.push({ host: host.toLowerCase(), active });
+  }
+
+  /** True when a temporary allow covers `host` and its command still runs. */
+  isAllowedNow(host: string): boolean {
+    this.temporary = this.temporary.filter((t) => t.active());
+    const h = host.toLowerCase();
+    return this.temporary.some((t) => t.host === h);
+  }
 
   /** Grant patterns for the session (also lifts a remembered deny). */
   grant(patterns: string[]): void {
@@ -129,6 +161,7 @@ export class NetworkSession {
   clear(): void {
     this.allow.clear();
     this.deny.clear();
+    this.temporary = [];
     this.open = false;
   }
 
@@ -142,18 +175,21 @@ export class NetworkSession {
     if (this.open) return true;
     if (this.isGranted(host)) return true;
     if (this.deny.has(host)) return false;
+    if (this.isAllowedNow(host)) return true;
     if (!ask) return false;
     let p = this.pending.get(host);
     if (!p) {
       p = (async () => {
         const result = await ask(host, port);
-        this.prompted.push({ host, result });
+        this.prompted.push({ host, result, ...(this.lastReason ? { reason: this.lastReason } : {}) });
+        this.lastReason = undefined;
         if (result === "allow-session" || result === "allow-forever") {
           this.grant([host]);
           return true;
         }
+        if (result === "allow-command") return true; // the asker registered the temporary allow
         if (result === "deny") this.deny.add(host);
-        return false; // deny or dismiss
+        return false; // deny, refuse or dismiss
       })().finally(() => this.pending.delete(host));
       this.pending.set(host, p);
     }

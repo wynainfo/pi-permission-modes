@@ -153,3 +153,31 @@ test("promptNote: one line per answered prompt, nothing without one", () => {
   assert.match(note, /denied evil\.io for this session: do not retry it, ask the user if it is needed\n/);
   assert.match(note, /dismissed the prompt for late\.io: this connection was denied, a retry asks again\n<\/sandbox_network>$/);
 });
+
+test("decide: a temporary allow holds while its command runs, is not a grant, and the classifier's answers are noted without memory", async () => {
+  const s = new NetworkSession();
+  let running = true;
+  s.allowWhile("CDN.example", () => running);
+  assert.equal(await s.decide("cdn.example", 443, undefined), true);
+  assert.deepEqual(s.grants(), [], "not a session grant");
+  running = false;
+  assert.equal(await s.decide("cdn.example", 443, undefined), false, "gone with the command");
+  assert.equal(s.isAllowedNow("cdn.example"), false);
+  // allow-command: through, nothing remembered; refuse: denied, nothing remembered (a retry asks again).
+  let answers: Array<"allow-command" | "refuse"> = ["allow-command", "refuse", "refuse"];
+  const ask = async () => {
+    s.lastReason = "the task implies it";
+    return answers.shift()!;
+  };
+  assert.equal(await s.decide("a.example", 443, ask), true);
+  assert.deepEqual(s.grants(), []);
+  assert.equal(await s.decide("b.example", 443, ask), false);
+  assert.deepEqual(s.denies(), []);
+  assert.equal(await s.decide("b.example", 443, ask), false, "asked again, not remembered");
+  const note = promptNote(s.takePrompted());
+  assert.match(note, /the Auto verdict allowed a\.example for this command: the task implies it/);
+  assert.match(note, /the Auto verdict refused b\.example for this command: the task implies it\. Do not retry it through another command/);
+  s.allowWhile("c.example", () => true);
+  s.clear();
+  assert.equal(s.isAllowedNow("c.example"), false, "clear drops temporary allows too");
+});
