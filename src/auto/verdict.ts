@@ -433,6 +433,8 @@ export interface CachedVerdict {
   verdict?: Verdict;
   /** The verdict message, as the agent received it. */
   message?: string;
+  /** The model that judged (`provider/id`); a hit after a /model switch still names it. */
+  model?: string;
 }
 
 /**
@@ -535,6 +537,8 @@ export interface VerdictRecord {
   why?: string;
   ms?: number;
   model?: string;
+  /** Characters of reasoning the model produced before the verdict (absent when none). */
+  thinking?: number;
 }
 
 /** The outcome a verdict line is colored by. */
@@ -562,7 +566,7 @@ export function verdictText(records: readonly VerdictRecord[], expanded: boolean
   const { mark, color, word } = KIND_MARK[kind];
   const brief = (r: VerdictRecord): string => (kind === "allow" && r.verdict ? formatVerdictLine({ ...r, verdict: { ...r.verdict, reason: "" } }) : formatVerdictLine(r));
   const details = (r: VerdictRecord, indent: string): string => {
-    const extra = [r.source ? `source ${r.source}` : "", r.model ? `model ${r.model}` : "", r.ms !== undefined ? `${r.ms} ms` : "", r.at].filter(Boolean).join(", ");
+    const extra = [r.source ? `source ${r.source}` : "", r.model ? `model ${r.model}` : "", r.ms !== undefined ? `${r.ms} ms` : "", r.thinking ? `reasoned ${r.thinking} chars` : "", r.at].filter(Boolean).join(", ");
     return extra ? `\n${fg("dim", indent + extra)}` : "";
   };
   if (records.length === 1) {

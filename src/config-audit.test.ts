@@ -115,6 +115,11 @@ test("audit state: round-trips, tolerates garbage and a missing file", () => {
     assert.deepEqual(readAuditState(dir), {});
     assert.equal(writeAuditState(dir, { lastVersion: "2.2.1" }), true);
     assert.deepEqual(readAuditState(dir), { lastVersion: "2.2.1" });
+    // The Auto probe's result per classifier model rides along; junk values are dropped.
+    assert.equal(writeAuditState(dir, { lastVersion: "2.2.1", thinkingFormats: { "p/m": "qwen" } }), true);
+    assert.deepEqual(readAuditState(dir), { lastVersion: "2.2.1", thinkingFormats: { "p/m": "qwen" } });
+    writeFileSync(path.join(dir, "permission-mode", "state.json"), JSON.stringify({ thinkingFormats: { "p/m": 3, "q/n": "zai" } }));
+    assert.deepEqual(readAuditState(dir), { thinkingFormats: { "q/n": "zai" } });
     writeFileSync(path.join(dir, "permission-mode", "state.json"), "{ not json");
     assert.deepEqual(readAuditState(dir), {});
   } finally {

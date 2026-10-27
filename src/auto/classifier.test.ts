@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssistantMessage, Model, Api } from "@earendil-works/pi-ai";
-import { CLASSIFIER_TIMEOUT_MS, createClassifier, type ModelSource, resolveModel, verdictFromMessage } from "./classifier.ts";
+import { CLASSIFIER_TIMEOUT_MS, createClassifier, type ModelSource, NO_THINK_SWITCH, resolveModel, THINKING_OFF_CANDIDATES, THINKING_OFF_FORMATS, verdictFromMessage, withThinkingFormat } from "./classifier.ts";
 
 const model = (provider: string, id: string): Model<Api> => ({ id, provider, name: id, api: "openai-completions", baseUrl: "http://x", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100 });
 const current = model("wyna", "wyna-pro");
@@ -65,6 +65,13 @@ test("judge: a JSON text answer parses; prose, an empty answer and a token-limit
   );
   const r = await thought.judge(prompt);
   assert.ok(!r.ok && /ran out of tokens \(1500\); the model spent them reasoning \(50 characters\), a non-reasoning classifier.model/.test(r.why));
+  assert.equal(r.thinking, 50);
+  // A verdict that came after reasoning reports the reasoning too; a plain one reports none.
+  const reasoned = await createClassifier(undefined, source(), async () =>
+    reply([{ type: "thinking", thinking: "hmm" }, { type: "toolCall", id: "1", name: "report_verdict", arguments: { risk: "low", authorization: "stated", reason: "r" } }], "toolUse"),
+  ).judge(prompt);
+  assert.ok(reasoned.ok && reasoned.thinking === 3);
+  assert.ok(ok.ok && ok.thinking === 0);
 });
 
 test("judge: one retry on a retryable error, none on another; an error message in the reply is reported", async () => {
@@ -114,4 +121,72 @@ test("verdictFromMessage: a tool call without a valid verdict names the tool", (
   assert.match(r.why ?? "", /tool call report_verdict without a valid verdict; it sent \{"risk":"huge"\}/);
   const str = verdictFromMessage(reply([{ type: "toolCall", id: "1", name: "report_verdict", arguments: '{"risk":"low","authorization":"stated","reason":"r"}' as never }], "toolUse"));
   assert.deepEqual(str.verdict, { risk: "low", authorization: "stated", reason: "r" }, "arguments left as a JSON string parse too");
+});
+
+test("probe: a reasoned verdict starts one background probe over pi's off switches; the first clean reply is adopted, none working is reported", async () => {
+  const verdict = { type: "toolCall" as const, id: "1", name: "report_verdict", arguments: { risk: "low", authorization: "stated", reason: "r" } };
+  const thought = { type: "thinking" as const, thinking: "hmm" };
+  const seen: Array<string | undefined> = [];
+  const outcomes: Array<[string, string | undefined, number]> = [];
+  // Reasons without a format and with the first candidate; clean with the second.
+  const c = createClassifier(undefined, source(), async (model) => {
+    const fmt = (model.compat as { thinkingFormat?: string } | undefined)?.thinkingFormat;
+    seen.push(fmt);
+    return reply(fmt === "qwen" ? [verdict] : [thought, verdict], "toolUse");
+  }, { onThinkingFormat: (m, f, t) => void outcomes.push([m, f, t]) });
+  const first = await c.judge(prompt);
+  assert.ok(first.ok && first.thinking === 3);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(seen, [undefined, "qwen-chat-template", "qwen"]);
+  assert.deepEqual(outcomes, [["wyna/wyna-pro", "qwen", 3]]);
+  const second = await c.judge(prompt);
+  assert.ok(second.ok && second.thinking === 0);
+  assert.equal(seen.at(-1), "qwen", "the adopted format carries every later request");
+  // No parameter works (one candidate even throws) but the text switch does: the user message ends with /no_think from then on.
+  const texts: string[] = [];
+  const soft: Array<string | undefined> = [];
+  const qwenOnOllama = createClassifier(undefined, source(), async (model, context) => {
+    const fmt = (model.compat as { thinkingFormat?: string } | undefined)?.thinkingFormat;
+    if (fmt === "deepseek") throw new Error("400 unknown parameter");
+    const user = String(context.messages.at(-1)?.content ?? "");
+    texts.push(user);
+    return reply(user.endsWith("\n/no_think") ? [verdict] : [thought, verdict], "toolUse");
+  }, { onThinkingFormat: (_m, f) => void soft.push(f) });
+  await qwenOnOllama.judge(prompt);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(soft, [NO_THINK_SWITCH]);
+  assert.equal(texts.filter((t) => t.endsWith("/no_think")).length, 1, "the format candidates leave the text alone");
+  const after = await qwenOnOllama.judge(prompt);
+  assert.ok(after.ok && after.thinking === 0 && texts.at(-1) === "u\n/no_think");
+  // Nothing works: reported once, the plain request stays.
+  const none: Array<string | undefined> = [];
+  const stubborn = createClassifier(undefined, source(), async () => reply([thought, verdict], "toolUse"), { onThinkingFormat: (_m, f) => void none.push(f) });
+  await stubborn.judge(prompt);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(none, [undefined]);
+  await stubborn.judge(prompt);
+  assert.deepEqual(none, [undefined], "probed once per classifier");
+  // A known format from an earlier session is used from the first request.
+  const known: Array<string | undefined> = [];
+  const k = createClassifier(undefined, source(), async (model) => {
+    known.push((model.compat as { thinkingFormat?: string } | undefined)?.thinkingFormat);
+    return reply([verdict], "toolUse");
+  }, { knownThinkingFormats: { "wyna/wyna-pro": "zai" } });
+  await k.judge(prompt);
+  assert.deepEqual(known, ["zai"]);
+  assert.deepEqual([...THINKING_OFF_FORMATS], ["qwen-chat-template", "qwen", "deepseek", "zai"]);
+  assert.deepEqual([...THINKING_OFF_CANDIDATES], [...THINKING_OFF_FORMATS, "no_think"]);
+  // A remembered text switch applies from the first request; an unknown remembered value is ignored.
+  const remembered: string[] = [];
+  await createClassifier(undefined, source(), async (_m, context) => {
+    remembered.push(String(context.messages.at(-1)?.content));
+    return reply([verdict], "toolUse");
+  }, { knownThinkingFormats: { "wyna/wyna-pro": "no_think" } }).judge(prompt);
+  await createClassifier(undefined, source(), async (_m, context) => {
+    remembered.push(String(context.messages.at(-1)?.content));
+    return reply([verdict], "toolUse");
+  }, { knownThinkingFormats: { "wyna/wyna-pro": "bogus" } }).judge(prompt);
+  assert.deepEqual(remembered, ["u\n/no_think", "u"]);
+  const m = withThinkingFormat({ provider: "p", id: "m", reasoning: false, compat: { supportsMidConvoSystemMessages: true } } as never, "qwen");
+  assert.deepEqual({ reasoning: m.reasoning, compat: m.compat }, { reasoning: true, compat: { supportsMidConvoSystemMessages: true, thinkingFormat: "qwen" } });
 });

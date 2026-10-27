@@ -206,6 +206,8 @@ export function loadDefaultsHistory(): DefaultsVersion[] {
 export interface AuditState {
   /** The extension version that last ran with this agent dir. */
   lastVersion?: string;
+  /** Per classifier model (`provider/id`): the `thinkingFormat` whose off switch the server honored (Auto's probe). */
+  thinkingFormats?: Record<string, string>;
 }
 
 export function auditStateFile(agentDir: string): string {
@@ -215,7 +217,14 @@ export function auditStateFile(agentDir: string): string {
 export function readAuditState(agentDir: string): AuditState {
   try {
     const raw = JSON.parse(readFileSync(auditStateFile(agentDir), "utf-8")) as unknown;
-    return isObject(raw) && typeof raw.lastVersion === "string" ? { lastVersion: raw.lastVersion } : {};
+    if (!isObject(raw)) return {};
+    const state: AuditState = {};
+    if (typeof raw.lastVersion === "string") state.lastVersion = raw.lastVersion;
+    if (isObject(raw.thinkingFormats)) {
+      const formats = Object.entries(raw.thinkingFormats).filter((e): e is [string, string] => typeof e[1] === "string");
+      if (formats.length > 0) state.thinkingFormats = Object.fromEntries(formats);
+    }
+    return state;
   } catch {
     return {};
   }

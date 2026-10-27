@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { readAuditState } from "./config-audit.ts";
 import { docsDir } from "./docs.ts";
 
 type SetupExtension = (pi: unknown) => Promise<void>;
@@ -1864,25 +1865,27 @@ test("session_tree: a branch switch re-picks the mode from the session entries, 
 
 // --- Auto mode ------------------------------------------------------------------
 
-type ScriptedVerdict = { risk: string; authorization: string; reason: string } | Error | string;
+type ScriptedVerdict = { risk: string; authorization: string; reason: string; thinking?: string } | Error | string;
 interface AutoScript {
   /** The verdicts (or errors, or raw text answers) the fake model returns, in order. */
   answers: ScriptedVerdict[];
   /** Every request the fake model received: the system prompt and the user message. */
-  calls: Array<{ system: string; user: string; model: string }>;
+  calls: Array<{ system: string; user: string; model: string; thinkingFormat?: string }>;
 }
 const G = globalThis as { __piPermissionModeComplete?: unknown };
 /** Script the Auto classifier's model: never a provider in the tests. */
 function scriptAuto(answers: ScriptedVerdict[] = []): AutoScript {
   const script: AutoScript = { answers, calls: [] };
-  G.__piPermissionModeComplete = async (model: { provider: string; id: string }, context: { systemPrompt?: string; messages: Array<{ content: unknown }> }) => {
-    script.calls.push({ system: context.systemPrompt ?? "", user: String(context.messages[0]?.content ?? ""), model: `${model.provider}/${model.id}` });
+  G.__piPermissionModeComplete = async (model: { provider: string; id: string; compat?: { thinkingFormat?: string } }, context: { systemPrompt?: string; messages: Array<{ content: unknown }> }) => {
+    script.calls.push({ system: context.systemPrompt ?? "", user: String(context.messages[0]?.content ?? ""), model: `${model.provider}/${model.id}`, thinkingFormat: model.compat?.thinkingFormat });
     const a = script.answers.shift();
     if (a instanceof Error) throw a;
     const base = { role: "assistant", api: "x", provider: "x", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: 0 };
     if (a === undefined) return { ...base, content: [], stopReason: "stop" };
     if (typeof a === "string") return { ...base, content: [{ type: "text", text: a }], stopReason: "stop" };
-    return { ...base, content: [{ type: "toolCall", id: "1", name: "report_verdict", arguments: a }], stopReason: "toolUse" };
+    const { thinking, ...args } = a;
+    const content = [...(thinking ? [{ type: "thinking", thinking }] : []), { type: "toolCall", id: "1", name: "report_verdict", arguments: args }];
+    return { ...base, content, stopReason: "toolUse" };
   };
   return script;
 }
@@ -1941,19 +1944,31 @@ test("auto: an allowed verdict runs the ask without a prompt, shows the check in
     assert.match(live.render(200).join("\n"), /<success>✔ Auto verdicts: 2 allowed: read of \/etc\/hostname; read of \/etc\/hosts<\/success>/, "the head line on screen was refreshed");
     live.handleMouse({ type: "click", button: "left" });
     assert.match(live.render(200).join("\n"), /2 allowed<\/success>\s*\n<success>  allowed read of \/etc\/hostname \(risk low, authorization stated\): the user named it<\/success>\s*\n<dim>    source model.*\n<success>  allowed read of \/etc\/hosts .*: the task implies it/);
-    // A new turn closes the group: the next allow starts its own line.
+    // A new turn closes the group: the next allow starts its own line. This answer came after reasoning: the probe
+    // replays the prompt with pi's off switches (qwen-chat-template first) and adopts the first reply without reasoning.
     await h.pi.emit("turn_start", { turnIndex: 1 }, h.ctx);
-    script.answers.push(allowV);
+    script.answers.push({ ...allowV, thinking: "let me think about this" }, { ...allowV, thinking: "still thinking" }, allowV);
     assert.equal(await h.call("read", { path: "/etc/os-release" }), undefined);
     assert.ok(verdictMessages(h).at(-1)?.id, "a new head");
+    await settle(() => script.calls.length === 5);
+    assert.deepEqual(script.calls.slice(3).map((c) => c.thinkingFormat), ["qwen-chat-template", "qwen"], "probed on the same prompt, in order");
+    assert.equal(script.calls[4].user, script.calls[2].user);
+    assert.equal(h.ctx.notices.filter((n) => /classifier model \(test\/fake-model\) reasoned before a verdict \(23 characters\); thinking is now turned off for its verdicts \(thinkingFormat qwen, remembered\)/.test(n)).length, 1);
+    assert.deepEqual(readAuditState(h.agentDir).thinkingFormats, { "test/fake-model": "qwen" });
+    // From now on the verdict requests carry the format; a reasoned answer does not probe again this session.
+    script.answers.push({ ...allowV, thinking: "again" });
+    assert.equal(await h.call("read", { path: "/etc/issue" }), undefined);
+    assert.equal(script.calls.at(-1)?.thinkingFormat, "qwen");
+    assert.equal(script.calls.length, 6);
     // The same ask again: no further call, no further line in the conversation.
     assert.equal(await h.call("read", { path: "/etc/hostname" }), undefined);
-    assert.equal(script.calls.length, 3);
-    assert.equal(verdictMessages(h).length, 3);
+    assert.equal(script.calls.length, 6);
+    assert.equal(verdictMessages(h).length, 4);
     // The verdict log and /perm verdicts.
     assert.match(readFileSync(path.join(h.scratchDir, "verdicts.log"), "utf-8"), /"source":"model"/);
     await h.perm("verdicts");
-    assert.match(h.ctx.notices.at(-1) ?? "", /Auto verdicts \(4 this session.*\n.*allowed  allowed read of \/etc\/hostname(.*\n)*.*\[cached\]/);
+    assert.match(h.ctx.notices.at(-1) ?? "", /Auto verdicts \(5 this session.*\n.*allowed  allowed read of \/etc\/hostname.* \[test\/fake-model, \d+ ms\](.*\n)*.*\[cached\].* \[test\/fake-model\]$/m, "every row names the judging model, a cache hit too");
+    assert.match(h.ctx.notices.at(-1) ?? "", /\[test\/fake-model, \d+ ms, reasoned 23 chars\]/, "a reasoned verdict says how much");
   } finally {
     unscriptAuto();
     h.cleanup();
@@ -1991,6 +2006,39 @@ test("auto: a refusal blocks with the verdict message and a red cross; the pre-c
   } finally {
     unscriptAuto();
     h.cleanup();
+  }
+});
+
+test("auto: a /model switch moves a judge that follows the current model and keeps the verdicts (the policy is unchanged); a pinned judge is untouched", { skip }, async () => {
+  const h = await setup();
+  const script = scriptAuto([allowV, allowV, allowV]);
+  try {
+    await h.perm("auto");
+    assert.equal(await h.call("read", { path: "/etc/hostname" }), undefined);
+    assert.equal(script.calls[0].model, "test/fake-model");
+    h.ctx.model = { provider: "local", id: "tiny" };
+    assert.equal(await h.call("read", { path: "/etc/hostname" }), undefined);
+    assert.equal(script.calls.length, 1, "the earlier verdict is reused: same policy, same sandbox, only another estimator");
+    assert.equal(await h.call("read", { path: "/etc/hosts" }), undefined, "a new ask goes to the new model");
+    assert.equal(script.calls.length, 2);
+    assert.equal(script.calls[1].model, "local/tiny");
+  } finally {
+    unscriptAuto();
+    h.cleanup();
+  }
+  // Pinned: the session model is not part of the judge at all.
+  const p = await setup({ globalConfig: { modes: { auto: { classifier: { model: "local/tiny" } } } } });
+  const pinned = scriptAuto([allowV]);
+  try {
+    await p.perm("auto");
+    assert.equal(await p.call("read", { path: "/etc/hostname" }), undefined);
+    assert.equal(pinned.calls[0].model, "local/tiny");
+    p.ctx.model = { provider: "other", id: "m2" };
+    assert.equal(await p.call("read", { path: "/etc/hostname" }), undefined);
+    assert.equal(pinned.calls.length, 1, "no second call: the pinned judge and its cache survive the switch");
+  } finally {
+    unscriptAuto();
+    p.cleanup();
   }
 });
 

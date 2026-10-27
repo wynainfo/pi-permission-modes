@@ -26,7 +26,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   them. A refusal is final for the
   session until you say otherwise in chat; a classifier failure refuses with
   its own message; three refusals in a row or twenty in a session hand the
-  asks back to you. Network verdicts are per command. The `classifier` block
+  asks back to you. Network verdicts are per command. The judge asks for no
+  reasoning; a model that reasons anyway is probed once for an off switch
+  (pi's `thinkingFormat` parameters, then the Qwen `/no_think` text
+  switch), the first that works is remembered in
+  `permission-mode/state.json`, none working is a warning to pick another
+  model. The `classifier` block
   (`model`, `strictness`, `onRefuse`, `guidance`, `restrict`) works on any
   mode; a project config may only tighten it. `docs/modes.md`, "Auto mode".
 - Mode colors `warning` and `success` for `color`.

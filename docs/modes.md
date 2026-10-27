@@ -234,10 +234,15 @@ answers to a network prompt still offer "Allow for session".
   judge runs with reasoning off, temperature 0 and a 1500-token budget. A
   Haiku-class model or a small local one judges as well as a large one and
   faster; more thinking produced more over-allows in every published
-  measurement, not fewer. A thinking model served locally (vLLM, llama.cpp)
-  may reason anyway and spend seconds per verdict; when its answers run out
-  of budget, the verdict line says so, and a non-reasoning model fixes it.
-  Global config only.
+  measurement, not fewer. The judge asks for no reasoning. A thinking
+  model behind a custom endpoint may reason anyway (pi sends a server's
+  off switch only when the model entry declares its `compat.thinkingFormat`);
+  when a verdict comes back with reasoning, Auto probes once, in the
+  background: pi's off switches (`qwen-chat-template`, `qwen`, `deepseek`,
+  `zai`), then the Qwen soft switch `/no_think` at the end of the request,
+  which Qwen3 hybrids honor on any server. The first that works is adopted
+  and remembered in `permission-mode/state.json`, with a notice. If none
+  works, a warning asks you to pick another model. Global config only.
 - `strictness`: the threshold above. 0.5 (balanced) allows what the task
   implies and refuses what it does not call for; 0.2 allows whatever
   plausibly serves the task; 0.9 allows only what you named; 1 refuses

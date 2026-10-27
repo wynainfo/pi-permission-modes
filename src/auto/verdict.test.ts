@@ -352,6 +352,7 @@ test("verdictText: one line folded or expanded; a group of one outcome lists the
   assert.equal(verdictText([a1], false, fg), "<success>\u2714 Auto verdict: allowed read of /etc/hostname (risk low, authorization stated)</success>");
   assert.equal(verdictText([a1], true, fg), "<success>\u2714 Auto verdict: allowed read of /etc/hostname (risk low, authorization stated): named</success>\n<dim>source model, model p/m, 12 ms, t1</dim>");
   assert.equal(verdictText([a1, a2], false, fg), "<success>\u2714 Auto verdicts: 2 allowed: read of /etc/hostname; bash `ls /tmp`</success>");
+  assert.match(verdictText([{ ...a1, thinking: 40 }], true, fg), /<dim>source model, model p\/m, 12 ms, reasoned 40 chars, t1<\/dim>$/);
   assert.equal(
     verdictText([a1, a2], true, fg),
     "<success>\u2714 Auto verdicts: 2 allowed</success>\n<success>  allowed read of /etc/hostname (risk low, authorization stated): named</success>\n<dim>    source model, model p/m, 12 ms, t1</dim>\n<success>  allowed bash `ls /tmp` (risk low, authorization stated): implied</success>\n<dim>    source model, model p/m, 12 ms, t2</dim>",

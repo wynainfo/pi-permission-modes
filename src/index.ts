@@ -57,7 +57,7 @@ import { describeShell, PROFILE_CHANGED_REASON, readLog, type ShellLaunchArgs, S
 import { createShellTools } from "./shells/tools.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Text } from "@earendil-works/pi-tui";
-import { type Classifier, type CompleteFn, createClassifier } from "./auto/classifier.ts";
+import { type Classifier, type CompleteFn, createClassifier, THINKING_OFF_CANDIDATES } from "./auto/classifier.ts";
 import { precheck } from "./auto/precheck.ts";
 import {
   type BranchEntryLike,
@@ -134,6 +134,7 @@ import { SandboxController, commandFilesDir, networkFiltered, runtimeInstallDir,
 import { windowsReadGrants, withWindowsReads } from "./sandbox-win.ts";
 import { ensureScratchDir, scratchBase, scratchBaseOverridden, scratchDirName, sweepScratchDirs, withScratchDir } from "./scratch.ts";
 import {
+  CLASSIFIER_DEFAULTS,
   type ModeDef,
   PLAN_PROMPT_SENTINEL,
   type PermissionModeConfig,
@@ -344,6 +345,7 @@ export default async function (pi: ExtensionAPI) {
   const verdicts: VerdictRecord[] = [];
   let classifier: Classifier | undefined;
   let classifierKey = "";
+  let policyKey = "";
   const inflightBash = new Map<string, string>();
   let judging = 0;
   let approvedPlan: string | undefined;
@@ -353,17 +355,41 @@ export default async function (pi: ExtensionAPI) {
   /** The classifier for the current mode and model; rebuilt (and the cache cleared) when either changes. */
   const getClassifier = (ctx: ExtensionContext): Classifier => {
     const cfg = autoConfig(currentMode());
-    const key = JSON.stringify([cfg?.model, cfg?.strictness, cfg?.guidance, cfg?.restrict, ctx.model?.provider, ctx.model?.id]);
+    // The judge is rebuilt when its model changes (a /model switch while it
+    // follows the session model, or a new classifier.model) or its policy
+    // does. Only a policy change (strictness, guidance, restrict) clears the
+    // verdicts: a verdict judges the user's intent and the action under that
+    // policy, the model is only the estimator, and the sandbox is the same.
+    const follows = (cfg?.model ?? CLASSIFIER_DEFAULTS.model) === "current";
+    const policy = JSON.stringify([cfg?.strictness, cfg?.guidance, cfg?.restrict]);
+    const key = JSON.stringify([policy, cfg?.model, follows ? ctx.model?.provider : "", follows ? ctx.model?.id : ""]);
     if (classifier && key === classifierKey) return classifier;
-    if (classifierKey) verdictCache.clear(); // a strictness, model or guidance change: the old verdicts no longer apply
+    if (policyKey && policy !== policyKey) verdictCache.clear();
+    policyKey = policy;
     classifierKey = key;
     // The completion function can be replaced for tests (never a provider there).
     const complete = (globalThis as { __piPermissionModeComplete?: CompleteFn }).__piPermissionModeComplete;
+    const agentDir = getAgentDir();
     classifier = createClassifier(cfg, {
       current: ctx.model,
       find: (provider, id) => ctx.modelRegistry?.find(provider, id),
       auth: (m) => ctx.modelRegistry.getApiKeyAndHeaders(m),
-    }, complete);
+    }, complete, {
+      knownThinkingFormats: readAuditState(agentDir).thinkingFormats,
+      // The model reasoned on a verdict and the classifier probed pi's off
+      // switches: a working one is remembered for the next sessions, none
+      // working is the user's cue to pick another model.
+      onThinkingFormat: (name, format, thinking) => {
+        const say = (text: string, level: "info" | "warning") => (ctx.hasUI ? ctx.ui.notify(`permission-mode: ${text}`, level) : console.error(`permission-mode: ${text}`));
+        if (format) {
+          const state = readAuditState(agentDir);
+          writeAuditState(agentDir, { ...state, thinkingFormats: { ...(state.thinkingFormats ?? {}), [name]: format } });
+          say(`the Auto classifier model (${name}) reasoned before a verdict (${thinking} characters); thinking is now turned off for its verdicts (${format === "no_think" ? "the /no_think switch" : `thinkingFormat ${format}`}, remembered)`, "info");
+        } else {
+          say(`the Auto classifier model (${name}) reasons before each verdict (${thinking} characters) and no off switch (${THINKING_OFF_CANDIDATES.join(", ")}) stops it: pick a non-reasoning classifier.model (see ${docRef("autoMode")})`, "warning");
+        }
+      },
+    });
     const warning = classifier.warning();
     if (warning) {
       if (ctx.hasUI) ctx.ui.notify(warning, "warning");
@@ -415,7 +441,7 @@ export default async function (pi: ExtensionAPI) {
       } catch {
         // a stale pi after /reload
       }
-      if (rec.source !== "unavailable") verdictCache.set(key, { allow: rec.allow, verdict: rec.verdict, message });
+      if (rec.source !== "unavailable") verdictCache.set(key, { allow: rec.allow, verdict: rec.verdict, message, model: rec.model });
     }
     if (rec.source === "cache") return false;
     const tripped = breaker.record(rec.allow);
@@ -454,9 +480,12 @@ export default async function (pi: ExtensionAPI) {
       }
       return { allow: false, reason: message, askInstead: asking && ctx.hasUI, line: formatVerdictLine(rec) };
     };
+    // Resolve the judge first: a changed model or classifier config clears
+    // the cache, so a stale verdict is never served across the change.
+    const c = getClassifier(ctx);
     const cached = verdictCache.get(key);
     if (cached) {
-      const rec: VerdictRecord = { at: new Date().toISOString(), action: described, allow: cached.allow, source: "cache", verdict: cached.verdict };
+      const rec: VerdictRecord = { at: new Date().toISOString(), action: described, allow: cached.allow, source: "cache", verdict: cached.verdict, model: cached.model };
       recordVerdict(ctx, key, rec, cached.message);
       if (cached.allow) return { allow: true };
       return { allow: false, reason: cached.message ?? refusalMessage(cached.verdict?.reason ?? "refused earlier this session."), askInstead: asking && ctx.hasUI, line: formatVerdictLine(rec) };
@@ -495,7 +524,6 @@ export default async function (pi: ExtensionAPI) {
       facts: pre.facts,
       strictness: cfg.strictness,
     });
-    const c = getClassifier(ctx);
     judging++;
     refreshStatus(ctx);
     let result: Awaited<ReturnType<Classifier["judge"]>>;
@@ -507,10 +535,10 @@ export default async function (pi: ExtensionAPI) {
     }
     const at = new Date().toISOString();
     if (!result.ok) {
-      return refusal({ at, action: described, allow: false, source: "unavailable", why: result.why, ms: result.ms, model: result.model }, unavailableMessage(result.why));
+      return refusal({ at, action: described, allow: false, source: "unavailable", why: result.why, ms: result.ms, model: result.model, ...(result.thinking ? { thinking: result.thinking } : {}) }, unavailableMessage(result.why));
     }
     const allow = decideVerdict(result.verdict, cfg.strictness);
-    const rec: VerdictRecord = { at, action: described, allow, source: "model", verdict: result.verdict, ms: result.ms, model: result.model };
+    const rec: VerdictRecord = { at, action: described, allow, source: "model", verdict: result.verdict, ms: result.ms, model: result.model, ...(result.thinking ? { thinking: result.thinking } : {}) };
     if (allow) {
       recordVerdict(ctx, key, rec, undefined);
       return { allow: true };
@@ -996,7 +1024,10 @@ export default async function (pi: ExtensionAPI) {
       }
       if (arg === "verdicts") {
         if (verdicts.length === 0) return ctx.ui.notify("permission-mode: no Auto verdicts this session", "info");
-        const rows = verdicts.slice(-40).map((v) => `  ${v.at.slice(11, 19)} ${v.allow ? "allowed" : v.source === "unavailable" ? "unavailable" : "refused"}  ${formatVerdictLine(v)}${v.ms !== undefined ? ` [${v.ms} ms]` : ""}`);
+        const rows = verdicts.slice(-40).map((v) => {
+          const meta = [v.model, v.ms !== undefined ? `${v.ms} ms` : "", v.thinking ? `reasoned ${v.thinking} chars` : ""].filter(Boolean).join(", ");
+          return `  ${v.at.slice(11, 19)} ${v.allow ? "allowed" : v.source === "unavailable" ? "unavailable" : "refused"}  ${formatVerdictLine(v)}${meta ? ` [${meta}]` : ""}`;
+        });
         return ctx.ui.notify(
           [`Auto verdicts (${verdicts.length} this session${verdicts.length > 40 ? ", last 40 shown" : ""}; ${scratchDir ? `log: ${path.join(scratchDir, "verdicts.log")}` : "no log"}${breakerAsk ? "; the circuit breaker tripped, the mode asks" : ""}):`, ...rows].join("\n"),
           "info",
@@ -1602,7 +1633,7 @@ export default async function (pi: ExtensionAPI) {
         }
       }
     } finally {
-      if (state.lastVersion !== current.version) writeAuditState(agentDir, { lastVersion: current.version });
+      if (state.lastVersion !== current.version) writeAuditState(agentDir, { ...state, lastVersion: current.version });
     }
   };
 
