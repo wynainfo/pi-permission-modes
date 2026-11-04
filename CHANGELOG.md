@@ -92,6 +92,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`403 host is not on the allow list`). Node 22.12 or newer is required
   (pi itself needs 22.19).
 
+### Fixed
+- **Harmless `com.apple.GSSCred` lookup noise filtered from
+  `<sandbox_violations>`.** On macOS each local Postgres connection made
+  libpq probe GSSAPI, denied by `sandbox-exec` and transparently recovered
+  via password-auth fallback, leaving one `deny(1) mach-lookup
+  com.apple.GSSCred` line per connection in the model-facing block. Such
+  lines are now dropped (real `process(pid) deny(1)` shape as well as the
+  normalized one); network lines are never matched, and the block is still
+  dropped only when nothing else remains.
+
 ## [2.4.3]
 
 ### Security

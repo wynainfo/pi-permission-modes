@@ -99,7 +99,10 @@ returns nothing; there is no failing syscall to observe); macOS reports both
 through the system sandbox log. The Linux report is best effort: it can list
 a write that landed in the throwaway tmpfs over a read-denied directory, and
 it misses Plan mode's read-only refusals. Lines for `/dev` and `/proc` are
-dropped. A refused host that you could still allow is followed by a hint
+dropped, as are `mach-lookup com.apple.GSSCred` lines (libpq's per-connection
+GSSAPI probe, transparently recovered via password-auth fallback) in both the
+real `process(pid) deny(1)` seatbelt shape and the normalized one. Other
+`mach-lookup` lines and all `network-outbound` lines are kept. A refused host that you could still allow is followed by a hint
 naming it ([network.md, Requesting access](network.md#requesting-access)).
 
 ## Placeholders and masked dotfiles

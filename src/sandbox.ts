@@ -146,6 +146,10 @@ function runError(err: unknown): Error {
 
 /** Violation lines for paths the Linux write monitor misreports: writes into bwrap's own /dev and /proc succeed (e.g. /dev/shm). */
 const MONITOR_NOISE = /^deny \S+ \/(dev|proc)\//;
+/** Known-harmless macOS lookup noise: libpq probes GSSAPI per connection and falls back to password auth.
+ * Matches the real seatbelt shape (`proc(pid) deny(1) mach-lookup ...`) as well as the normalized
+ * one; anchored on the operation, so no network line can ever match. */
+const GSSAPI_LOOKUP_NOISE = /^(?:\S+\(\d+\)\s+)?deny(?:\(\d+\))?\s+mach-lookup\s+com\.apple\.GSSCred(?:\s|$)/;
 /** Network denials the user can still lift (not a deny-list entry or a failed prompt). */
 const GRANTABLE_NET_DENY = /^deny network-outbound (.+):\d+ \((user denied|host is not on the allow list)\)$/;
 
@@ -159,7 +163,7 @@ const GRANTABLE_NET_DENY = /^deny network-outbound (.+):\d+ \((user denied|host 
 export function processViolations(block: string): { block: string; grantableHosts: string[] } {
   const m = /^<sandbox_violations>\r?\n([\s\S]*?)\r?\n?<\/sandbox_violations>$/.exec(block.trim());
   if (!m) return { block: block.trim(), grantableHosts: [] };
-  const lines = m[1].split(/\r?\n/).filter((l) => l.trim() && !MONITOR_NOISE.test(l));
+  const lines = m[1].split(/\r?\n/).filter((l) => l.trim() && !MONITOR_NOISE.test(l) && !GSSAPI_LOOKUP_NOISE.test(l));
   const hosts = new Set<string>();
   for (const l of lines) {
     const h = GRANTABLE_NET_DENY.exec(l);

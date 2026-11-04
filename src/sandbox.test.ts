@@ -258,6 +258,30 @@ test("processViolations: /dev and /proc monitor noise is dropped; grantable netw
   );
   assert.deepEqual(r.grantableHosts, ["example.com", "Other.io", "::1"]);
   assert.deepEqual(processViolations("<sandbox_violations>\ndeny openat /dev/shm/x\n</sandbox_violations>"), { block: "", grantableHosts: [] });
+  // libpq GSSAPI probe: harmless mach-lookup noise in the real seatbelt shape, dropped at any volume; the network signal is never filtered.
+  const gssNoise = Array.from({ length: 50 }, (_, i) => `python3.14(${29443 + (i % 3)}) deny(1) mach-lookup com.apple.GSSCred`);
+  assert.deepEqual(processViolations(`<sandbox_violations>\n${gssNoise.join("\n")}\n</sandbox_violations>`), {
+    block: "",
+    grantableHosts: [],
+  });
+  assert.deepEqual(processViolations("<sandbox_violations>\ndeny mach-lookup com.apple.GSSCred\n</sandbox_violations>"), { block: "", grantableHosts: [] });
+  // Near-misses stay: other mach-lookup targets and longer service names are never filtered.
+  const nearMiss = processViolations(
+    "<sandbox_violations>\npython3.14(29443) deny(1) mach-lookup com.apple.SystemConfiguration.DNSConfiguration\npython3.14(29443) deny(1) mach-lookup com.apple.GSSCredProxy\n</sandbox_violations>",
+  );
+  assert.equal(
+    nearMiss.block,
+    "<sandbox_violations>\npython3.14(29443) deny(1) mach-lookup com.apple.SystemConfiguration.DNSConfiguration\npython3.14(29443) deny(1) mach-lookup com.apple.GSSCredProxy\n</sandbox_violations>",
+  );
+  assert.deepEqual(nearMiss.grantableHosts, []);
+  const mixed = processViolations(
+    "<sandbox_violations>\npython3.14(29443) deny(1) mach-lookup com.apple.GSSCred\npython3.14(29443) deny(1) network-outbound\ndeny network-outbound example.com:443 (user denied)\n</sandbox_violations>",
+  );
+  assert.equal(
+    mixed.block,
+    "<sandbox_violations>\npython3.14(29443) deny(1) network-outbound\ndeny network-outbound example.com:443 (user denied)\n</sandbox_violations>",
+  );
+  assert.deepEqual(mixed.grantableHosts, ["example.com"]);
   assert.deepEqual(processViolations(""), { block: "", grantableHosts: [] });
 });
 
