@@ -865,8 +865,11 @@ test("sandbox.network: unknown nested keys warn instead of silently doing nothin
   const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
   // The documented path is the top-level sandbox.allowLocalBinding: the
   // runtime-shaped nested key must not silently pretend to work.
+  // The stock Build mode is group-composed; its empty deniedDomains list is
+  // preserved while the unknown nested key is rejected and reported.
   assert.deepEqual(c.modes.build.sandbox.network, {
     allowedDomains: ["example.com"],
+    deniedDomains: [],
   });
   assert.ok(
     s.errors.some((e) =>

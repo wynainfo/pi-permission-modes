@@ -2,7 +2,7 @@
  * Mode-config loading and layered merge.
  *
  * Layers, in order:
- *   1. permission-mode.defaults.json (shipped) — the four built-in modes, loaded
+ *   1. permission-mode.defaults.json (shipped) — the five built-in modes, loaded
  *      over a minimal in-code fallback (FALLBACK_CONFIG).
  *   2. <agentDir>/permission-mode/permission-mode.json (global) — FULL authority:
  *      may add modes, redefine built-ins, and change defaultMode / cycleOrder.
@@ -325,9 +325,9 @@ const isIndexLikeKey = (k: string): boolean => /^(0|[1-9]\d*)$/.test(k);
 
 /**
  * Clean one pattern-map entry value: a bare action string, or an object of the
- * form `{ action, reason? }` (`message` accepted as an alias of `reason`).
- * Invalid actions fail safe to "deny"; invalid reasons are dropped with a
- * warning (over-long reasons are truncated). The returned reason is trimmed.
+ * form `{ action, reason? }`. Invalid actions fail safe to "deny"; invalid
+ * reasons are dropped with a warning (over-long reasons are truncated). The
+ * returned reason is trimmed.
  */
 function cleanRule(value: unknown, label: string, onError: OnError, allowReason = true): PatternValue {
   if (isAction(value)) return value;
@@ -553,11 +553,11 @@ function deepMerge(a: unknown, b: unknown): unknown {
   return b;
 }
 
-/** A pattern-rule value object: exactly `{action}` plus only `reason`/`message`.
+/** A pattern-rule value object: exactly `{action}` plus only `reason`.
  * Anything else shaped like it (e.g. a pattern literally named `action`
  * alongside other patterns) still merges — a lone `{"action": ...}` map is
  * indistinguishable from a rule object and stays a leaf. */
-const RULE_VALUE_KEYS = new Set(["action", "reason", "message"]);
+const RULE_VALUE_KEYS = new Set(["action", "reason"]);
 function isRuleObject(v: unknown): v is Record<string, unknown> {
   return isPlainObject(v) && typeof v.action === "string" && Object.keys(v).every((k) => RULE_VALUE_KEYS.has(k));
 }

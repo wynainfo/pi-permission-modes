@@ -3,7 +3,7 @@
  *
  * A MODE is data: a named bundle of a sandbox profile, an allow/ask/deny
  * permission policy keyed by surface, plus UI metadata (label/color), an
- * optional system-prompt injection, and a hidden-tools list. The four built-in
+ * optional system-prompt injection, and a hidden-tools list. The five built-in
  * modes ship in `permission-mode.defaults.json`; users override or extend them in
  * `permission-mode.json`.
  *
