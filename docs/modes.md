@@ -49,11 +49,16 @@ values; the README's table is the summary.
 | `permission` | object | The allow / ask / deny policy ([permissions.md](permissions.md)) |
 | `hideTools` | string[] | Tools removed from the model in this mode ([permissions.md, Hiding tools](permissions.md#hiding-tools)) |
 | `bypassProtectedPaths` | boolean | Skip the protected-path write backstop. Only YOLO sets it |
+| `extends` | string[] | Names of `groups` to compose first, in order; later groups win, the mode's own fields win over all ([Groups](#groups)) |
 | `classifier` | object or `false` | The Auto classifier: a model judges this mode's asks instead of prompting ([Auto mode](#auto-mode)). Only Auto sets it |
 
 A mode must have `sandbox.enabled` and `sandbox.writable` and a `permission`
 block; the loader warns about an incomplete mode and fills the gaps with
 safe values.
+
+## Groups
+
+Shared fragments live once in the top-level `groups` map (same vocabulary as a mode, all optional); each mode composes them via `extends` (in order, later groups win, the mode's own fields win over all). Groups may themselves extend other groups. Unknown names and cycles warn and are ignored. Pattern maps concatenate along the chain so last-match-wins holds with the mode last. Project configs cannot define `groups` or change `extends`.
 
 ## Start mode
 

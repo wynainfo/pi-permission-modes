@@ -2,7 +2,7 @@
  * Mode-config loading and layered merge.
  *
  * Layers, in order:
- *   1. permission-mode.defaults.json (shipped) — the four built-in modes, loaded
+ *   1. permission-mode.defaults.json (shipped) — the five built-in modes, loaded
  *      over a minimal in-code fallback (FALLBACK_CONFIG).
  *   2. <agentDir>/permission-mode/permission-mode.json (global) — FULL authority:
  *      may add modes, redefine built-ins, and change defaultMode / cycleOrder.
@@ -38,6 +38,7 @@ import {
   type LinuxOptions,
   MACOS_KEYS,
   type MacosOptions,
+  type GroupDef,
   type ModeDef,
   type PatternValue,
   PLAN_PROMPT_SENTINEL,
@@ -324,9 +325,9 @@ const isIndexLikeKey = (k: string): boolean => /^(0|[1-9]\d*)$/.test(k);
 
 /**
  * Clean one pattern-map entry value: a bare action string, or an object of the
- * form `{ action, reason? }` (`message` accepted as an alias of `reason`).
- * Invalid actions fail safe to "deny"; invalid reasons are dropped with a
- * warning (over-long reasons are truncated). The returned reason is trimmed.
+ * form `{ action, reason? }`. Invalid actions fail safe to "deny"; invalid
+ * reasons are dropped with a warning (over-long reasons are truncated). The
+ * returned reason is trimmed.
  */
 function cleanRule(value: unknown, label: string, onError: OnError, allowReason = true): PatternValue {
   if (isAction(value)) return value;
@@ -415,15 +416,288 @@ function cleanPermission(raw: unknown, where: string, onError: OnError, allowRea
 // Global (full-authority) merge
 // ---------------------------------------------------------------------------
 
-function mergeMode(base: ModeDef, over: Partial<ModeDef>): ModeDef {
-  return {
+function mergeMode(base: ModeDef, over: Partial<ModeDef>, where: string, onError: OnError): ModeDef {
+  const overExtends = over.extends;
+  const baseExtends = base.extends;
+  if (overExtends !== undefined) {
+    // Declaring `extends` resets the sandbox/permission content: the groups
+    // (expanded once per load) supply it, so the previous layer's concrete
+    // values must not leak in above them (e.g. the FALLBACK safety net
+    // would otherwise overwrite the groups). An empty list detaches the mode
+    // onto its own fields (missing sandbox/permission fall back to safe
+    // defaults below, never to deleted-mode). Identity and display scalars
+    // still inherit, and a base that is itself group-composed only carries
+    // its own fields, so merging them under the override can never resurrect
+    // stale concrete values.
+    const rest = omitExtends(over);
+    const baseComposed = baseExtends !== undefined && baseExtends.length > 0;
+    const merged = {
+      label: rest.label ?? base.label,
+      color: rest.color ?? base.color,
+      systemPrompt: rest.systemPrompt ?? base.systemPrompt,
+      injectSandboxInfo: rest.injectSandboxInfo ?? base.injectSandboxInfo,
+      hideTools: rest.hideTools ?? base.hideTools,
+      bypassProtectedPaths: rest.bypassProtectedPaths ?? base.bypassProtectedPaths,
+      sandbox: rest.sandbox
+        ? { ...(baseComposed ? base.sandbox ?? {} : {}), ...rest.sandbox }
+        : baseComposed
+          ? base.sandbox
+          : undefined,
+      permission: { ...(baseComposed ? base.permission ?? {} : {}), ...(rest.permission ?? {}) },
+    } as ModeDef;
+    if (overExtends.length === 0) {
+      // No composition and possibly no own content: fail safe to useful
+      // defaults with warnings instead of letting validateExpandedModes
+      // drop the mode for a missing sandbox block. Copy first: merged.sandbox
+      // may alias base.sandbox, which ensureModeDefaults mutates in place.
+      if (merged.sandbox) merged.sandbox = { ...merged.sandbox };
+      ensureModeDefaults(merged, where, onError, " (extends: [] leaves the mode on its own fields)");
+    } else {
+      merged.extends = overExtends;
+    }
+    return merged;
+  }
+  const rest = omitExtends(over);
+  const merged: ModeDef = {
     ...base,
-    ...over,
-    sandbox: over.sandbox ? { ...base.sandbox, ...over.sandbox } : base.sandbox,
+    ...rest,
+    sandbox: rest.sandbox ? { ...base.sandbox, ...rest.sandbox } : base.sandbox,
     // Surface-level shallow merge: an override replaces a whole surface's value.
-    permission: { ...base.permission, ...(over.permission ?? {}) },
-    hideTools: over.hideTools ?? base.hideTools,
+    permission: { ...base.permission, ...(rest.permission ?? {}) },
+    hideTools: rest.hideTools ?? base.hideTools,
   };
+  return merged;
+}
+
+/** Strip the `extends` composition list, keeping only effective content fields. */
+function omitExtends<T extends { extends?: unknown }>(v: T): Omit<T, "extends"> {
+  const { extends: _e, ...rest } = v;
+  void _e;
+  return rest;
+}
+
+/**
+ * Fail-safe defaults for a mode's sandbox booleans and permission block.
+ * `note` distinguishes the pre-expansion check ("") from the
+ * post-expansion one (" after expansion").
+ */
+function ensureModeDefaults(
+  mode: { sandbox?: Partial<SandboxProfile>; permission?: Partial<Record<Surface, SurfaceValue>> },
+  where: string,
+  onError: OnError,
+  note = "",
+): void {
+  const sandbox = (mode.sandbox ??= {}) as Partial<SandboxProfile>;
+  if (typeof sandbox.enabled !== "boolean") {
+    onError(`permission-mode: ${where}: sandbox.enabled missing${note}; defaulting to true`);
+    sandbox.enabled = true;
+  }
+  if (typeof sandbox.writable !== "boolean") {
+    onError(`permission-mode: ${where}: sandbox.writable missing${note}; defaulting to true`);
+    sandbox.writable = true;
+  }
+  if (mode.permission === undefined) {
+    onError(`permission-mode: ${where}: no permission block${note}; every surface will ask`);
+    mode.permission = {};
+  }
+}
+
+/** Merge one partial fragment (group or mode-own values) over an accumulator. */
+function mergeFragment(acc: Partial<ModeDef>, over: Partial<ModeDef>): Partial<ModeDef> {
+  const a = omitExtends(acc);
+  const o = omitExtends(over);
+  return {
+    ...a,
+    ...o,
+    sandbox: (o.sandbox ? deepMerge(a.sandbox ?? {}, o.sandbox) : a.sandbox) as ModeDef["sandbox"],
+    permission: deepMerge(a.permission ?? {}, o.permission ?? {}) as Partial<Record<Surface, SurfaceValue>>,
+    hideTools: o.hideTools ?? a.hideTools,
+  };
+}
+
+/**
+ * One merge function for all composition within an extends chain (group into
+ * group into mode-own). Same rule everywhere, by value kind:
+ * - two plain maps/objects → merge key-wise in layer order (earlier first);
+ *   a redefined key moves to the end — a plain spread would keep its first
+ *   position and silently reorder last-match-wins;
+ * - exact `"*"` entries go first: they are the documented universal fallback,
+ *   so a trailing default can never flip layer specifics;
+ * - rule objects (`{action}` values), arrays and anything else → override wins.
+ * Arrays never union: unioning an allow-list would widen it, and stock entries
+ * would become unremovable. So a `deniedDomains`-only layer no longer wipes
+ * the allowlist, while `allowWrite`/`extends`/`hideTools` keep replace
+ * semantics. Cross-config-layer merges (stock/global/project) keep their own
+ * replace/reset semantics — this is composition within one layer.
+ */
+function deepMerge(a: unknown, b: unknown): unknown {
+  if (Array.isArray(a) && Array.isArray(b)) return b;
+  if (isPlainObject(a) && isPlainObject(b) && !isRuleObject(a) && !isRuleObject(b)) {
+    const out: Record<string, unknown> = {};
+    for (const src of [a, b]) {
+      if ("*" in src) out["*"] = (src as Record<string, unknown>)["*"];
+    }
+    for (const src of [a, b]) {
+      for (const [k, v] of Object.entries(src)) {
+        if (k === "*") continue;
+        if (UNSAFE_KEYS.has(k)) continue; // belt and braces: sanitizers already strip these
+        // Capture before deleting: the delete moves a redefined key to the
+        // end (order matters for last-match-wins), but the merge needs it.
+        const prev = k in out ? out[k] : undefined;
+        if (k in out) delete out[k];
+        out[k] = deepMerge(prev, v);
+      }
+    }
+    return out;
+  }
+  return b;
+}
+
+/** A pattern-rule value object: exactly `{action}` plus only `reason`.
+ * Anything else shaped like it (e.g. a pattern literally named `action`
+ * alongside other patterns) still merges — a lone `{"action": ...}` map is
+ * indistinguishable from a rule object and stays a leaf. */
+const RULE_VALUE_KEYS = new Set(["action", "reason"]);
+function isRuleObject(v: unknown): v is Record<string, unknown> {
+  return isPlainObject(v) && typeof v.action === "string" && Object.keys(v).every((k) => RULE_VALUE_KEYS.has(k));
+}
+
+/** Sanitize an `extends` list: strings only, prototype names dropped with a warning. */
+function sanitizeExtends(raw: unknown, where: string, onError: OnError): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || !raw.every((x) => typeof x === "string")) {
+    onError(`permission-mode: ignoring extends in ${where}: must be a string array`);
+    return undefined;
+  }
+  const out: string[] = [];
+  for (const name of raw as string[]) {
+    if (UNSAFE_KEYS.has(name)) {
+      onError(`permission-mode: ignoring extends "${name}" in ${where}: not a valid group name`);
+      continue;
+    }
+    out.push(name);
+  }
+  return out;
+}
+
+/** Clean a raw group definition (same vocabulary as a mode, all optional). */
+function sanitizeGroup(raw: unknown, where: string, onError: OnError): GroupDef {
+  const out: GroupDef = {};
+  if (!isPlainObject(raw)) {
+    onError(`permission-mode: ${where} must be an object; ignoring`);
+    return out;
+  }
+  if (raw.systemPrompt !== undefined) {
+    if (typeof raw.systemPrompt === "string") {
+      out.systemPrompt = raw.systemPrompt;
+      onError(`permission-mode: ${where} sets systemPrompt: prompts compose silently into modes; prefer setting it on the mode`);
+    } else onError(`permission-mode: ignoring systemPrompt in ${where}: must be a string`);
+  }
+  if (raw.injectSandboxInfo !== undefined) {
+    if (typeof raw.injectSandboxInfo === "boolean") out.injectSandboxInfo = raw.injectSandboxInfo;
+    else onError(`permission-mode: ignoring injectSandboxInfo in ${where}: must be a boolean`);
+  }
+  if (raw.sandbox !== undefined) {
+    const s = sanitizeSandbox(raw.sandbox, where, onError);
+    if (Object.keys(s).length > 0) out.sandbox = s;
+  }
+  if (raw.permission !== undefined) {
+    const p = cleanPermission(raw.permission, where, onError);
+    if (Object.keys(p).length > 0) out.permission = p as GroupDef["permission"];
+  }
+  if (raw.hideTools !== undefined) {
+    if (isStringArray(raw.hideTools)) out.hideTools = [...raw.hideTools];
+    else onError(`permission-mode: ignoring hideTools in ${where}: must be a string array`);
+  }
+  if (raw.bypassProtectedPaths !== undefined) {
+    if (typeof raw.bypassProtectedPaths === "boolean") {
+      out.bypassProtectedPaths = raw.bypassProtectedPaths;
+      onError(`permission-mode: ${where} sets bypassProtectedPaths: the backstop removal composes silently into modes; prefer setting it on the mode`);
+    } else onError(`permission-mode: ignoring bypassProtectedPaths in ${where}: must be a boolean`);
+  }
+  const ext = sanitizeExtends(raw.extends, where, onError);
+  if (ext !== undefined) out.extends = ext;
+  for (const k of Object.keys(raw)) {
+    if (!["systemPrompt", "injectSandboxInfo", "sandbox", "permission", "hideTools", "bypassProtectedPaths", "extends"].includes(k)) {
+      onError(`permission-mode: ignoring unknown group field "${k}" in ${where}`);
+    }
+  }
+  return out;
+}
+
+/** Merge group registries: overrides replace whole named groups. */
+function mergeGroups(
+  base: Record<string, GroupDef> | undefined,
+  over: unknown,
+  where: string,
+  onError: OnError,
+): Record<string, GroupDef> {
+  const out: Record<string, GroupDef> = { ...(base ?? {}) };
+  if (over === undefined) return out;
+  if (!isPlainObject(over)) {
+    onError(`permission-mode: groups in ${where} must be an object; ignoring`);
+    return out;
+  }
+  for (const [name, raw] of safeEntries(over)) {
+    out[name] = sanitizeGroup(raw, `${where} group "${name}"`, onError);
+  }
+  for (const k of Object.keys(over)) {
+    if (UNSAFE_KEYS.has(k)) {
+      onError(`permission-mode: ignoring group "${k}" in ${where}: not a valid group name`);
+    }
+  }
+  return out;
+}
+
+/** Recursively expand one group (its own `extends` first), with cycle detection. */
+function expandGroup(
+  name: string,
+  groups: Record<string, GroupDef>,
+  onError: OnError,
+  stack: string[],
+): Partial<ModeDef> {
+  const g = groups[name];
+  if (!g) {
+    onError(`permission-mode: unknown group "${name}" in extends (${stack.join(" -> ")}); ignoring`);
+    return {};
+  }
+  if (stack.includes(name)) {
+    onError(`permission-mode: cyclic extends detected: ${[...stack, name].join(" -> ")}; ignoring`);
+    return {};
+  }
+  let acc: Partial<ModeDef> = {};
+  for (const parent of g.extends ?? []) {
+    acc = mergeFragment(acc, expandGroup(parent, groups, onError, [...stack, name]));
+  }
+  // A group sandbox is partial by design; the merge handles partials at runtime.
+  return mergeFragment(acc, omitExtends(g) as Partial<ModeDef>);
+}
+
+/** Expand a mode's `extends` list over its own fields (mode wins). */
+function expandModeGroups(
+  modeName: string,
+  mode: ModeDef,
+  groups: Record<string, GroupDef>,
+  onError: OnError,
+): ModeDef {
+  const ext = mode.extends;
+  if (!ext || ext.length === 0) return mode;
+  let acc: Partial<ModeDef> = {};
+  for (const name of ext) {
+    acc = mergeFragment(acc, expandGroup(name, groups, onError, [`mode "${modeName}"`]));
+  }
+  const merged = mergeFragment(acc, omitExtends(mode));
+  return { ...(merged as ModeDef), extends: ext };
+}
+
+/** Expand `extends` for every mode; keeps the `extends` list for transparency. */
+function expandAllModes(config: PermissionModeConfig, onError: OnError): void {
+  const groups = config.groups ?? {};
+  for (const name of Object.keys(config.modes)) {
+    config.modes[name] = expandModeGroups(name, config.modes[name], groups, onError);
+    // Post-expansion: group-composed modes can inherit the contradiction too.
+    warnModeContradictions(name, config.modes[name], onError);
+  }
 }
 
 /**
@@ -442,6 +716,9 @@ function warnModeContradictions(name: string, mode: ModeDef, onError: OnError): 
 }
 
 function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeConfig>, onError: OnError): PermissionModeConfig {
+  // Raw merge only: `extends` is expanded once per load (see load entry
+  // points), so a group redefinition applies to every mode referencing it.
+  const groups = mergeGroups(base.groups, (over as { groups?: unknown }).groups, "global config", onError);
   const modes: Record<string, ModeDef> = { ...base.modes };
   for (const [name, raw] of modeEntries(over.modes, "global config", onError)) {
     const where = `global mode "${name}"`;
@@ -461,39 +738,36 @@ function mergeGlobal(base: PermissionModeConfig, over: Partial<PermissionModeCon
       if (c === undefined) delete m.classifier;
       else m.classifier = c;
     }
+    const ext = sanitizeExtends(raw.extends, where, onError);
+    if (ext !== undefined) m.extends = ext;
+    else delete m.extends;
     if (hasMode(modes, name)) {
-      modes[name] = mergeMode(modes[name], m);
+      modes[name] = mergeMode(modes[name], m, where, onError);
     } else {
-      // A new mode: label, color, and a sandbox object are required; the
-      // sandbox booleans default to the safe side and permission to {}
-      // (which resolves to "ask" everywhere), each with a warning.
-      if (typeof m.label !== "string" || !MODE_COLORS.has(String(m.color)) || !isPlainObject(raw.sandbox)) {
+      // A new mode: label, color, and a sandbox object are required — unless
+      // it composes groups, in which case the missing pieces are validated
+      // after expansion at the load entry points.
+      const defersToGroups = ext !== undefined && ext.length > 0;
+      if (!defersToGroups && (typeof m.label !== "string" || !MODE_COLORS.has(String(m.color)) || !isPlainObject(raw.sandbox))) {
         onError(`permission-mode: ignoring incomplete new global mode "${name}" (needs label, color, sandbox)`);
         continue;
       }
-      const sandbox = m.sandbox as Partial<SandboxProfile>;
-      if (typeof sandbox.enabled !== "boolean") {
-        onError(`permission-mode: ${where}: sandbox.enabled missing; defaulting to true`);
-        sandbox.enabled = true;
-      }
-      if (typeof sandbox.writable !== "boolean") {
-        onError(`permission-mode: ${where}: sandbox.writable missing; defaulting to true`);
-        sandbox.writable = true;
-      }
-      if (m.permission === undefined) {
-        onError(`permission-mode: ${where}: no permission block; every surface will ask`);
-        m.permission = {};
-      }
-      modes[name] = { ...m, label: m.label, color: m.color as ModeDef["color"], sandbox: sandbox as SandboxProfile, permission: m.permission };
+      if (!defersToGroups) ensureModeDefaults(m, where, onError);
+      modes[name] = {
+        ...m,
+        label: m.label as ModeDef["label"],
+        color: m.color as ModeDef["color"],
+        sandbox: m.sandbox as SandboxProfile,
+        permission: m.permission ?? {},
+      };
     }
-    warnModeContradictions(name, modes[name], onError);
   }
   const cycleOrder = (isStringArray(over.cycleOrder) ? over.cycleOrder : base.cycleOrder).filter((n) => hasMode(modes, n));
   let defaultMode = typeof over.defaultMode === "string" ? over.defaultMode : base.defaultMode;
   if (!hasMode(modes, defaultMode)) defaultMode = cycleOrder[0] ?? base.defaultMode;
   const plan = sanitizePlan(over.plan, onError) ?? base.plan;
   const shells = sanitizeShells(over.shells, "global config", onError) ?? base.shells;
-  return { defaultMode, cycleOrder, modes, ...(plan ? { plan } : {}), ...(shells ? { shells } : {}) };
+  return { defaultMode, cycleOrder, modes, ...(Object.keys(groups).length > 0 ? { groups } : {}), ...(plan ? { plan } : {}), ...(shells ? { shells } : {}) };
 }
 
 /** The longest `classifier.guidance` and `classifier.restrict` texts kept (the prompt is on every verdict). */
@@ -620,6 +894,27 @@ export function tightenShells(base: ShellsConfig | undefined, over: ShellsConfig
   return out;
 }
 
+/** Post-expansion check for modes introduced via groups (label/color/sandbox now required). */
+function validateExpandedModes(config: PermissionModeConfig, onError: OnError): void {
+  for (const [name, mode] of Object.entries(config.modes)) {
+    if (typeof mode.label !== "string" || !MODE_COLORS.has(String(mode.color)) || !isPlainObject(mode.sandbox)) {
+      onError(`permission-mode: ignoring incomplete mode "${name}" after group expansion (needs label, color, sandbox)`);
+      delete config.modes[name];
+      continue;
+    }
+    ensureModeDefaults(mode, `mode "${name}"`, onError, " after expansion");
+  }
+  // A deleted mode must not leave dangling references behind.
+  config.cycleOrder = config.cycleOrder.filter((n) => hasMode(config.modes, n));
+  if (!hasMode(config.modes, config.defaultMode)) {
+    const fallback = config.cycleOrder[0] ?? Object.keys(config.modes)[0];
+    if (fallback !== undefined) {
+      onError(`permission-mode: default mode "${config.defaultMode}" was dropped; falling back to "${fallback}"`);
+      config.defaultMode = fallback;
+    }
+  }
+}
+
 /** The top-level `plan` block: string fields only, anything else dropped with a warning. */
 function sanitizePlan(raw: unknown, onError: OnError): PlanApprovalConfig | undefined {
   if (raw === undefined) return undefined;
@@ -721,6 +1016,9 @@ function applyProject(config: PermissionModeConfig, project: unknown, onError: O
     const over = sanitizeShells(project.shells, "project config", onError);
     if (over) config.shells = tightenShells(config.shells, over, onError);
   }
+  if ((project as { groups?: unknown }).groups !== undefined) {
+    onError("permission-mode: project config cannot define groups; ignoring");
+  }
   if (project.modes !== undefined && !isPlainObject(project.modes)) {
     onError("permission-mode: project config modes must be an object; ignoring");
     return;
@@ -736,6 +1034,9 @@ function applyProject(config: PermissionModeConfig, project: unknown, onError: O
       if (!isPlainObject(raw)) {
         onError(`permission-mode: ${where} must be an object; ignoring`);
         continue;
+      }
+      if ((raw as { extends?: unknown }).extends !== undefined) {
+        onError(`permission-mode: ${where}: project config cannot change extends; ignoring`);
       }
       if (raw.sandbox !== undefined) base.sandbox = tightenSandbox(base.sandbox, raw.sandbox, where, onError);
       if (raw.classifier !== undefined) {
@@ -809,13 +1110,21 @@ export function stockDefaultsFile(): string {
  * config. If the stock file is missing/invalid, the safe fallback is returned and
  * the problem is reported — the extension always has at least one valid mode.
  */
-export function loadStockDefaults(onError: OnError = noop): PermissionModeConfig {
+/** Raw stock merge (no group expansion): shared so global redefinitions apply. */
+function loadRawStock(onError: OnError): PermissionModeConfig {
   const stock = parseConfigFile(stockDefaultsFile(), onError);
   if (!stock) {
     onError("permission-mode: stock defaults (permission-mode.defaults.json) missing or invalid — using minimal fallback; reinstall the extension");
     return clone(FALLBACK_CONFIG);
   }
   return mergeGlobal(clone(FALLBACK_CONFIG), stock, onError);
+}
+
+export function loadStockDefaults(onError: OnError = noop): PermissionModeConfig {
+  const config = loadRawStock(onError);
+  expandAllModes(config, onError);
+  validateExpandedModes(config, onError);
+  return config;
 }
 
 /** Path to the user's global config (the one `/perm init` and persistence write). */
@@ -851,9 +1160,13 @@ export function loadModeConfig(cwd: string, agentDir: string, onError: OnError =
 
 /** Stock defaults + the global layer, without the project overlay. */
 export function loadGlobalModeConfig(agentDir: string, onError: OnError = noop): PermissionModeConfig {
-  let config = loadStockDefaults(onError);
+  // Single expansion after both raw layers merge, so a global group
+  // redefinition applies to every mode referencing it.
+  let config = loadRawStock(onError);
   const global = parseConfigFile(globalConfigFile(agentDir), onError);
   if (global) config = mergeGlobal(config, global, onError);
+  expandAllModes(config, onError);
+  validateExpandedModes(config, onError);
   return config;
 }
 

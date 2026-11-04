@@ -3,7 +3,7 @@
  *
  * A MODE is data: a named bundle of a sandbox profile, an allow/ask/deny
  * permission policy keyed by surface, plus UI metadata (label/color), an
- * optional system-prompt injection, and a hidden-tools list. The four built-in
+ * optional system-prompt injection, and a hidden-tools list. The five built-in
  * modes ship in `permission-mode.defaults.json`; users override or extend them in
  * `permission-mode.json`.
  *
@@ -83,13 +83,34 @@ export const SURFACES: Surface[] = [
 ];
 
 /** Surfaces that resolve against a filesystem path (subject to the `path` gate). */
-export const FILE_SURFACES: Surface[] = ["read", "write", "edit", "grep", "find", "ls", "bash"];
+export const FILE_SURFACES: Surface[] = [
+  "read",
+  "write",
+  "edit",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+];
 
 /** Footer label colors (semantic theme tokens, no icons). */
-export type ModeColor = "muted" | "mdLink" | "accent" | "warning" | "success" | "error";
+export type ModeColor =
+  | "muted"
+  | "mdLink"
+  | "accent"
+  | "warning"
+  | "success"
+  | "error";
 
 /** The valid `color` values, for the loader. */
-export const MODE_COLORS: readonly ModeColor[] = ["muted", "mdLink", "accent", "warning", "success", "error"];
+export const MODE_COLORS: readonly ModeColor[] = [
+  "muted",
+  "mdLink",
+  "accent",
+  "warning",
+  "success",
+  "error",
+];
 
 /**
  * The OS-sandbox profile for a mode. `enabled:false` runs bash unsandboxed
@@ -166,6 +187,23 @@ export interface MacosOptions {
 /** The keys of `sandbox.macos`, for the loader and the status line. */
 export const MACOS_KEYS = ["enableWeakerNetworkIsolation"] as const;
 
+/**
+ * A reusable permission fragment a mode can compose via `extends`.
+ *
+ * Same shape as a mode minus the required UI metadata: everything is
+ * optional, and `extends` allows a group to compose other groups.
+ */
+export interface GroupDef {
+  systemPrompt?: string;
+  injectSandboxInfo?: boolean;
+  sandbox?: Partial<SandboxProfile>;
+  permission?: Partial<Record<Surface, SurfaceValue>>;
+  hideTools?: string[];
+  bypassProtectedPaths?: boolean;
+  /** Names of other groups to compose first, in order. */
+  extends?: string[];
+}
+
 /** One named mode. */
 export interface ModeDef {
   label: string;
@@ -188,6 +226,11 @@ export interface ModeDef {
   permission: Partial<Record<Surface, SurfaceValue>>;
   /** Tool names hidden from the model while this mode is active. */
   hideTools?: string[];
+  /**
+   * Names of groups to compose first, in order, before this mode's own
+   * fields. Later groups win over earlier ones; the mode wins over all.
+   */
+  extends?: string[];
   /**
    * Skip the hard protected-path backstop (`.git`, `.env`, dotfiles) for file
    * tools. Defaults to false — the backstop applies in every mode unless a mode
@@ -233,7 +276,9 @@ export interface ClassifierConfig {
   restrict?: string;
 }
 
-export const CLASSIFIER_DEFAULTS: Required<Pick<ClassifierConfig, "model" | "strictness" | "onRefuse">> = { model: "current", strictness: 0.5, onRefuse: "refuse" };
+export const CLASSIFIER_DEFAULTS: Required<
+  Pick<ClassifierConfig, "model" | "strictness" | "onRefuse">
+> = { model: "current", strictness: 0.5, onRefuse: "refuse" };
 
 /** How the model learns that a background shell ended: a turn of its own, a note in the next turn, or not at all (it polls). */
 export const SHELL_NOTIFY = ["wake", "note", "none"] as const;
@@ -248,7 +293,11 @@ export interface ShellsConfig {
   notify?: ShellNotify;
 }
 
-export const SHELLS_DEFAULTS: Required<ShellsConfig> = { enabled: true, maxConcurrent: 4, notify: "wake" };
+export const SHELLS_DEFAULTS: Required<ShellsConfig> = {
+  enabled: true,
+  maxConcurrent: 4,
+  notify: "wake",
+};
 
 /** Top-level config: the mode registry plus cycle/default metadata. */
 export interface PermissionModeConfig {
@@ -257,6 +306,8 @@ export interface PermissionModeConfig {
   /** alt+m cycle order; also the display order. */
   cycleOrder: string[];
   modes: Record<string, ModeDef>;
+  /** Reusable permission fragments composable via `extends`. */
+  groups?: Record<string, GroupDef>;
   /** One-step plan approval settings (plan-approval.ts). Global config only. */
   plan?: PlanApprovalConfig;
   /** Background shells. Global config; a project may only tighten. */

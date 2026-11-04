@@ -8,10 +8,8 @@
     "auto",
     "yolo"
   ],
-  "modes": {
-    "default": {
-      "label": "Default",
-      "color": "muted",
+  "groups": {
+    "sandbox-base": {
       "sandbox": {
         "enabled": true,
         "writable": true,
@@ -48,7 +46,17 @@
           ],
           "deniedDomains": []
         }
-      },
+      }
+    },
+    "sandbox-plan": {
+      "extends": [
+        "sandbox-base"
+      ],
+      "sandbox": {
+        "writable": false
+      }
+    },
+    "read-tools": {
       "permission": {
         "path": {
           "*": "allow"
@@ -57,7 +65,11 @@
         "read": "allow",
         "grep": "allow",
         "find": "allow",
-        "ls": "allow",
+        "ls": "allow"
+      }
+    },
+    "ask-strict": {
+      "permission": {
         "write": "ask",
         "edit": "ask",
         "bash": {
@@ -68,56 +80,38 @@
         "skill": "ask"
       }
     },
+    "allow-all": {
+      "permission": {
+        "write": "allow",
+        "edit": "allow",
+        "bash": {
+          "*": "allow"
+        },
+        "web_search": "allow",
+        "tool": "allow",
+        "skill": "allow"
+      }
+    }
+  },
+  "modes": {
+    "default": {
+      "label": "Default",
+      "color": "muted",
+      "extends": [
+        "sandbox-base",
+        "read-tools",
+        "ask-strict"
+      ]
+    },
     "plan": {
       "label": "Plan Mode",
       "color": "mdLink",
       "systemPrompt": "@plan",
-      "sandbox": {
-        "enabled": true,
-        "writable": false,
-        "allowWrite": [
-          ".",
-          "/tmp/pi"
-        ],
-        "denyWrite": [],
-        "denyRead": [
-          "~/.ssh",
-          "~/.aws",
-          "~/.gnupg",
-          "~/.netrc",
-          "~/.git-credentials",
-          "~/.pypirc",
-          "~/.gem/credentials",
-          "~/.vault-token",
-          "~/.password-store",
-          "~/.pi/agent/auth.json",
-          "~/.pi/agent/oauth.json"
-        ],
-        "network": {
-          "allowedDomains": [
-            "npmjs.org",
-            "*.npmjs.org",
-            "registry.npmjs.org",
-            "registry.yarnpkg.com",
-            "pypi.org",
-            "*.pypi.org",
-            "github.com",
-            "*.github.com",
-            "api.github.com",
-            "raw.githubusercontent.com"
-          ],
-          "deniedDomains": []
-        }
-      },
+      "extends": [
+        "sandbox-plan",
+        "read-tools"
+      ],
       "permission": {
-        "path": {
-          "*": "allow"
-        },
-        "external_directory": "ask",
-        "read": "allow",
-        "grep": "allow",
-        "find": "allow",
-        "ls": "allow",
         "write": {
           "*": "deny",
           "*.md": "allow",
@@ -139,120 +133,20 @@
     "build": {
       "label": "Build",
       "color": "accent",
-      "sandbox": {
-        "enabled": true,
-        "writable": true,
-        "allowWrite": [
-          ".",
-          "/tmp/pi"
-        ],
-        "denyWrite": [],
-        "denyRead": [
-          "~/.ssh",
-          "~/.aws",
-          "~/.gnupg",
-          "~/.netrc",
-          "~/.git-credentials",
-          "~/.pypirc",
-          "~/.gem/credentials",
-          "~/.vault-token",
-          "~/.password-store",
-          "~/.pi/agent/auth.json",
-          "~/.pi/agent/oauth.json"
-        ],
-        "network": {
-          "allowedDomains": [
-            "npmjs.org",
-            "*.npmjs.org",
-            "registry.npmjs.org",
-            "registry.yarnpkg.com",
-            "pypi.org",
-            "*.pypi.org",
-            "github.com",
-            "*.github.com",
-            "api.github.com",
-            "raw.githubusercontent.com"
-          ],
-          "deniedDomains": []
-        }
-      },
-      "permission": {
-        "path": {
-          "*": "allow"
-        },
-        "external_directory": "ask",
-        "read": "allow",
-        "grep": "allow",
-        "find": "allow",
-        "ls": "allow",
-        "write": "allow",
-        "edit": "allow",
-        "bash": {
-          "*": "allow"
-        },
-        "web_search": "allow",
-        "tool": "allow",
-        "skill": "allow"
-      }
+      "extends": [
+        "sandbox-base",
+        "read-tools",
+        "allow-all"
+      ]
     },
     "auto": {
       "label": "Auto",
       "color": "warning",
-      "sandbox": {
-        "enabled": true,
-        "writable": true,
-        "allowWrite": [
-          ".",
-          "/tmp/pi"
-        ],
-        "denyWrite": [],
-        "denyRead": [
-          "~/.ssh",
-          "~/.aws",
-          "~/.gnupg",
-          "~/.netrc",
-          "~/.git-credentials",
-          "~/.pypirc",
-          "~/.gem/credentials",
-          "~/.vault-token",
-          "~/.password-store",
-          "~/.pi/agent/auth.json",
-          "~/.pi/agent/oauth.json"
-        ],
-        "network": {
-          "allowedDomains": [
-            "npmjs.org",
-            "*.npmjs.org",
-            "registry.npmjs.org",
-            "registry.yarnpkg.com",
-            "pypi.org",
-            "*.pypi.org",
-            "github.com",
-            "*.github.com",
-            "api.github.com",
-            "raw.githubusercontent.com"
-          ],
-          "deniedDomains": []
-        }
-      },
-      "permission": {
-        "path": {
-          "*": "allow"
-        },
-        "external_directory": "ask",
-        "read": "allow",
-        "grep": "allow",
-        "find": "allow",
-        "ls": "allow",
-        "write": "allow",
-        "edit": "allow",
-        "bash": {
-          "*": "allow"
-        },
-        "web_search": "allow",
-        "tool": "allow",
-        "skill": "allow"
-      },
+      "extends": [
+        "sandbox-base",
+        "read-tools",
+        "allow-all"
+      ],
       "classifier": {
         "model": "current",
         "strictness": 0.5,
