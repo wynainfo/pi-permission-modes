@@ -47,6 +47,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   such as `--- which node/npm ---`) was read as a flag with a glued path
   (`/npm`) and prompted as a path outside the project. Only a flag-shaped
   token (`-C/etc`, `-I/usr/include`) carries a glued path now.
+- A `grep`/`rg` match pattern starting with a slash (e.g.
+  `grep -v "/.venv/"`) was read as an absolute path and prompted as a
+  path outside the project. The pattern (first positional argument, `-e` /
+  `--regexp`, `--exclude` / `--include` / `--exclude-dir` globs) is no
+  longer path-checked, like the `sed`/`awk` program text; the file operands
+  and `-f`/`--file` arguments still are.
 
 ## [2.7.2]
 

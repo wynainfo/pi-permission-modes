@@ -18,3 +18,5 @@ sandbox.json
 # reporter PII or an unreleased exploit writeup)
 *.patch
 0001-*.md
+
+plan/

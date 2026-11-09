@@ -48,9 +48,14 @@ test("known gaps: heuristic does not parse the shell", () => {
 test("fallback: a script program's quoted text is not a path, its files are", () => {
   assert.equal(bashConfirmReason("sed -n '/git-authentication/,/^## /p' network.md", ROOT), undefined);
   assert.equal(bashConfirmReason("awk '/x/ {print $1}' data.txt | sed -e 's#/a#/b#' > out", ROOT), undefined);
+  assert.equal(bashConfirmReason('grep -v "/.venv/" file.txt', ROOT), undefined);
+  assert.equal(bashConfirmReason("grep -ve '/etc/x' file.txt", ROOT), undefined);
+  assert.equal(bashConfirmReason("grep --exclude=/.venv/ pat file.txt", ROOT), undefined);
+  assert.equal(bashConfirmReason("rg --glob '/etc/x' pat", ROOT), undefined);
   assert.match(bashConfirmReason("sed -n p /etc/passwd", ROOT) ?? "", /path outside project: \/etc\/passwd/);
   assert.match(bashConfirmReason("sed -n '/x/p' network.md; cat /etc/hosts", ROOT) ?? "", /path outside project: \/etc\/hosts/);
   assert.match(bashConfirmReason("awk -f /etc/prog.awk x", ROOT) ?? "", /path outside project: \/etc\/prog\.awk/);
+  assert.match(bashConfirmReason("grep --regexp=/x /etc/passwd", ROOT) ?? "", /path outside project: \/etc\/passwd/);
 });
 
 test("sandbox-writable roots are in-bounds for the heuristic too (parity with the AST path)", () => {
