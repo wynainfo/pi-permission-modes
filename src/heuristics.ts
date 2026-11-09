@@ -86,12 +86,13 @@ export function pathPartOfToken(tok: string): string {
 
 /**
  * Programs whose program text is passed as an argument: a sed address like
- * `/git-authentication/,/^## /p` or an awk pattern `/x/ {print}` starts with
- * a slash but names no path. `scriptOpt` options take the program as the
- * next argument (also as the last letter of a combined flag, `sed -ne`,
- * `perl -pe`); `fileOpt` options take a file, which stays judged; `valueOpt`
- * options consume the next argument for something that is no path (a field
- * separator, an assignment); `positional` says the first non-option argument is the program when
+ * `/git-authentication/,/^## /p`, an awk pattern `/x/ {print}` or a grep
+ * pattern `/.venv/` starts with a slash but names no path. `scriptOpt`
+ * options take the program as the next argument (also as the last letter of
+ * a combined flag, `sed -ne`, `perl -pe`, `grep -ve`); `fileOpt` options
+ * take a file, which stays judged; `valueOpt` options consume the next
+ * argument for something that is no path (a field separator, an assignment,
+ * a match glob); `positional` says the first non-option argument is the program when
  * no script option and no `-f` file was given (perl and ruby take a script
  * FILE there, which is a path and stays judged).
  */
@@ -100,8 +101,11 @@ const SCRIPT_PROGRAMS: Record<string, { scriptOpt: RegExp; fileOpt: RegExp; valu
   awk: { scriptOpt: /^(-[a-zA-Z]*e|--source)$/, fileOpt: /^(-f|--file)$/, valueOpt: /^(-F|-v|--assign|--field-separator)$/, positional: true },
   perl: { scriptOpt: /^-[a-zA-Z0-9]*[eE]$/, fileOpt: /^-I$/, valueOpt: /^$/, positional: false },
   ruby: { scriptOpt: /^-[a-zA-Z0-9]*e$/, fileOpt: /^-I$/, valueOpt: /^$/, positional: false },
+  grep: { scriptOpt: /^(-[a-zA-Z]*e|--regexp)$/, fileOpt: /^(-f|--file)$/, valueOpt: /^(--exclude|--include|--exclude-dir)$/, positional: true },
+  rg: { scriptOpt: /^(-[a-zA-Z]*e|--regexp)$/, fileOpt: /^(-f|--file)$/, valueOpt: /^(-g|--glob|--iglob|--exclude|--include)$/, positional: true },
 };
 for (const a of ["gawk", "mawk", "nawk"]) SCRIPT_PROGRAMS[a] = SCRIPT_PROGRAMS.awk;
+for (const a of ["egrep", "fgrep"]) SCRIPT_PROGRAMS[a] = SCRIPT_PROGRAMS.grep;
 
 /**
  * The arguments of `name` that may name paths: the program text of a script
@@ -117,7 +121,7 @@ export function pathArgs(name: string, args: readonly string[]): string[] {
   let i = 0;
   // Pass one: does a script option or a script file appear anywhere? Then
   // the first positional is an input file, not the program.
-  for (const a of args) if (prog.scriptOpt.test(a) || /^(-f|--file)$/.test(a) || /^--(expression|source|file)=/.test(a)) scriptGiven = true;
+  for (const a of args) if (prog.scriptOpt.test(a) || /^(-f|--file)$/.test(a) || /^--(expression|source|file|regexp)=/.test(a)) scriptGiven = true;
   while (i < args.length) {
     const a = args[i];
     if (a === "--") {
@@ -128,7 +132,7 @@ export function pathArgs(name: string, args: readonly string[]): string[] {
       i += 2; // the option and the program text
       continue;
     }
-    if (/^--(expression|source)=/.test(a)) {
+    if (/^--(expression|source|regexp|glob|iglob|exclude|include|exclude-dir)=/.test(a)) {
       i += 1;
       continue;
     }

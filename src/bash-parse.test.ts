@@ -301,6 +301,10 @@ test("outsideReasonFromCommands: normalized tokens, glued flag values, bare cd, 
   assert.equal(outsideReasonFromCommands([bc("cd", "src")], root), undefined);
   assert.equal(outsideReasonFromCommands([bc("dd", "if=input.bin", "of=/dev/null")], root), undefined);
   assert.equal(outsideReasonFromCommands([bc("grep", "-e", "a/b", "file")], root), undefined);
+  assert.equal(outsideReasonFromCommands([bc("grep", "-v", "/.venv/", "file")], root), undefined); // pattern, not a path
+  assert.equal(outsideReasonFromCommands([bc("grep", "--exclude=/.venv/", "pat", "file")], root), undefined);
+  assert.match(outsideReasonFromCommands([bc("grep", "pat", "/etc/passwd")], root) ?? "", /path outside project/); // the file operand stays judged
+  assert.match(outsideReasonFromCommands([bc("grep", "--regexp=/x", "/etc/passwd")], root) ?? "", /path outside project/);
 });
 
 test("analyzeBash: real grammar sees redirects, heredoc scripts, eval, and find -exec (skips if WASM absent)", async () => {
